@@ -293,7 +293,7 @@ final class PerfectNIOTests: XCTestCase {
 				certificateChain: [.certificate(serverCert)],
 				privateKey: .privateKey(serverKey))
 			let server = try route.bind(port: 42000, tls: tls).listen()
-			let req1 = try CURLRequest("https://localhost:42000/", .sslVerifyPeer(false)).perform().bodyString
+			let req1 = try CURLRequest("https://localhost:42000/", .sslVerifyPeer(false), .sslVerifyHost(false)).perform().bodyString
 			XCTAssertEqual(req1, "OK")
 			try server.stop().wait()
 		} catch {
