@@ -48,12 +48,11 @@ public protocol BoundRoutes {
 	func listen() throws -> ListeningRoutes
 }
 
-func configureHTTPServerPipeline(pipeline: ChannelPipeline, tls: TLSConfiguration?) -> EventLoopFuture<Void> {
+func configureHTTPServerPipeline(pipeline: ChannelPipeline, sslContext: NIOOpenSSL.SSLContext?) -> EventLoopFuture<Void> {
 	let responseEncoder = HTTPResponseEncoder()
 	let requestDecoder = HTTPRequestDecoder(leftOverBytesStrategy: .dropBytes)
 	var handlers: [ChannelHandler] = []
-	if let configuration = tls {
-		let sslContext = try! SSLContext(configuration: configuration)
+	if let sslContext = sslContext {
 		let handler = try! OpenSSLServerHandler(context: sslContext)
 		handlers.append(handler)
 	}
@@ -62,7 +61,7 @@ func configureHTTPServerPipeline(pipeline: ChannelPipeline, tls: TLSConfiguratio
 	handlers.append(HTTPServerPipelineHandler())
 	
 	// FIX: re-enable this with next NIO release
-	//handlers.append(HTTPServerProtocolErrorHandler())
+	handlers.append(HTTPServerProtocolErrorHandler())
 	
 	// TBD
 //	if let (upgraders, completionHandler) = upgrade {
@@ -86,8 +85,8 @@ class NIOBoundRoutes: BoundRoutes {
 		 port: Int,
 		 address: String,
 		 threadGroup: EventLoopGroup?,
-		 tls: TLSConfiguration?
-		) throws {
+		 tls: TLSConfiguration?) throws {
+		
 		let ag = MultiThreadedEventLoopGroup(numberOfThreads: 1)
 		acceptGroup = ag
 		childGroup = threadGroup ?? ag
@@ -95,6 +94,12 @@ class NIOBoundRoutes: BoundRoutes {
 		self.port = port
 		self.address = address
 		
+		let sslContext: NIOOpenSSL.SSLContext?
+		if let tls = tls {
+			sslContext = try SSLContext(configuration: tls)
+		} else {
+			sslContext = nil
+		}
 		var bs = ServerBootstrap(group: acceptGroup, childGroup: childGroup)
 			.serverChannelOption(ChannelOptions.backlog, value: 256)
 			.serverChannelOption(ChannelOptions.maxMessagesPerRead, value: 1)
@@ -111,7 +116,7 @@ class NIOBoundRoutes: BoundRoutes {
 			.childChannelOption(ChannelOptions.recvAllocator, value: AdaptiveRecvByteBufferAllocator(minimum: 1024, initial: 4096, maximum: 65536))
 			.childChannelInitializer {
 				channel in
-				configureHTTPServerPipeline(pipeline: channel.pipeline, tls: tls)
+				configureHTTPServerPipeline(pipeline: channel.pipeline, sslContext: sslContext)
 				.then {
 					channel.pipeline.add(handler: NIOHTTPHandler(finder: finder))
 				}
