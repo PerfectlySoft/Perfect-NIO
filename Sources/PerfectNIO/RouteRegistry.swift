@@ -153,10 +153,8 @@ public extension Routes {
 			}
 		}
 	}
-}
-public extension Routes where OutType: Collection {
 	/// Map the values of a Collection to a new Array.
-	func map<NewOut>(_ call: @escaping (OutType.Element) throws -> NewOut) -> Routes<InType, Array<NewOut>>{
+	func map<NewOut>(_ call: @escaping (OutType.Element) throws -> NewOut) -> Routes<InType, Array<NewOut>> where OutType: Collection {
 		return applyFuncs {
 			return $0.thenThrowing {
 				return RouteValueBox($0.state, try $0.value.map(call))

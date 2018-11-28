@@ -10,10 +10,7 @@ import NIOHTTP1
 import NIOOpenSSL
 import Foundation
 
-/* TODO
-struct requestinfoforlogging {
-}
-*/
+
 public enum HTTPRequestContentType {
 	case none,
 		multiPartForm(MimeReader),
@@ -59,8 +56,6 @@ func configureHTTPServerPipeline(pipeline: ChannelPipeline, sslContext: NIOOpenS
 	handlers.append(responseEncoder)
 	handlers.append(requestDecoder)
 	handlers.append(HTTPServerPipelineHandler())
-	
-	// FIX: re-enable this with next NIO release
 	handlers.append(HTTPServerProtocolErrorHandler())
 	
 	// TBD

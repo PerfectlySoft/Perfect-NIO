@@ -322,6 +322,21 @@ final class PerfectNIOTests: XCTestCase {
 		}
 	}
 	
+	func testScratch() {
+		do {
+//			let route = root().path("hello").path("world") { "Hello, world!" }
+//			let textOutput = route.text()
+//			let boundServer = try textOutput.bind(port: 8080)
+//			let listeningServer = try boundServer.listen()
+//			try listeningServer.wait()
+
+			let helloRoute = root().hello { "Hello, world!" }
+			let byeRoute = root().bye { "Bye, world!" }
+			let combinedRoutes = try root().v1.dir(helloRoute, byeRoute).text()
+			try combinedRoutes.bind(port: 8080).listen().wait()
+		} catch {}
+	}
+	
     static var allTests = [
 		("testRoot1", testRoot1),
 		("testRoot2", testRoot2),

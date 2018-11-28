@@ -28,9 +28,31 @@ public struct QueryDecoder {
 	let collection: A
 	var ranges: [RangeTriple] = []
 	var lookup: [String:[Int]] = [:]
+	
 	public init(_ c: [UInt8]) {
 		collection = c
 		build()
+	}
+	
+	public subscript(_ key: String) -> [String] {
+		return get(key).map { String(bytes: $0, encoding: .utf8) ?? "" }
+	}
+	
+	public func map<T>(_ call: ((String,String)) throws -> T) rethrows -> [T] {
+		return try mapBytes {
+			return try call(($0.0, String(bytes: $0.1, encoding: .utf8) ?? ""))
+		}
+	}
+	
+	public func mapBytes<T>(_ call: ((String,ArraySlice<UInt8>)) throws -> T) rethrows -> [T] {
+		return try ranges.map {try call(triple2Tuple($0))}
+	}
+	
+	public func get(_ key: String) -> [ArraySlice<UInt8>] {
+		guard let fnd = lookup[key] else {
+			return []
+		}
+		return fnd.map { triple2Value(ranges[$0]) }
 	}
 	
 	func triple2Tuple(_ triple: RangeTriple) -> (String, ArraySlice<UInt8>) {
@@ -54,27 +76,6 @@ public struct QueryDecoder {
 			valueSlice = collection[triple.middle..<triple.end]
 		}
 		return valueSlice
-	}
-	
-	public func map<T>(_ call: ((String,String)) throws -> T) rethrows -> [T] {
-		return try mapBytes {
-			return try call(($0.0, String(bytes: $0.1, encoding: .utf8) ?? ""))
-		}
-	}
-	
-	public func mapBytes<T>(_ call: ((String,ArraySlice<UInt8>)) throws -> T) rethrows -> [T] {
-		return try ranges.map {try call(triple2Tuple($0))}
-	}
-	
-	public func get(_ key: String) -> [ArraySlice<UInt8>] {
-		guard let fnd = lookup[key] else {
-			return []
-		}
-		return fnd.map { triple2Value(ranges[$0]) }
-	}
-	
-	public subscript(_ key: String) -> [String] {
-		return get(key).map { String(bytes: $0, encoding: .utf8) ?? "" }
 	}
 	
 	mutating func build() {
