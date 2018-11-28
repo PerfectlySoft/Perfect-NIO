@@ -400,7 +400,7 @@ public extension Routes {
 	func unwrap<U, NewOut>(_ call: @escaping (U) throws -> NewOut) -> Routes<InType, NewOut> where OutType == Optional<U> {
 		return map {
 			guard let unwrapped = $0 else {
-				throw TerminationType.criteriaFailed
+				throw HTTPOutputError(status: .internalServerError, description: "Assertion failed")
 			}
 			return try call(unwrapped)
 		}

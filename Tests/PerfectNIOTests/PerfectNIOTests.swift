@@ -214,10 +214,10 @@ final class PerfectNIOTests: XCTestCase {
 		}
 		do {
 			let route = try root().POST.dir{[
-				$0.1.decode(Foo.self).json(),
-				$0.2.decode(Foo.self) { $1 }.json(),
-				$0.3.decode(Foo.self) { $0 }.json(),
-				]}
+				$0.1.decode(Foo.self),
+				$0.2.decode(Foo.self) { $1 },
+				$0.3.decode(Foo.self) { $0 },
+				]}.json()
 			let server = try route.bind(port: 42000).listen()
 			let foo = Foo(id: UUID(), date: Date())
 			let fooData = Array(try JSONEncoder().encode(foo))
@@ -301,6 +301,51 @@ final class PerfectNIOTests: XCTestCase {
 		}
 	}
 	
+	func testGetRequest1() {
+		do {
+			let route = root().foo { "OK" }.request { $1.path }.text()
+			let server = try route.bind(port: 42000).listen()
+			let req1 = try CURLRequest("http://localhost:42000/foo").perform().bodyString
+			XCTAssertEqual(req1, "/foo")
+			try server.stop().wait()
+		} catch {
+			XCTFail("\(error)")
+		}
+	}
+	
+	func testAsync1() {
+		do {
+			let route = root().async {
+				(req: HTTPRequest, p: EventLoopPromise<String>) in
+				sleep(1)
+				p.succeed(result: "OK")
+				}.text()
+			let server = try route.bind(port: 42000).listen()
+			let req1 = try CURLRequest("http://localhost:42000/").perform().bodyString
+			XCTAssertEqual(req1, "OK")
+			try server.stop().wait()
+		} catch {
+			XCTFail("\(error)")
+		}
+	}
+	
+	func testAsync2() {
+		struct MyError: Error {}
+		do {
+			let route = root().async {
+				(req: HTTPRequest, p: EventLoopPromise<String>) in
+				sleep(1)
+				p.fail(error: MyError())
+				}.text()
+			let server = try route.bind(port: 42000).listen()
+			defer { try! server.stop().wait() }
+			_ = try CURLRequest("http://localhost:42000/", .failOnError).perform()
+			XCTAssert(false)
+		} catch {
+			XCTAssert(true)
+		}
+	}
+	
 	func testStream() {
 		do {
 			let route = root().stream {
@@ -322,12 +367,23 @@ final class PerfectNIOTests: XCTestCase {
 		}
 	}
 	
-	func testScratch() {
+	func testUnwrap() {
 		do {
-			
-		} catch {}
+			let route = try root().dir {[
+				$0.a { nil },
+				$0.b { "OK" }
+				]}.unwrap { $0 }.text()
+			let server = try route.bind(port: 42000).listen()
+			let req1 = try CURLRequest("http://localhost:42000/b").perform().bodyString
+			XCTAssertEqual(req1, "OK")
+			let req2 = try CURLRequest("http://localhost:42000/a").perform()
+			XCTAssertEqual(req2.responseCode, 500)
+			try server.stop().wait()
+		} catch {
+			XCTFail("\(error)")
+		}
 	}
-	
+		
     static var allTests = [
 		("testRoot1", testRoot1),
 		("testRoot2", testRoot2),
@@ -345,6 +401,9 @@ final class PerfectNIOTests: XCTestCase {
 		("testQueryDecoder", testQueryDecoder),
 		("testQueryDecoderSpeed", testQueryDecoderSpeed),
 		("testTLS1", testTLS1),
+		("testGetRequest1", testGetRequest1),
+		("testAsync1", testAsync1),
+		("testAsync2", testAsync2),
 		("testStream", testStream),
 		("testQueryDecoder", testQueryDecoder),
     ]

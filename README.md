@@ -123,6 +123,10 @@ let route = try root { $0.path }.v1.dir {[
 
 The above produces the following routes: `/v1/upper` and `/v1/lower`.
 
+### HTTP Method
+
+.GET and such. write me
+
 ### Route Operations
 
 A variety of operations can be applied to a route. These operations include:
@@ -153,7 +157,7 @@ let route = try root().dir {[
 ```
 
 #### ext
-Apply a file extension to the routes
+Apply a file extension to the routes.
 
 Definitions:
 
@@ -188,8 +192,10 @@ let route = try root().dir(
 			fooRoute.ext("txt").text())
 ```
 
+This will produce the routes `/foo.json` and `/foo.txt`.
+
 #### wild
-Apply a wildcard path segment
+Apply a wildcard path segment.
 
 Definitions:
 
@@ -208,8 +214,28 @@ public extension Routes {
 Example:
 
 ```swift
-
+let route = root().wild { $1 }.foo.text()
 ```
+
+Above, the route `/*/foo` is created. The "*" can be any string, which is then echoed back to the client.
+
+WIldcard path components can also be given a name. This will make the component available through the `HTTPRequest.uriVariables` property, or for use during Decodable `decode` operations.
+
+Example:
+
+```swift
+struct Req: Codable {
+	let id: UUID
+	let action: String
+}
+let route = root().v1
+	.wild(name: "id")
+	.wild(name: "action")
+	.decode(Req.self) { return "\($1.id) - \($1.action)" }
+	.text()
+```
+
+The above creates the route `/v1/*/*`. The "id" and "action" wildcards are saved and used during decoding of the `Req` object. The `Req` properties are then echoed back to the client.
 
 #### trailing
 Apply a trailing wildcard path segment
@@ -228,11 +254,15 @@ public extension Routes {
 Example:
 
 ```swift
-
+let route = root().foo.trailing { $1 }.text()
 ```
 
+The route `/foo/**` is created, with "**" matching any subsequent path components. The remaining path components String is available as the second argument (the first argument is still the current `HTTPRequest` object), and is then echoed back to the client. If a client accessed the URI `/foo/OK/OK`, the String "OK/OK" would be made available as the trailing wildcard value.
+
 #### request
-Access the HTTPRequest object
+Access the HTTPRequest object. 
+
+While all routes start off by receiving the current HTTPRequest object, it can often be more convenient to begin passing other values down your route pipeline but then go back to the request object for some cause.
 
 Definitions:
 
@@ -246,11 +276,13 @@ public extension Routes {
 Example:
 
 ```swift
-
+let route = root().foo { "OK" }.request { $1.path }.text()
 ```
 
+This route URI is `/foo`. It echos back the request path by first discarding the HTTPRequest but then grabbing it again using the `request` func. The request is always provided as the second argument.
+
 #### readBody
-Read the client body data
+Read the client body data and deliver it to the provided callback.
 
 Definitions:
 
@@ -263,11 +295,21 @@ public extension Routes {
 Example:
 
 ```swift
-
+let route = root().POST.readBody {
+	(req: HTTPRequest, content: HTTPRequestContentType) -> String in
+	switch content {
+	case .urlForm: return "url-encoded"
+	case .multiPartForm: return "multi-part"
+	case .other: return "other"
+	case .none:	return "none"
+	}
+}.text()
 ```
 
+This example accepts a POST request at `/`. It reads the submitted body and returns a String describing what type the data was.
+
 #### statusCheck
-Assert some condition by returning either 'OK' (200..<300 status code) or failing
+Assert some condition by returning either 'OK' (200..<300 status code) or failing.
 
 Definitions:
 
@@ -285,11 +327,24 @@ public extension Routes {
 Example:
 
 ```swift
-
+let route = try root().dir {[
+	$0.a,
+	$0.b
+]}.statusCheck {
+	req in
+	guard req.path != "/b" else {
+		return .internalServerError
+	}
+	return .ok
+}.map { req in "OK" }.text()
 ```
 
+This route will serve the URIs `/a` and `/b`. However, the request will be deliberately failed with `.internalServerError` if the `/b` URI is accessed. After the function given to `statusCheck` is called, the route continues with the previous value. You can see this in the call to `map` where its first parameter reverts back to the current request after the status check.
+
 #### decode
-Decode the client body as a Decodable type
+Read and decode the client body as a Decodable object.
+
+Decode offers a few variants to fit different use cases.
 
 Definitions:
 
@@ -315,11 +370,21 @@ public extension Routes {
 Example:
 
 ```swift
-
+struct Foo: Codable {
+	let id: UUID
+	let date: Date
+}
+let route = try root().POST.dir{[
+	$0.1.decode(Foo.self),
+	$0.2.decode(Foo.self) { $1 },
+	$0.3.decode(Foo.self) { $0 },
+]}.json()
 ```
 
+This example will serve the URIs `/1`, `/2`, and `/3`. It decodes the POST body in three different ways. #1 decodes the body and returns it as the new value (discarding the HTTPRequest). #2 decodes the body and calls the closure with the previous value, the HTTPRequest, and with the newly decoded Foo object. This case simply returns the Foo as the new value. #3 decodes the body and accepts it in a closure which accepts only one argument. This also is simply returned as the new value. Finally, regardless of which URI was hit, the value is converted to json and returns to the client.
+
 #### unwrap
-Unwrap an Optional value, or fail the request if the value is nil
+Unwrap an Optional value, or fail the request if the value is nil.
 
 Definitions:
 
@@ -335,11 +400,18 @@ public extension Routes {
 Example:
 
 ```swift
-
+let route = try root().dir {[
+	$0.a { nil },
+	$0.b { "OK" }
+]}.unwrap { $0 }.text()
 ```
 
+The above creates `/a` and `/b`. `/a` returns a nil `String?` while `/b` returns "OK". Either route's value will go through the `unwrap` func. If the value is nil, the request will be failed with an `.internalServerError`. (KRJ: address this. needs to be more flexible wrt response status code.)
+
 #### async
-Execute a task asynchronously, out of the NIO event loop
+Execute a task asynchronously, out of the NIO event loop.
+
+When performing lengthy or blocking operations, such as external URL requests or database operations, it is vital that the operation be moved out of the NIO event loop. This `async` func lets you do just that. The activity moves into a new thread out of the NIO event loop within which you have free reign. When your activity has completed, signal the provided EventLoopPromise with your return value by calling either `success` or `fail`.
 
 Definitions:
 
@@ -354,11 +426,17 @@ public extension Routes {
 Example:
 
 ```swift
-
+let route = root().async {
+	(req: HTTPRequest, p: EventLoopPromise<String>) in
+	sleep(1)
+	p.succeed(result: "OK")
+}.text()
 ```
 
+The above spins off an asynchronous activity (in this case, sleeping for 1 second) and then signals that it is complete. The value that it submits to the promise, "OK", is sent to the client.
+
 #### stream
-Stream data to the client
+Stream data to the client.
 
 Definitions:
 
@@ -374,11 +452,22 @@ public extension Routes {
 Example:
 
 ```swift
-
+let route = root().stream {
+	req, token in
+	do {
+		for i in 0..<16 {
+			let toSend = String(repeating: "\(i % 10)", count: 1024)
+			try token.push(Array(toSend.utf8))
+		}
+		token.complete()
+	} catch {}
+}
 ```
 
+This example streams 16k worth of data to the client in chunks of 1k bytes. the closure is called with a `StreamToken` as the second argument. This token can be used to send data to the client or complete the request. The sending function is run in a thread outside of the NIO event loop.
+
 #### text
-Use a `CustomStringConvertible` as the output with a text/plain content type
+Use a `CustomStringConvertible` as the output with a text/plain content type.
 
 Definitions:
 
@@ -391,11 +480,13 @@ public extension Routes where OutType: CustomStringConvertible {
 Example:
 
 ```swift
-
+let route = root { 1 }.text()
 ```
 
+Above, the route `/` is created which serves the stringified number 1.
+
 #### json
-Use an `Encodable` as the output with the application/json content type
+Use an `Encodable` as the output with the application/json content type.
 
 Definitions:
 
@@ -408,13 +499,14 @@ public extension Routes where OutType: Encodable {
 Example:
 
 ```swift
-
+struct Foo: Codable {
+	let id: UUID
+	let date: Date
+}
+let route = root().foo { Foo(id: UUID(), date: Date()) }.json()
 ```
 
-
-### HTTP Method
-
-.GET and such
+This example create a route `/foo` which returns a Foo object. The Foo is converted to JSON and sent to the client.
 
 ### Reference
 
