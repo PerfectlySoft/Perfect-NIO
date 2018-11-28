@@ -508,6 +508,14 @@ let route = root().foo { Foo(id: UUID(), date: Date()) }.json()
 
 This example create a route `/foo` which returns a Foo object. The Foo is converted to JSON and sent to the client.
 
+*TBD:*
+
+* Static file output
+* Mustache output
+* Compression
+* Logging
+
+
 ### Reference
 
 <a name="root"></a>
