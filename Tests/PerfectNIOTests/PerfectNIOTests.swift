@@ -383,7 +383,7 @@ final class PerfectNIOTests: XCTestCase {
 			XCTFail("\(error)")
 		}
 	}
-		
+	
     static var allTests = [
 		("testRoot1", testRoot1),
 		("testRoot2", testRoot2),

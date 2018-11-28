@@ -125,7 +125,26 @@ The above produces the following routes: `/v1/upper` and `/v1/lower`.
 
 ### HTTP Method
 
-.GET and such. write me
+Unless otherwise indicated, a route will serve for any HTTP method (GET, POST, etc.). Calling one of the method properties on a route will force it to serve only with the method indicated. 
+
+```swift
+let route = try root().dir {[
+	$0.GET.foo1 { "GET OK" },
+	$0.POST.foo2 { "POST OK" },
+]}.text()
+```
+
+Above, two routes are added, both with a URI of `/`. However, one accepts only GET and the other only POST.
+
+If you wish a route to serve more than one HTTP method, the `method` func will facilitate this.
+
+```swift
+let route = root().method(.GET, .POST).foo { "GET or POST OK" }.text()
+```
+
+This will creat a route `/foo` which will answer to either GET or POST.
+
+Applying a method like this to routes which have already had methods applied to them will remove the old method and apply the new.
 
 ### Route Operations
 
@@ -640,16 +659,65 @@ public struct StreamToken {
 #### HTTPRequestContentType
 
 ```swift
+/// Client content which has been read and parsed (if needed).
 public enum HTTPRequestContentType {
-	case none,
-		multiPartForm(MimeReader),
-		urlForm(QueryDecoder),
-		other([UInt8])
+	/// There was no content provided by the client.
+	case none
+	/// A multi-part form/file upload.
+	case multiPartForm(MimeReader)
+	/// A url-encoded form.
+	case urlForm(QueryDecoder)
+	/// Some other sort of content.
+	case other([UInt8])
+}
+```
+
+<a name="listeningroutes"></a>
+#### ListeningRoutes
+
+```swift
+/// Routes which have been bound to a port and have started listening for connections.
+public protocol ListeningRoutes {
+	/// Stop listening for requests
+	@discardableResult
+	func stop() -> ListeningRoutes
+	/// Wait, perhaps forever, until the routes have stopped listening for requests.
+	func wait() throws
+}
+```
+
+<a name="boundroutes"></a>
+#### BoundRoutes
+
+```swift
+/// Routes which have been bound to a port but are not yet listening for requests.
+public protocol BoundRoutes {
+	/// The port
+	var port: Int { get }
+	/// The address
+	var address: String { get }
+	/// Start listening
+	func listen() throws -> ListeningRoutes
+}
+```
+
+<a name="methods"></a>
+#### HTTP Methods
+
+```swift
+public extension Routes {
+	var GET: Routes<InType, OutType> { return method(.GET) }
+	var POST: Routes { return method(.POST) }
+	var PUT: Routes { return method(.PUT) }
+	var DELETE: Routes { return method(.DELETE) }
+	var OPTIONS: Routes { return method(.OPTIONS) }
+	func method(_ method: HTTPMethod, _ methods: HTTPMethod...) -> Routes
 }
 ```
 
 <a name="usage"></a>
 ### Package.swift Usage
+
 In your Package.swift:
 ```swift
 .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", .branch("master"))

@@ -10,12 +10,16 @@ import NIOHTTP1
 import NIOOpenSSL
 import Foundation
 
-
+/// Client content which has been read and parsed (if needed).
 public enum HTTPRequestContentType {
-	case none,
-		multiPartForm(MimeReader),
-		urlForm(QueryDecoder),
-		other([UInt8])
+	/// There was no content provided by the client.
+	case none
+	/// A multi-part form/file upload.
+	case multiPartForm(MimeReader)
+	/// A url-encoded form.
+	case urlForm(QueryDecoder)
+	/// Some other sort of content.
+	case other([UInt8])
 }
 
 public protocol HTTPRequest {
@@ -33,15 +37,22 @@ public protocol HTTPRequest {
 	func readContent() -> EventLoopFuture<HTTPRequestContentType>
 }
 
+/// Routes which have been bound to a port and have started listening for connections.
 public protocol ListeningRoutes {
+	/// Stop listening for requests
 	@discardableResult
 	func stop() -> ListeningRoutes
+	/// Wait, perhaps forever, until the routes have stopped listening for requests.
 	func wait() throws
 }
 
+/// Routes which have been bound to a port but are not yet listening for requests.
 public protocol BoundRoutes {
+	/// The port
 	var port: Int { get }
+	/// The address
 	var address: String { get }
+	/// Start listening
 	func listen() throws -> ListeningRoutes
 }
 
