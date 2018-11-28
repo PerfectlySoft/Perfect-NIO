@@ -8,16 +8,25 @@
 import Foundation
 import NIOHTTP1
 
+/// A bit of output for the client
 public protocol HTTPOutput {
+	/// Optional HTTP status
 	var status: HTTPResponseStatus? { get }
+	/// Optional HTTP headers
 	var headers: HTTPHeaders? { get }
+	/// Optional body data
 	var body: [UInt8]? { get }
 }
 
+/// Output which can be thrown
 public struct HTTPOutputError: HTTPOutput, Error {
+	/// HTTP status. This will not be nil, though it is optional to comply with the protocol.
 	public let status: HTTPResponseStatus?
+	/// Optional HTTP Headers
 	public let headers: HTTPHeaders?
+	/// Any body data for the response
 	public let body: [UInt8]?
+	/// Construct a HTTPOutputError
 	public init(status: HTTPResponseStatus,
 				headers: HTTPHeaders? = nil,
 				body: [UInt8]? = nil) {
@@ -25,6 +34,7 @@ public struct HTTPOutputError: HTTPOutput, Error {
 		self.headers = headers
 		self.body = body
 	}
+	/// Construct a HTTPOutputError with a simple text message
 	public init(status: HTTPResponseStatus, description: String) {
 		let chars = Array(description.utf8)
 		self.status = status
@@ -33,6 +43,7 @@ public struct HTTPOutputError: HTTPOutput, Error {
 	}
 }
 
+/// JSON output from an Encodable
 public struct JSONOutput<E: Encodable>: HTTPOutput {
 	public var status: HTTPResponseStatus?
 	public var headers: HTTPHeaders? = HTTPHeaders([("content-type", "application/json")])
@@ -44,6 +55,7 @@ public struct JSONOutput<E: Encodable>: HTTPOutput {
 	}
 }
 
+/// Plain text output from a CustomStringConvertible
 public struct TextOutput<C: CustomStringConvertible>: HTTPOutput {
 	public var status: HTTPResponseStatus?
 	public var headers: HTTPHeaders? = HTTPHeaders([("content-type", "text/plain")])
@@ -55,6 +67,7 @@ public struct TextOutput<C: CustomStringConvertible>: HTTPOutput {
 	}
 }
 
+/// Raw byte output
 public struct BytesOutput: HTTPOutput {
 	public var status: HTTPResponseStatus?
 	public var headers: HTTPHeaders?
@@ -68,12 +81,14 @@ public struct BytesOutput: HTTPOutput {
 	}
 }
 
+/// Convert Encodable to JSON output
 public extension Routes where OutType: Encodable {
 	func json() -> Routes<InType, HTTPOutput> {
 		return map { try JSONOutput($0) }
 	}
 }
 
+/// Converts CustomStringConvertible to plain text output
 public extension Routes where OutType: CustomStringConvertible {
 	func text() -> Routes<InType, HTTPOutput> {
 		return map { TextOutput($0) }

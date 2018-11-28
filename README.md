@@ -527,6 +527,16 @@ let route = root().foo { Foo(id: UUID(), date: Date()) }.json()
 
 This example create a route `/foo` which returns a Foo object. The Foo is converted to JSON and sent to the client.
 
+### HTTPOutput
+
+Considering a complete set of routes as a function, it would look like:
+
+`(HTTPRequest) -> HTTPOutput`
+
+<a href="httpoutput">`HTTPOutput`</a> is a protocol which can optionally set the HTTP response status, headers and body data. Several concrete HTTPOutput implementations are provided for you, but you can add your own custom output by implimemnting the protocol and returning your object.
+
+Built-in HTTPOutput types include `HTTPOutputError`, which can be `throw`n, JSONOutput, TextOutput, and BytesOutput.
+
 *TBD:*
 
 * Static file output
@@ -634,9 +644,13 @@ public enum RouteError: Error, CustomStringConvertible {
 #### HTTPOutput
 
 ```swift
+/// A bit of output for the client
 public protocol HTTPOutput {
+	/// Optional HTTP status
 	var status: HTTPResponseStatus? { get }
+	/// Optional HTTP headers
 	var headers: HTTPHeaders? { get }
+	/// Optional body data
 	var body: [UInt8]? { get }
 }
 ```
