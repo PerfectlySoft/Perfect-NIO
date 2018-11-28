@@ -236,6 +236,7 @@ public extension Routes {
 		return applyPaths { $0 + ext }
 	}
 	/// Adds the indicated file extension to the route set.
+	/// Optionally set the response's content type.
 	/// The given function accepts the input value and returns a new value.
 	func ext<NewOut>(_ ext: String,
 					  contentType: String? = nil,
@@ -256,8 +257,8 @@ public extension Routes {
 }
 
 public extension Routes {
-	/// Adds a wild-card path component to the route set.
-	/// The given function accepts the input value and the value for that wild-card path component, as given by the HTTP client,
+	/// Adds a wildcard path component to the route set.
+	/// The given function accepts the input value and the value for that wildcard path component, as given by the HTTP client,
 	/// and returns a new value.
 	func wild<NewOut>(_ call: @escaping (OutType, String) throws -> NewOut) -> Routes<InType, NewOut> {
 		return apply(
@@ -271,8 +272,8 @@ public extension Routes {
 			}
 		)
 	}
-	/// Adds a wild-card path component to the route set.
-	/// Gives the wild-card path component a variable name and the path component value is added as a request urlVariable.
+	/// Adds a wildcard path component to the route set.
+	/// Gives the wildcard path component a variable name and the path component value is added as a request urlVariable.
 	func wild(name: String) -> Routes {
 		return apply(
 			paths: {$0.appending(component: "*")},
@@ -285,7 +286,7 @@ public extension Routes {
 			}
 		)
 	}
-	/// Adds a trailing-wild-card to the route set.
+	/// Adds a trailing-wildcard to the route set.
 	/// The given function accepts the input value and the value for the remaining path components, as given by the HTTP client,
 	/// and returns a new value.
 	func trailing<NewOut>(_ call: @escaping (OutType, String) throws -> NewOut) -> Routes<InType, NewOut> {

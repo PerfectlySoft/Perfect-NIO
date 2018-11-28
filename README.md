@@ -98,30 +98,329 @@ The above creates two routes which can be accessed at the URIs `/v1/hello` and `
 
 Dir will ensure that you are not adding any duplicate routes and will throw an Error if you are.
 
+Dir can be called and passed either a variadic number of routes, an array of routes, or a closure which accepts a stand-in route and returns an array of routes to append. Let's look closer at this last case.
 
+```swift
+let foos = try root().v1.dir{[
+	$0.foo1 { "OK1" },
+	$0.foo2 { "OK2" },
+	$0.foo3 { "OK3" },
+]}.text()
+```
+
+This produces the following routes: `/v1/foo1`, `/v1/foo2`, and `/v1/foo3`, which each have the `text()` func applied to them.
+
+It's important to note that because routes are strongly typed, all routes that are passed to `dir` must accept whatever type of value the preceeding function returns. Any misuse will be caught at compilation time.
+
+The following case passes the current request's `path` URI to two different routes which each modify the value in some way and then pass it down the line.
+
+```swift
+let route = try root { $0.path }.v1.dir {[
+	$0.upper { $0.uppercased() },
+	$0.lower { $0.lowercased() }
+]}.text()			
+```
+
+The above produces the following routes: `/v1/upper` and `/v1/lower`.
 
 ### Route Operations
 
 A variety of operations can be applied to a route. These operations include:
 
-* map - transform an output in some way producing a new output or a sequence of output values
-* ext - apply a file extension to the routes
-* wild - apply a wildcard path segment
-* trailing - apple a trailing wildcard path segment
-* request - access the HTTPRequest object
-* readBody - ready the client body data
-* statusCheck - assert some condition by returning either 'OK' (200..<300 status code) or failing
-* decode - decode the client body as a Decodable type
-* unwrap - unwrap an Optional value, or fail the request if the value is nil
-* async - execute a task asynchronously, out of the NIO event loop
-* stream - stream data to the client
-* text - use a `CustomStringConvertible` as the output with a text/plain content type
-* json - use an `Encodable` as the output with the appllication/json content type
+#### map
+Transform an output in some way producing a new output or a sequence of output values.
+
+Definitions:
+
+```swift
+public extension Routes {
+	/// Add a function mapping the input to the output.
+	func map<NewOut>(_ call: @escaping (OutType) throws -> NewOut) -> Routes<InType, NewOut>
+	/// Add a function mapping the input to the output.
+	func map<NewOut>(_ call: @escaping () throws -> NewOut) -> Routes<InType, NewOut>
+	/// Map the values of a Collection to a new Array.
+	func map<NewOut>(_ call: @escaping (OutType.Element) throws -> NewOut) -> Routes<InType, Array<NewOut>> where OutType: Collection 
+}
+```
+
+Example:
+
+```swift
+let route = try root().dir {[
+	$0.a { 1 }.map { "\($0)" }.text(),
+	$0.b { [1,2,3] }.map { (i: Int) -> String in "\(i)" }.json()
+]}
+```
+
+#### ext
+Apply a file extension to the routes
+
+Definitions:
+
+```swift
+public extension Routes {
+	/// Adds the indicated file extension to the route set.
+	func ext(_ ext: String) -> Routes
+	/// Adds the indicated file extension to the route set.
+	/// Optionally set the response's content type.
+	/// The given function accepts the input value and returns a new value.
+	func ext<NewOut>(_ ext: String,
+					  contentType: String? = nil,
+					  _ call: @escaping (OutType) throws -> NewOut) -> Routes<InType, NewOut>
+}
+```
+
+Example:
+
+The following returns a `Foo` object to the client and makes the object available as either `json` or `text` by adding an appropriate file extension to the route URI.
+
+```swift
+struct Foo: Codable, CustomStringConvertible {
+	var description: String {
+		return "foo-data \(id)/\(date)"
+	}
+	let id: UUID
+	let date: Date
+}
+let fooRoute = root().foo { Foo(id: UUID(), date: Date()) }
+let route = try root().dir(
+			fooRoute.ext("json").json(),
+			fooRoute.ext("txt").text())
+```
+
+#### wild
+Apply a wildcard path segment
+
+Definitions:
+
+```swift
+public extension Routes {
+	/// Adds a wildcard path component to the route set.
+	/// The given function accepts the input value and the value for that wildcard path component, as given by the HTTP client,
+	/// and returns a new value.
+	func wild<NewOut>(_ call: @escaping (OutType, String) throws -> NewOut) -> Routes<InType, NewOut>
+	/// Adds a wildcard path component to the route set.
+	/// Gives the wildcard path component a variable name and the path component value is added as a request urlVariable.
+	func wild(name: String) -> Routes
+}
+```
+
+Example:
+
+```swift
+
+```
+
+#### trailing
+Apply a trailing wildcard path segment
+
+Definitions:
+
+```swift
+public extension Routes {
+	/// Adds a trailing-wildcard to the route set.
+	/// The given function accepts the input value and the value for the remaining path components, as given by the HTTP client,
+	/// and returns a new value.
+	func trailing<NewOut>(_ call: @escaping (OutType, String) throws -> NewOut) -> Routes<InType, NewOut>
+}
+```
+
+Example:
+
+```swift
+
+```
+
+#### request
+Access the HTTPRequest object
+
+Definitions:
+
+```swift
+public extension Routes {
+	/// Adds the current HTTPRequest as a parameter to the function.
+	func request<NewOut>(_ call: @escaping (OutType, HTTPRequest) throws -> NewOut) -> Routes<InType, NewOut> 
+}
+```
+
+Example:
+
+```swift
+
+```
+
+#### readBody
+Read the client body data
+
+Definitions:
+
+```swift
+public extension Routes {
+	func readBody<NewOut>(_ call: @escaping (OutType, HTTPRequestContentType) throws -> NewOut) -> Routes<InType, NewOut>
+}
+```
+
+Example:
+
+```swift
+
+```
+
+#### statusCheck
+Assert some condition by returning either 'OK' (200..<300 status code) or failing
+
+Definitions:
+
+```swift
+public extension Routes {
+	/// The caller can inspect the given input value and choose to return an HTTP error code.
+	/// If any code outside of 200..<300 is return the request is aborted.
+	func statusCheck(_ handler: @escaping (OutType) throws -> HTTPResponseStatus) -> Routes<InType, OutType>
+	/// The caller can choose to return an HTTP error code.
+	/// If any code outside of 200..<300 is return the request is aborted.
+	func statusCheck(_ handler: @escaping () throws -> HTTPResponseStatus) -> Routes<InType, OutType>
+}
+```
+
+Example:
+
+```swift
+
+```
+
+#### decode
+Decode the client body as a Decodable type
+
+Definitions:
+
+```swift
+public extension Routes {
+	/// Read the client content body and then attempt to decode it as the indicated `Decodable` type.
+	/// Both the original input value and the newly decoded object are delivered to the provided function.
+	func decode<Type: Decodable, NewOut>(_ type: Type.Type,
+										 _ handler: @escaping (OutType, Type) throws -> NewOut) -> Routes<InType, NewOut>
+	/// Read the client content body and then attempt to decode it as the indicated `Decodable` type.
+	/// The newly decoded object is delivered to the provided function.
+	func decode<Type: Decodable, NewOut>(_ type: Type.Type,
+										 _ handler: @escaping (Type) throws -> NewOut) -> Routes<InType, NewOut>
+	/// Read the client content body and then attempt to decode it as the indicated `Decodable` type.
+	/// The newly decoded object becomes the route set's new output value.
+	func decode<Type: Decodable>(_ type: Type.Type) -> Routes<InType, Type>
+	/// Decode the request body into the desired type, or throw an error.
+	/// This function would be used after the content body has already been read.
+	func decode<A: Decodable>(_ type: A.Type, content: HTTPRequestContentType) throws -> A
+}
+```
+
+Example:
+
+```swift
+
+```
+
+#### unwrap
+Unwrap an Optional value, or fail the request if the value is nil
+
+Definitions:
+
+```swift
+public extension Routes {
+	/// If the output type is an `Optional`, this function permits it to be safely unwraped.
+	/// If it can not be unwrapped the request is terminated.
+	/// The provided function is called with the unwrapped value.
+	func unwrap<U, NewOut>(_ call: @escaping (U) throws -> NewOut) -> Routes<InType, NewOut> where OutType == Optional<U>
+}
+```
+
+Example:
+
+```swift
+
+```
+
+#### async
+Execute a task asynchronously, out of the NIO event loop
+
+Definitions:
+
+```swift
+public extension Routes {
+	/// Run the call asynchronously on a non-event loop thread.
+	/// Caller must succeed or fail the given promise to continue the request.
+	func async<NewOut>(_ call: @escaping (OutType, EventLoopPromise<NewOut>) -> ()) -> Routes<InType, NewOut>
+}
+```
+
+Example:
+
+```swift
+
+```
+
+#### stream
+Stream data to the client
+
+Definitions:
+
+```swift
+public extension Routes {
+	/// Stream bytes to the client. Caller should use the `StreamToken` to send data in chunks.
+	/// Caller must call `StreamToken.complete()` when done.
+	/// Response data is always sent using chunked encoding.
+	func stream(_ call: @escaping (OutType, StreamToken) -> ()) -> Routes<InType, HTTPOutput>
+}
+```
+
+Example:
+
+```swift
+
+```
+
+#### text
+Use a `CustomStringConvertible` as the output with a text/plain content type
+
+Definitions:
+
+```swift
+public extension Routes where OutType: CustomStringConvertible {
+	func text() -> Routes<InType, HTTPOutput>
+}
+```
+
+Example:
+
+```swift
+
+```
+
+#### json
+Use an `Encodable` as the output with the application/json content type
+
+Definitions:
+
+```swift
+public extension Routes where OutType: Encodable {
+	func json() -> Routes<InType, HTTPOutput>
+}
+```
+
+Example:
+
+```swift
+
+```
+
 
 ### HTTP Method
 
+.GET and such
+
+### Reference
+
 <a name="root"></a>
-### root Ref
+#### root()
+
 ```swift
 /// Create a root route accepting/returning the HTTPRequest.
 public func root() -> Routes<HTTPRequest, HTTPRequest>
@@ -133,8 +432,21 @@ public func root<NewOut>(_ call: @escaping () throws -> NewOut) -> Routes<HTTPRe
 public func root<NewOut>(path: String = "/", _ type: NewOut.Type) -> Routes<NewOut, NewOut>
 ```
 
+<a name="routes"></a>
+#### Routes\<InType, OutType\>
+
+```swift
+/// Main routes object.
+/// Created by calling `root()` or by chaining a function from an existing route.
+public struct Routes<InType, OutType> {
+	// Routes can not be directly instantiated.
+	// All functionality is provided through extensions.
+}
+```
+
 <a name="httprequest"></a>
-### HTTPRequest Ref
+#### HTTPRequest
+
 ```swift
 public protocol HTTPRequest {
 	var method: HTTPMethod { get }
@@ -153,7 +465,7 @@ public protocol HTTPRequest {
 ```
 
 <a name="querydecoder"></a>
-### QueryDecoder Ref
+#### QueryDecoder
 
 ```swift
 public struct QueryDecoder {
@@ -166,7 +478,8 @@ public struct QueryDecoder {
 ```
 
 <a name="dir"></a>
-### dir Ref
+#### dir
+
 ```swift
 /// These extensions append new route sets to an existing set.
 public extension Routes {
@@ -187,6 +500,54 @@ public extension Routes {
 }
 ```
 
+<a name="routeerror"></a>
+#### RouteError
+
+```swift
+/// An error occurring during process of building a set of routes.
+public enum RouteError: Error, CustomStringConvertible {
+	case duplicatedRoutes([String])
+	public var description: String
+}
+```
+
+<a name="httpoutput"></a>
+#### HTTPOutput
+
+```swift
+public protocol HTTPOutput {
+	var status: HTTPResponseStatus? { get }
+	var headers: HTTPHeaders? { get }
+	var body: [UInt8]? { get }
+}
+```
+
+<a name="streamtoken"></a>
+#### StreamToken
+
+```swift
+/// An object given to a content streamer
+public struct StreamToken {
+	/// Push a chunk of bytes to the client.
+	/// An error thrown from this call will generally indicate that the client has closed the connection.
+	public func push(_ bytes: [UInt8]) throws
+	/// Complete the response streaming.
+	public func complete()
+}
+```
+
+<a name="httprequestcontenttype"></a>
+#### HTTPRequestContentType
+
+```swift
+public enum HTTPRequestContentType {
+	case none,
+		multiPartForm(MimeReader),
+		urlForm(QueryDecoder),
+		other([UInt8])
+}
+```
+
 <a name="usage"></a>
 ### Package.swift Usage
 In your Package.swift:
@@ -194,4 +555,4 @@ In your Package.swift:
 .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", .branch("master"))
 ```
 
-Your code may need to `import NIO`, `import NIOHTTP1`, or `import NIOOpenSSL`
+Your code may need to `import PerfectNIO`, `import NIO`, `import NIOHTTP1`, or `import NIOOpenSSL`.
