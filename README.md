@@ -14,7 +14,7 @@
 
 This project is a work in progress and should be considered **alpha quality** until this sentence is removed.
 
-<a href="#usage"> Package.swift Usage</a>
+<a href="#usage">Package.swift Usage</a>
 
 ### Intro
 
@@ -50,6 +50,14 @@ try listeningServer.wait()
 
 The `root` function is used to create a route beginning with `/`. The root is, by default, a function accepting an <a href="#httprequest">`HTTPRequest`</a> and returning an `HTTPRequest`; an identity function. There are a few other variants of the `root` func. These are listed here: <a href="#root">root</a>.
 
+The type of object returned by `root` is a `Routes` object. Routes is defined simply as:
+
+```swift
+public struct Routes<InType, OutType> {}
+```
+
+A `Routes` object encompasses one or more paths with their associated functions. For a particular route, all enclosed functions accept `InType` and return `OutType`.
+
 ### Paths
 
 A route can have additional path components added to it by using Swift 4.2 dynamic member lookup.
@@ -77,7 +85,19 @@ or
 let route = root().path("hello/world") { "Hello, world!" }
 ```
 
-This may be required in cases where your desired path component string conflicts with built-in funcs (*\*list these somewhere simply*) or contains characters which are invalid for Swift identifiers.
+This may be required in cases where your desired path component string conflicts with a built-in func (*\*list these somewhere simply*) or contains characters which are invalid for Swift identifiers. You may also simply prefer it stylistically, or may be using variable path names. These are all good reasons why one might want to use the `path` func over dynamic member lookup.
+
+All further examples in this document use dynamic member lookup.
+
+Note that paths which begin with a number, or consist wholly of numbers, are valid when using dynamic member lookup, even though they would normally not be when used as a property or func. This is a bit of a digression, but, for example:
+
+```swift
+let route = root().1234 { "This is cool" }.text()
+
+struct MyTotallyUnrelatedStruct {
+	func 1234() -> String { ... } // compilation error
+}
+```
 
 ### Combining Routes
 
@@ -454,6 +474,8 @@ let route = root().async {
 
 The above spins off an asynchronous activity (in this case, sleeping for 1 second) and then signals that it is complete. The value that it submits to the promise, "OK", is sent to the client.
 
+It's important to note that subsequent activities for the route will occur on the NIO event loop.
+
 #### stream
 Stream data to the client.
 
@@ -484,6 +506,8 @@ let route = root().stream {
 ```
 
 This example streams 16k worth of data to the client in chunks of 1k bytes. the closure is called with a `StreamToken` as the second argument. This token can be used to send data to the client or complete the request. The sending function is run in a thread outside of the NIO event loop.
+
+A call to `stream` will make the return type an HTTPOutput, which is to say `stream` can be the final operation/element in a route.
 
 #### text
 Use a `CustomStringConvertible` as the output with a text/plain content type.
@@ -533,9 +557,16 @@ Considering a complete set of routes as a function, it would look like:
 
 `(HTTPRequest) -> HTTPOutput`
 
-<a href="httpoutput">`HTTPOutput`</a> is a protocol which can optionally set the HTTP response status, headers and body data. Several concrete HTTPOutput implementations are provided for you, but you can add your own custom output by implimemnting the protocol and returning your object.
+<a href="httpoutput">`HTTPOutput`</a> is a protocol which can optionally set the HTTP response status, headers and body data. Several concrete HTTPOutput implementations are provided for you, but you can add your own custom output by implementing the protocol and returning your object.
 
-Built-in HTTPOutput types include `HTTPOutputError`, which can be `throw`n, JSONOutput, TextOutput, and BytesOutput.
+Built-in HTTPOutput types include `HTTPOutputError`, which can be thrown, JSONOutput, TextOutput, and BytesOutput.
+
+### Caveats
+
+make notes on:
+using diseparate types in `dir`
+ordering of `wild` and `decode` wrt path variables
+doing blocking activities in a non-async func
 
 *TBD:*
 

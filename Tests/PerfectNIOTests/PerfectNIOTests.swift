@@ -7,6 +7,9 @@ import PerfectSQLite
 import PerfectCURL
 @testable import PerfectNIO
 
+protocol APIResponse: Codable {}
+let userCount = 10
+
 final class PerfectNIOTests: XCTestCase {
 	
 	func testRoot1() {
@@ -384,6 +387,55 @@ final class PerfectNIOTests: XCTestCase {
 		}
 	}
 	
+	func testAuthEg() {
+		//let userCount = 10
+		//protocol APIResponse {} - protocol can't be nested. real thing is up top ^
+		struct AuthenticatedRequest {
+			init?(_ request: HTTPRequest) {
+				// would check auth and return nil if invalid
+			}
+		}
+		struct User: Codable, APIResponse {
+			let id: UUID
+		}
+		struct FriendList: Codable, APIResponse {
+			let users: [User]
+		}
+		struct AppHandlers {
+			static func userInfo(user: User) -> User {
+				// just echo it back
+				return user
+			}
+			static func friendList(for user: User) -> FriendList {
+				// make up some friends
+				return FriendList(users: (0..<userCount).map { _ in User(id: UUID()) })
+			}
+		}
+		
+		let authenticatedRoute = root(AuthenticatedRequest.init)
+			.statusCheck { $0 == nil ? .unauthorized : .ok }
+			.unwrap { $0 }
+		
+		do {
+			let v1Routes = try authenticatedRoute
+				.wild(name: "id")
+				.decode(User.self)
+				.dir {[
+					$0.info(AppHandlers.userInfo).json(),
+					$0.friends(AppHandlers.friendList).json()
+				]}
+			let server = try v1Routes.bind(port: 42000).listen()
+			let uuid = UUID()
+			let req = try CURLRequest("http://localhost:42000/\(uuid.uuidString)/info").perform().bodyJSON(User.self)
+			XCTAssertEqual(req.id, uuid)
+			let req2 = try CURLRequest("http://localhost:42000/\(uuid.uuidString)/friends").perform().bodyJSON(FriendList.self)
+			XCTAssertEqual(req2.users.count, userCount)
+			try server.stop().wait()
+		} catch {
+			XCTFail("\(error)")
+		}
+	}
+	
     static var allTests = [
 		("testRoot1", testRoot1),
 		("testRoot2", testRoot2),
@@ -405,6 +457,8 @@ final class PerfectNIOTests: XCTestCase {
 		("testAsync1", testAsync1),
 		("testAsync2", testAsync2),
 		("testStream", testStream),
+		("testUnwrap", testUnwrap),
+		("testAuthEg", testAuthEg),
 		("testQueryDecoder", testQueryDecoder),
     ]
 }
