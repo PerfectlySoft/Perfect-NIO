@@ -132,7 +132,7 @@ public func root<NewOut>(_ call: @escaping () throws -> NewOut) -> Routes<HTTPRe
 }
 
 /// Create a root route accepting and returning some new value.
-public func root<NewOut>(path: String = "/", _ type: NewOut.Type) -> Routes<NewOut, NewOut> {
+public func root<NewOut>(path: String, _ type: NewOut.Type) -> Routes<NewOut, NewOut> {
 	return .init(.init([path:{$0}]))
 }
 
@@ -247,7 +247,7 @@ public extension Routes {
 			funcs: {
 				$0.thenThrowing {
 					if let c = contentType {
-						$0.state.response.addHeader(name: "content-type", value: c)
+						$0.state.responseHead.headers.add(name: "content-type", value: c)
 					}
 					return RouteValueBox($0.state, try call($0.value))
 				}
@@ -330,7 +330,7 @@ public extension Routes {
 			$0.thenThrowing {
 				box in
 				let status = try handler(box.value)
-				box.state.response.status = status
+				box.state.responseHead.status = status
 				switch status.code {
 				case 200..<300:
 					return box
@@ -374,13 +374,13 @@ public extension Routes {
 	/// Calling the second version of this method, the one accepting a `type: NewOut.Type` as the first parameter,
 	/// can often clarify your intentions to the compiler. If you experience a compilation error with this function, try the other.
 	func dir<NewOut>(_ call: (Routes<OutType, OutType>) throws -> [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
-		return try dir(call(root(OutType.self)))
+		return try dir(call(root(path: "/", OutType.self)))
 	}
 	/// Append new routes to the set given a new output type and a function which receives a route object and returns an array of new routes.
 	/// This permits a sort of shorthand for adding new routes.
 	/// The first `type` argument to this function serves to help type inference.
 	func dir<NewOut>(type: NewOut.Type, _ call: (Routes<OutType, OutType>) -> [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
-		return try dir(call(root(OutType.self)))
+		return try dir(call(root(path: "/", OutType.self)))
 	}
 	/// Append new routes to this set given an array.
 	func dir<NewOut>(_ registries: [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
@@ -400,7 +400,7 @@ public extension Routes {
 	func unwrap<U, NewOut>(_ call: @escaping (U) throws -> NewOut) -> Routes<InType, NewOut> where OutType == Optional<U> {
 		return map {
 			guard let unwrapped = $0 else {
-				throw HTTPOutputError(status: .internalServerError, description: "Assertion failed")
+				throw ErrorOutput(status: .internalServerError, description: "Assertion failed")
 			}
 			return try call(unwrapped)
 		}

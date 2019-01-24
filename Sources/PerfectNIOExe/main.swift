@@ -66,7 +66,7 @@ let create = root().POST.create.decode(CRUDUser.self).db(try crudDB()) {
 let read = root().GET.read.wild {$1}.db(try crudDB()) {
 	id, db throws -> CRUDUser in
 	guard let user = try db.table(CRUDUser.self).where(\CRUDUser.id == id).first() else {
-		throw HTTPOutputError(status: .notFound)
+		throw ErrorOutput(status: .notFound, description: "Not found.")
 	}
 	return user
 }.json()

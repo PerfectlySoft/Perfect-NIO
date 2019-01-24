@@ -81,13 +81,12 @@ func configureHTTPServerPipeline(pipeline: ChannelPipeline, sslContext: NIOOpenS
 }
 
 class NIOBoundRoutes: BoundRoutes {
-	typealias RegistryType = Routes<HTTPRequest, HTTPOutput>
 	private let childGroup: EventLoopGroup
 	let acceptGroup: MultiThreadedEventLoopGroup
 	private let channel: Channel
 	public let port: Int
 	public let address: String
-	init(registry: RegistryType,
+	init(registry: Routes<HTTPRequest, HTTPOutput>,
 		 port: Int,
 		 address: String,
 		 threadGroup: EventLoopGroup?,
@@ -138,6 +137,7 @@ class NIOListeningRoutes: ListeningRoutes {
 	private let f: EventLoopFuture<Void>
 	private static var globalInitialized: Bool = {
 		var sa = sigaction()
+		// !FIX! re-evaluate which of these are required
 	#if os(Linux)
 		sa.__sigaction_handler.sa_handler = SIG_IGN
 	#else

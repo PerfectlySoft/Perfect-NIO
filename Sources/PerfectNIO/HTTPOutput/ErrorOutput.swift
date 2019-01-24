@@ -9,26 +9,12 @@ import Foundation
 import NIOHTTP1
 
 /// Output which can be thrown
-public struct ErrorOutput: HTTPOutput, Error {
-	/// HTTP status. This will not be nil, though it is optional to comply with the protocol.
-	public let status: HTTPResponseStatus?
-	/// Optional HTTP Headers
-	public let headers: HTTPHeaders?
-	/// Any body data for the response
-	public let body: [UInt8]?
-	/// Construct a HTTPOutputError
-	public init(status: HTTPResponseStatus,
-				headers: HTTPHeaders? = nil,
-				body: [UInt8]? = nil) {
-		self.status = status
-		self.headers = headers
-		self.body = body
-	}
-	/// Construct a HTTPOutputError with a simple text message
-	public init(status: HTTPResponseStatus, description: String) {
+public class ErrorOutput: BytesOutput, Error {
+	/// Construct a ErrorOutput with a simple text message
+	public init(status: HTTPResponseStatus, description: String? = nil) {
+		let description = description ?? status.reasonPhrase
 		let chars = Array(description.utf8)
-		self.status = status
-		headers = HTTPHeaders([("content-type", "text/plain"), ("content-length", "\(chars.count)")])
-		body = chars
+		let headers = HTTPHeaders([("content-type", "text/plain"), ("content-length", "\(chars.count)")])
+		super.init(head: HTTPHead(status: status, headers: headers), body: chars)
 	}
 }

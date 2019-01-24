@@ -72,7 +72,7 @@ extension String {
 }
 
 public enum TerminationType: Error {
-	case error(HTTPOutputError)
+	case error(ErrorOutput)
 	case criteriaFailed
 	case internalError
 }

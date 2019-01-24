@@ -9,14 +9,11 @@ import Foundation
 import NIOHTTP1
 
 /// JSON output from an Encodable
-public struct JSONOutput<E: Encodable>: HTTPOutput {
-	public var status: HTTPResponseStatus?
-	public var headers: HTTPHeaders? = HTTPHeaders([("content-type", "application/json")])
-	public var body: [UInt8]?
-	public init(_ encodable: E, status: HTTPResponseStatus? = nil, headers: [(String, String)] = []) throws {
-		self.status = status
-		body = Array(try JSONEncoder().encode(encodable))
-		headers.forEach { self.headers?.add(name: $0.0, value: $0.1) }
+public class JSONOutput<E: Encodable>: BytesOutput {
+	public init(_ encodable: E, head: HTTPHead? = nil) throws {
+		let body = Array(try JSONEncoder().encode(encodable))
+		let useHeaders = HTTPHeaders([("content-type", "application/json")])
+		super.init(head: HTTPHead(headers: useHeaders).merged(with: head), body: body)
 	}
 }
 

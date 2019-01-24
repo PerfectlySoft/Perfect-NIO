@@ -9,14 +9,11 @@ import Foundation
 import NIOHTTP1
 
 /// Plain text output from a CustomStringConvertible
-public struct TextOutput<C: CustomStringConvertible>: HTTPOutput {
-	public var status: HTTPResponseStatus?
-	public var headers: HTTPHeaders? = HTTPHeaders([("content-type", "text/plain")])
-	public var body: [UInt8]?
+public class TextOutput<C: CustomStringConvertible>: BytesOutput {
 	public init(_ c: C, status: HTTPResponseStatus? = nil, headers: [(String, String)] = []) {
-		self.status = status
-		body = Array("\(c)".utf8)
-		headers.forEach { self.headers?.add(name: $0.0, value: $0.1) }
+		let body = Array("\(c)".utf8)
+		let useHeaders = HTTPHeaders([("content-type", "text/plain")] + headers)
+		super.init(head: HTTPHead(status: status, headers: useHeaders), body: body)
 	}
 }
 

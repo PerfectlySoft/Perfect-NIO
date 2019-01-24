@@ -8,28 +8,9 @@
 import NIOHTTP1
 import NIO
 
-class DefaultHTTPOutput: HTTPOutput {
-	var status: HTTPResponseStatus? = .ok
-	var headers: HTTPHeaders? = nil
-	var body: [UInt8]? = nil
-	init(status s: HTTPResponseStatus? = .ok,
-		 headers h: HTTPHeaders? = nil,
-		 body b: [UInt8]? = nil) {
-		status = s
-		headers = h
-		body = b
-	}
-	func addHeader(name: String, value: String) {
-		if nil == headers {
-			headers = HTTPHeaders()
-		}
-		headers?.add(name: name, value: value)
-	}
-}
-
 final class HandlerState {
 	var request: NIOHTTPHandler
-	var response = DefaultHTTPOutput()
+	var responseHead = HTTPHead(status: .ok, headers: HTTPHeaders())
 	var currentComponent: String? {
 		guard range.lowerBound < uri.endIndex else {
 			return nil
