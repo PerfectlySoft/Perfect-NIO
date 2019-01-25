@@ -349,28 +349,29 @@ final class PerfectNIOTests: XCTestCase {
 		}
 	}
 	
-//	func testStream() {
-//		do {
-//			let route = root().stream {
-//				req, token in
-//				do {
-//					for i in 0..<16 {
-//						let toSend = String(repeating: "\(i % 10)", count: 1024)
-//						try token.push(Array(toSend.utf8))
-//					}
-//					token.complete()
-//				} catch {
-//					token.fail(error: error)
-//				}
-//			}
-//			let server = try route.bind(port: 42000).listen()
-//			let req = try CURLRequest("http://localhost:42000/").perform()
-//			XCTAssertEqual(req.bodyString.count, 16384)
-//			try server.stop().wait()
-//		} catch {
-//			XCTFail("\(error)")
-//		}
-//	}
+	func testStream() {
+		do {
+			class StreamOutput: HTTPOutput {
+				var counter = 0
+				override func body(_ p: EventLoopPromise<[UInt8]?>) {
+					if counter > 15 {
+						p.succeed(result: nil)
+					} else {
+						let toSend = String(repeating: "\(counter % 10)", count: 1024)
+						counter += 1
+						p.succeed(result: Array(toSend.utf8))
+					}
+				}
+			}
+			let route = root() { return StreamOutput() as HTTPOutput }
+			let server = try route.bind(port: 42000).listen()
+			let req = try CURLRequest("http://localhost:42000/").perform()
+			XCTAssertEqual(req.bodyString.count, 16384)
+			try server.stop().wait()
+		} catch {
+			XCTFail("\(error)")
+		}
+	}
 	
 	func testCompress1() {
 		do {
