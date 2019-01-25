@@ -28,7 +28,7 @@ public enum HTTPOutputResponseKind {
 /// The response output for the client
 open class HTTPOutput {
 	/// Indicates how the `body` func data, and possibly content-length, should be handled
-	open var kind: HTTPOutputResponseKind = .fixed
+	var kind: HTTPOutputResponseKind = .fixed
 	/// Optional HTTP head
 	open func head(request: HTTPRequestHead) -> HTTPHead? {
 		return nil

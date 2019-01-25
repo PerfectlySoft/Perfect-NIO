@@ -349,10 +349,45 @@ final class PerfectNIOTests: XCTestCase {
 		}
 	}
 	
-	func testStream() {
+	func testStream1() {
 		do {
 			class StreamOutput: HTTPOutput {
 				var counter = 0
+				override init() {
+					super.init()
+					kind = .multi
+				}
+				override func head(request: HTTPRequestHead) -> HTTPHead? {
+					return HTTPHead(headers: HTTPHeaders([("content-length", "16384")]))
+				}
+				override func body(_ p: EventLoopPromise<[UInt8]?>) {
+					if counter > 15 {
+						p.succeed(result: nil)
+					} else {
+						let toSend = String(repeating: "\(counter % 10)", count: 1024)
+						counter += 1
+						p.succeed(result: Array(toSend.utf8))
+					}
+				}
+			}
+			let route = root() { return StreamOutput() as HTTPOutput }
+			let server = try route.bind(port: 42000).listen()
+			let req = try CURLRequest("http://localhost:42000/").perform()
+			XCTAssertEqual(req.bodyString.count, 16384)
+			try server.stop().wait()
+		} catch {
+			XCTFail("\(error)")
+		}
+	}
+	
+	func testStream2() {
+		do {
+			class StreamOutput: HTTPOutput {
+				var counter = 0
+				override init() {
+					super.init()
+					kind = .stream
+				}
 				override func body(_ p: EventLoopPromise<[UInt8]?>) {
 					if counter > 15 {
 						p.succeed(result: nil)
@@ -479,7 +514,9 @@ final class PerfectNIOTests: XCTestCase {
 		("testGetRequest1", testGetRequest1),
 		("testAsync1", testAsync1),
 		("testAsync2", testAsync2),
-//		("testStream", testStream),
+		("testCompress1", testCompress1),
+		("testStream1", testStream1),
+		("testStream2", testStream2),
 		("testUnwrap", testUnwrap),
 		("testAuthEg", testAuthEg),
 		("testQueryDecoder", testQueryDecoder),

@@ -557,7 +557,7 @@ Considering a complete set of routes as a function, it would look like:
 
 `(HTTPRequest) -> HTTPOutput`
 
-<a href="httpoutput">`HTTPOutput`</a> is a protocol which can optionally set the HTTP response status, headers and body data. Several concrete HTTPOutput implementations are provided for you, but you can add your own custom output by implementing the protocol and returning your object.
+<a href="httpoutput">`HTTPOutput`</a> is a base class which can optionally set the HTTP response status, headers and body data. Several concrete HTTPOutput implementations are provided for you, but you can add your own custom output by sub-classing and returning your object.
 
 Built-in HTTPOutput types include `HTTPOutputError`, which can be thrown, JSONOutput, TextOutput, and BytesOutput.
 
@@ -574,7 +574,6 @@ doing blocking activities in a non-async func
 * Mustache output
 * Compression
 * Logging
-
 
 ### Reference
 
@@ -675,14 +674,16 @@ public enum RouteError: Error, CustomStringConvertible {
 #### HTTPOutput
 
 ```swift
-/// A bit of output for the client
-public protocol HTTPOutput {
-	/// Optional HTTP status
-	var status: HTTPResponseStatus? { get }
-	/// Optional HTTP headers
-	var headers: HTTPHeaders? { get }
-	/// Optional body data
-	var body: [UInt8]? { get }
+/// The response output for the client
+open class HTTPOutput {
+	/// Indicates how the `body` func data, and possibly content-length, should be handled
+	var kind: HTTPOutputResponseKind
+	/// Optional HTTP head
+	open func head(request: HTTPRequestHead) -> HTTPHead?
+	/// Produce body data
+	/// Set nil on last chunk
+	/// Call promise.fail upon failure
+	open func body(_ p: EventLoopPromise<[UInt8]?>)
 }
 ```
 
