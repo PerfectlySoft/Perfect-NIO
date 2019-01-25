@@ -62,7 +62,7 @@ public class FileOutput: HTTPOutput {
 		super.init()
 		kind = .fixed
 	}
-	public override func head(request: HTTPRequestHead) -> HTTPHead? {
+	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
 		let eTag = getETag()
 		let size = file.size
 		let contentType = MimeType.forExtension(file.path.filePathExtension)

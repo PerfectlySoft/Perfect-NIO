@@ -41,7 +41,7 @@ open class HTTPOutput {
 	/// Indicates how the `body` func data, and possibly content-length, should be handled
 	var kind: HTTPOutputResponseHint = .fixed
 	/// Optional HTTP head
-	open func head(request: HTTPRequestHead) -> HTTPHead? {
+	open func head(request: HTTPRequestInfo) -> HTTPHead? {
 		return nil
 	}
 	/// Produce body data

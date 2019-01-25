@@ -357,7 +357,7 @@ final class PerfectNIOTests: XCTestCase {
 					super.init()
 					kind = .multi
 				}
-				override func head(request: HTTPRequestHead) -> HTTPHead? {
+				override func head(request: HTTPRequestInfo) -> HTTPHead? {
 					return HTTPHead(headers: HTTPHeaders([("content-length", "16384")]))
 				}
 				override func body(_ p: EventLoopPromise<[UInt8]?>) {

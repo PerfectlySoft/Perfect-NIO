@@ -72,11 +72,12 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 		guard let requestHead = self.head else {
 			return
 		}
+		let requestInfo = HTTPRequestInfo(head: requestHead)
 		guard let fnc = finder[requestHead.method, path] else {
 			
 			// !FIX! routes need pre-request error handlers, 404
 			let error = ErrorOutput(status: .notFound, description: "No route for URI.")
-			let head = HTTPHead(headers: HTTPHeaders()).merged(with: error.head(request: requestHead))
+			let head = HTTPHead(headers: HTTPHeaders()).merged(with: error.head(request: requestInfo))
 			return write(head: head, body: error)
 		}
 		let state = HandlerState(request: self, uri: path)
@@ -84,7 +85,7 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 		let p = try! fnc(f)
 		p.whenSuccess {
 			let body = $0.value
-			let head = state.responseHead.merged(with: body.head(request: requestHead))
+			let head = state.responseHead.merged(with: body.head(request: requestInfo))
 			self.write(head: head, body: body)
 		}
 		p.whenFailure {
@@ -103,7 +104,7 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 			default:
 				body = ErrorOutput(status: .internalServerError, description: "Internal server error: \(error).")
 			}
-			let head = state.responseHead.merged(with: body.head(request: requestHead))
+			let head = state.responseHead.merged(with: body.head(request: requestInfo))
 			self.write(head: head, body: body)
 		}
 	}

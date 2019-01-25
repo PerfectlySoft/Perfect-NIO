@@ -78,9 +78,9 @@ public class CompressedOutput: HTTPOutput {
 		super.init()
 		kind = .stream
 	}
-	public override func head(request head: HTTPRequestHead) -> HTTPHead? {
-		let sourceHead = sourceContent.head(request: head)
-		guard let algo = compressionAlgorithm(head) else {
+	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
+		let sourceHead = sourceContent.head(request: request)
+		guard let algo = compressionAlgorithm(request.head) else {
 			return sourceHead
 		}
 		guard let contentLengthStr = sourceHead?.headers.first(where: { $0.name.lowercased() == "content-length" })?.value,

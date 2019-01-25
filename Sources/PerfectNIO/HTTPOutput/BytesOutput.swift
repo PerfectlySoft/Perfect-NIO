@@ -30,7 +30,7 @@ public class BytesOutput: HTTPOutput {
 		self.head = HTTPHead(headers: headers).merged(with: head)
 		bodyBytes = body
 	}
-	public override func head(request: HTTPRequestHead) -> HTTPHead? {
+	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
 		return head
 	}
 	public override func body(_ p: EventLoopPromise<[UInt8]?>) {

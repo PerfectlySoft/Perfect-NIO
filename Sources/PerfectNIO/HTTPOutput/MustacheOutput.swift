@@ -38,7 +38,7 @@ public class MustacheOutput: HTTPOutput {
 			("Content-Length", "\(body.count)")
 			]))
 	}
-	public override func head(request: HTTPRequestHead) -> HTTPHead? {
+	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
 		return head
 	}
 	public override func body(_ p: EventLoopPromise<[UInt8]?>) {
