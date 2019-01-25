@@ -1,8 +1,19 @@
 //
 //  HTTPOutput.swift
-//  HTTPCRUDLib
+//  PerfectNIO
 //
 //  Created by Kyle Jessup on 2018-11-19.
+//
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the Perfect.org open source project
+//
+// Copyright (c) 2015 - 2019 PerfectlySoft Inc. and the Perfect project authors
+// Licensed under Apache License v2.0
+//
+// See http://perfect.org/licensing.html for license information
+//
+//===----------------------------------------------------------------------===//
 //
 
 import Foundation
@@ -10,7 +21,7 @@ import NIOHTTP1
 import NIO
 
 /// Indicates how the `body` func data, and possibly content-length, should be handled
-public enum HTTPOutputResponseKind {
+public enum HTTPOutputResponseHint {
 	/// content size is known and all content is available
 	/// not chunked. calling `body` will deliver the one available block (or nil)
 	case fixed
@@ -28,7 +39,7 @@ public enum HTTPOutputResponseKind {
 /// The response output for the client
 open class HTTPOutput {
 	/// Indicates how the `body` func data, and possibly content-length, should be handled
-	var kind: HTTPOutputResponseKind = .fixed
+	var kind: HTTPOutputResponseHint = .fixed
 	/// Optional HTTP head
 	open func head(request: HTTPRequestHead) -> HTTPHead? {
 		return nil

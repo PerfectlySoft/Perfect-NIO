@@ -1,8 +1,19 @@
 //
 //  RouteRegistry.swift
-//  HTTPCRUDLib
+//  PerfectNIO
 //
 //  Created by Kyle Jessup on 2018-10-23.
+//
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the Perfect.org open source project
+//
+// Copyright (c) 2015 - 2019 PerfectlySoft Inc. and the Perfect project authors
+// Licensed under Apache License v2.0
+//
+// See http://perfect.org/licensing.html for license information
+//
+//===----------------------------------------------------------------------===//
 //
 
 import NIO

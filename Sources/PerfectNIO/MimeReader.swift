@@ -1,6 +1,6 @@
 //
 //  MimeReader.swift
-//  PerfectLib
+//  PerfectNIO
 //
 //  Created by Kyle Jessup on 7/6/15.
 //	Copyright (C) 2015 PerfectlySoft, Inc.
