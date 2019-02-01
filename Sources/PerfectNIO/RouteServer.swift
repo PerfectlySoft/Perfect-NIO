@@ -134,7 +134,7 @@ class NIOBoundRoutes: BoundRoutes {
 				channel in
 				configureHTTPServerPipeline(pipeline: channel.pipeline, sslContext: sslContext)
 				.then {
-					channel.pipeline.add(handler: NIOHTTPHandler(finder: finder))
+					channel.pipeline.add(handler: NIOHTTPHandler(finder: finder, isTLS: sslContext != nil))
 				}
 			}.bind(host: address, port: port).wait()
 	}

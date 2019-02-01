@@ -63,16 +63,17 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 	var readState = State.none
 	var writeState = State.none
 	var forceKeepAlive: Bool? = nil
-	
-	init(finder: RouteFinder) {
+	let isTLS: Bool
+	init(finder: RouteFinder, isTLS: Bool) {
 		self.finder = finder
+		self.isTLS = isTLS
 	}
 	
 	func runRequest() {
 		guard let requestHead = self.head else {
 			return
 		}
-		let requestInfo = HTTPRequestInfo(head: requestHead)
+		let requestInfo = HTTPRequestInfo(head: requestHead, options: isTLS ? .isTLS : .none)
 		guard let fnc = finder[requestHead.method, path] else {
 			
 			// !FIX! routes need pre-request error handlers, 404
@@ -110,7 +111,6 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 	}
 	func channelActive(ctx: ChannelHandlerContext) {
 		channel = ctx.channel
-		//		channel?.read()
 	}
 	func channelInactive(ctx: ChannelHandlerContext) {
 		return
@@ -137,9 +137,6 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 		}
 		contentType = head.headers["content-type"].first
 		contentLength = Int(head.headers["content-length"].first ?? "0") ?? 0
-		//		if contentLength > 0 {
-		//			channel?.read()
-		//		}
 	}
 	func http(body: ByteBuffer, ctx: ChannelHandlerContext) {
 		let onlyHead = readState == .head
@@ -239,7 +236,6 @@ extension NIOHTTPHandler {
 			return promise.succeed(result: content)
 		}
 		pendingPromise = promise
-//		channel?.read()
 	}
 	// content can only be read once
 	func readContent() -> EventLoopFuture<HTTPRequestContentType> {
@@ -351,16 +347,18 @@ extension NIOHTTPHandler {
 			writeState != .end else {
 				return
 		}
-		let promiseBytes = channel.eventLoop.newPromise(of: [UInt8]?.self)
+		let promiseBytes = channel.eventLoop.newPromise(of: IOData?.self)
 		promiseBytes.futureResult.whenSuccess {
 			let writeDonePromise: EventLoopPromise<Void> = channel.eventLoop.newPromise()
 			if let bytes = $0 {
 				writeDonePromise.futureResult.whenSuccess {
 					self.writeBody(body)
 				}
-				var buffer = channel.allocator.buffer(capacity: bytes.count)
-				buffer.write(bytes: bytes)
-				channel.writeAndFlush(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: writeDonePromise)
+				if bytes.readableBytes > 0 {
+					channel.writeAndFlush(self.wrapOutboundOut(.body(bytes)), promise: writeDonePromise)
+				} else {
+					writeDonePromise.succeed(result: ())
+				}
 			} else {
 				let keepAlive = self.forceKeepAlive ?? self.head?.isKeepAlive ?? false
 				writeDonePromise.futureResult.whenComplete {
@@ -380,7 +378,7 @@ extension NIOHTTPHandler {
 			error in
 			channel.close(promise: nil)
 		}
-		body.body(promiseBytes)
+		body.body(promise: promiseBytes, allocator: channel.allocator)
 	}
 	
 	//	func userInboundEventTriggered(ctx: ChannelHandlerContext, event: Any) {

@@ -41,8 +41,14 @@ public class MustacheOutput: HTTPOutput {
 	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
 		return head
 	}
-	public override func body(_ p: EventLoopPromise<[UInt8]?>) {
-		p.succeed(result: bodyBytes)
-		bodyBytes = nil
+	public override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
+		if let b = bodyBytes {
+			bodyBytes = nil
+			var buf = allocator.buffer(capacity: b.count)
+			buf.write(bytes: b)
+			promise.succeed(result: IOData.byteBuffer(buf))
+		} else {
+			promise.succeed(result: nil)
+		}
 	}
 }

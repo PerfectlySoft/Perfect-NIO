@@ -26,16 +26,21 @@ public class BytesOutput: HTTPOutput {
 	private var bodyBytes: [UInt8]?
 	public init(head: HTTPHead? = nil,
 				body: [UInt8]) {
-		let headers = HTTPHeaders([("content-length", "\(body.count)")])
+		let headers = HTTPHeaders([("Content-Length", "\(body.count)")])
 		self.head = HTTPHead(headers: headers).merged(with: head)
 		bodyBytes = body
 	}
 	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
 		return head
 	}
-	public override func body(_ p: EventLoopPromise<[UInt8]?>) {
-		let b = bodyBytes
-		bodyBytes = nil
-		p.succeed(result: b)
+	public override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
+		if let b = bodyBytes {
+			bodyBytes = nil
+			var buf = allocator.buffer(capacity: b.count)
+			buf.write(bytes: b)
+			promise.succeed(result: IOData.byteBuffer(buf))
+		} else {
+			promise.succeed(result: nil)
+		}
 	}
 }

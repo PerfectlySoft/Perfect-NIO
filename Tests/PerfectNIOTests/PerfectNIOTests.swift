@@ -5,20 +5,28 @@ import NIOOpenSSL
 import PerfectCRUD
 import PerfectSQLite
 import PerfectCURL
+import PerfectLib
+import struct Foundation.UUID
 @testable import PerfectNIO
 
 protocol APIResponse: Codable {}
 let userCount = 10
 
 final class PerfectNIOTests: XCTestCase {
-	
+	private func soSleepy() -> Never {
+		while true {
+			sleep(UInt32.max)
+		}
+	}
 	func testRoot1() {
 		do {
 			let route = root { "OK" }.text()
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req = try CURLRequest("http://localhost:42000/").perform()
 			XCTAssertEqual(req.bodyString, "OK")
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -28,11 +36,13 @@ final class PerfectNIOTests: XCTestCase {
 			let route1 = root { "OK2" }.text()
 			let route2 = root { "OK1" }.foo { $0 }.text()
 			let server = try root().dir(route1, route2).bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let resp1 = try CURLRequest("http://localhost:42000/foo").perform().bodyString
 			XCTAssertEqual(resp1, "OK1")
 			let resp2 = try CURLRequest("http://localhost:42000/").perform().bodyString
 			XCTAssertEqual(resp2, "OK2")
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -45,13 +55,15 @@ final class PerfectNIOTests: XCTestCase {
 				$0.foo3 { "OK3" },
 				]}.text()
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let resp1 = try CURLRequest("http://localhost:42000/foo1").perform().bodyString
 			XCTAssertEqual(resp1, "OK1")
 			let resp2 = try CURLRequest("http://localhost:42000/foo2").perform().bodyString
 			XCTAssertEqual(resp2, "OK2")
 			let resp3 = try CURLRequest("http://localhost:42000/foo3").perform().bodyString
 			XCTAssertEqual(resp3, "OK3")
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -64,7 +76,9 @@ final class PerfectNIOTests: XCTestCase {
 				$0.foo3 { "OK3" },
 				]}.text()
 			let server = try route.bind(port: 42000).listen()
-			try server.stop().wait()
+			defer {
+				try? server.stop().wait()
+			}
 			XCTAssert(false)
 		} catch {
 			XCTAssert(true)
@@ -85,9 +99,11 @@ final class PerfectNIOTests: XCTestCase {
 			let action = "share"
 			let uri1 = "/v1/\(id)/\(action)"
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let resp1 = try CURLRequest("http://localhost:42000\(uri1)").perform().bodyString
 			XCTAssertEqual(resp1, "\(id) - \(action)")
-			try server.stop().wait()
 		} catch {
 			XCTAssert(true)
 		}
@@ -96,9 +112,11 @@ final class PerfectNIOTests: XCTestCase {
 		do {
 			let route = root().wild { $1 }.foo.text()
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req = try CURLRequest("http://localhost:42000/OK/foo").perform()
 			XCTAssertEqual(req.bodyString, "OK")
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -107,9 +125,11 @@ final class PerfectNIOTests: XCTestCase {
 		do {
 			let route = root().foo.trailing { $1 }.text()
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req = try CURLRequest("http://localhost:42000/foo/OK/OK").perform()
 			XCTAssertEqual(req.bodyString, "OK/OK")
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -121,11 +141,13 @@ final class PerfectNIOTests: XCTestCase {
 				$0.b { [1,2,3] }.map { (i: Int) -> String in "\(i)" }.json()
 			]}
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req1 = try CURLRequest("http://localhost:42000/a").perform()
 			XCTAssertEqual(req1.bodyString, "1")
 			let req2 = try CURLRequest("http://localhost:42000/b").perform().bodyJSON(Array<String>.self)
 			XCTAssertEqual(req2, ["1","2","3"])
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -138,13 +160,15 @@ final class PerfectNIOTests: XCTestCase {
 				$0.c.statusCheck { _ in .ok }.map { "OK" }.text()
 				]}
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req1 = try CURLRequest("http://localhost:42000/a").perform()
 			XCTAssertEqual(req1.responseCode, 500)
 			let req2 = try CURLRequest("http://localhost:42000/b").perform()
 			XCTAssertEqual(req2.responseCode, 500)
 			let req3 = try CURLRequest("http://localhost:42000/c").perform().bodyString
 			XCTAssertEqual(req3, "OK")
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -156,13 +180,15 @@ final class PerfectNIOTests: XCTestCase {
 				$0.POST.foo2 { "POST OK" },
 				]}.text()
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req1 = try CURLRequest("http://localhost:42000/foo1").perform().bodyString
 			XCTAssertEqual(req1, "GET OK")
 			let req2 = try CURLRequest("http://localhost:42000/foo2", .postString("")).perform().bodyString
 			XCTAssertEqual(req2, "POST OK")
 			let req3 = try CURLRequest("http://localhost:42000/foo1", .postString("")).perform().responseCode
 			XCTAssertEqual(req3, 404)
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -199,13 +225,15 @@ final class PerfectNIOTests: XCTestCase {
 				},
 			]}.POST.text()
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req1 = try CURLRequest("http://localhost:42000/multi", .postField(.init(name: "foo", value: "bar"))).perform().bodyString
 			XCTAssertEqual(req1, "OK")
 			let req2 = try CURLRequest("http://localhost:42000/url", .postString("foo=bar")).perform().bodyString
 			XCTAssertEqual(req2, "OK")
 			let req3 = try CURLRequest("http://localhost:42000/other", .addHeader(.contentType, "application/octet-stream"), .postData([1,2,3,4,5])).perform().bodyString
 			XCTAssertEqual(req3, "OK")
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -222,6 +250,9 @@ final class PerfectNIOTests: XCTestCase {
 				$0.3.decode(Foo.self) { $0 },
 				]}.json()
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let foo = Foo(id: UUID(), date: Date())
 			let fooData = Array(try JSONEncoder().encode(foo))
 			for i in 1...3 {
@@ -229,7 +260,6 @@ final class PerfectNIOTests: XCTestCase {
 				XCTAssertEqual(req.id, foo.id)
 				XCTAssertEqual(req.date, foo.date)
 			}
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -248,11 +278,13 @@ final class PerfectNIOTests: XCTestCase {
 				fooRoute.ext("json").json(),
 				fooRoute.ext("txt").text())
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req1 = try? CURLRequest("http://localhost:42000/foo.json").perform().bodyJSON(Foo.self)
 			XCTAssertNotNil(req1)
 			let req2 = try CURLRequest("http://localhost:42000/foo.txt").perform().bodyString
 			XCTAssert(req2.hasPrefix("foo-data "))
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -296,9 +328,11 @@ final class PerfectNIOTests: XCTestCase {
 				certificateChain: [.certificate(serverCert)],
 				privateKey: .privateKey(serverKey))
 			let server = try route.bind(port: 42000, tls: tls).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req1 = try CURLRequest("https://localhost:42000/", .sslVerifyPeer(false), .sslVerifyHost(false)).perform().bodyString
 			XCTAssertEqual(req1, "OK")
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -308,9 +342,11 @@ final class PerfectNIOTests: XCTestCase {
 		do {
 			let route = root().foo { "OK" }.request { $1.path }.text()
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req1 = try CURLRequest("http://localhost:42000/foo").perform().bodyString
 			XCTAssertEqual(req1, "/foo")
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -324,9 +360,11 @@ final class PerfectNIOTests: XCTestCase {
 				p.succeed(result: "OK")
 				}.text()
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req1 = try CURLRequest("http://localhost:42000/").perform().bodyString
 			XCTAssertEqual(req1, "OK")
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -360,21 +398,26 @@ final class PerfectNIOTests: XCTestCase {
 				override func head(request: HTTPRequestInfo) -> HTTPHead? {
 					return HTTPHead(headers: HTTPHeaders([("content-length", "16384")]))
 				}
-				override func body(_ p: EventLoopPromise<[UInt8]?>) {
+				override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
 					if counter > 15 {
-						p.succeed(result: nil)
+						promise.succeed(result: nil)
 					} else {
 						let toSend = String(repeating: "\(counter % 10)", count: 1024)
 						counter += 1
-						p.succeed(result: Array(toSend.utf8))
+						let ary = Array(toSend.utf8)
+						var buf = allocator.buffer(capacity: ary.count)
+						buf.write(bytes: ary)
+						promise.succeed(result: .byteBuffer(buf))
 					}
 				}
 			}
 			let route = root() { return StreamOutput() as HTTPOutput }
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req = try CURLRequest("http://localhost:42000/").perform()
 			XCTAssertEqual(req.bodyString.count, 16384)
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -388,41 +431,26 @@ final class PerfectNIOTests: XCTestCase {
 					super.init()
 					kind = .stream
 				}
-				override func body(_ p: EventLoopPromise<[UInt8]?>) {
+				override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
 					if counter > 15 {
-						p.succeed(result: nil)
+						promise.succeed(result: nil)
 					} else {
 						let toSend = String(repeating: "\(counter % 10)", count: 1024)
 						counter += 1
-						p.succeed(result: Array(toSend.utf8))
+						let ary = Array(toSend.utf8)
+						var buf = allocator.buffer(capacity: ary.count)
+						buf.write(bytes: ary)
+						promise.succeed(result: .byteBuffer(buf))
 					}
 				}
 			}
 			let route = root() { return StreamOutput() as HTTPOutput }
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req = try CURLRequest("http://localhost:42000/").perform()
 			XCTAssertEqual(req.bodyString.count, 16384)
-			try server.stop().wait()
-		} catch {
-			XCTFail("\(error)")
-		}
-	}
-	
-	func testCompress1() {
-		do {
-			let route = root() {
-				var bytes: [UInt8] = []
-				for i in 0..<16 {
-					let toSend = String(repeating: "\(i % 10)", count: 1024)
-					bytes.append(contentsOf: Array(toSend.utf8))
-				}
-				return BytesOutput(body: bytes)
-			}.compressed()
-			let server = try route.bind(port: 42000).listen()
-			let req = try CURLRequest("http://localhost:42000/", .acceptEncoding("gzip, deflate")).perform()
-			XCTAssertEqual(req.bodyString.count, 16384)
-			XCTAssert(req.headers.contains(where: { $0.0 == .contentEncoding && $0.1 == "gzip" }))
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -435,11 +463,13 @@ final class PerfectNIOTests: XCTestCase {
 				$0.b { "OK" }
 				]}.unwrap { $0 }.text()
 			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let req1 = try CURLRequest("http://localhost:42000/b").perform().bodyString
 			XCTAssertEqual(req1, "OK")
 			let req2 = try CURLRequest("http://localhost:42000/a").perform()
 			XCTAssertEqual(req2.responseCode, 500)
-			try server.stop().wait()
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -483,12 +513,143 @@ final class PerfectNIOTests: XCTestCase {
 					$0.friends(AppHandlers.friendList).json()
 				]}
 			let server = try v1Routes.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
 			let uuid = UUID()
 			let req = try CURLRequest("http://localhost:42000/\(uuid.uuidString)/info").perform().bodyJSON(User.self)
 			XCTAssertEqual(req.id, uuid)
 			let req2 = try CURLRequest("http://localhost:42000/\(uuid.uuidString)/friends").perform().bodyJSON(FriendList.self)
 			XCTAssertEqual(req2.users.count, userCount)
-			try server.stop().wait()
+		} catch {
+			XCTFail("\(error)")
+		}
+	}
+	
+	func testCompress1() {
+		do {
+			let route = root() {
+				var bytes: [UInt8] = []
+				for i in 0..<16 {
+					let toSend = String(repeating: "\(i % 10)", count: 1024)
+					bytes.append(contentsOf: Array(toSend.utf8))
+				}
+				return BytesOutput(body: bytes)
+				}.compressed()
+			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
+			do {
+				let req = try CURLRequest("http://localhost:42000/", .acceptEncoding("gzip, deflate")).perform()
+				XCTAssertEqual(req.bodyString.count, 16384)
+				XCTAssert(req.headers.contains(where: { $0.0 == .contentEncoding && $0.1 == "gzip" }))
+			}
+			do {
+				let req = try CURLRequest("http://localhost:42000/", .acceptEncoding("deflate")).perform()
+				XCTAssertEqual(req.bodyString.count, 16384)
+				XCTAssert(req.headers.contains(where: { $0.0 == .contentEncoding && $0.1 == "deflate" }))
+			}
+		} catch {
+			XCTFail("\(error)")
+		}
+	}
+	
+	func testCompress2() {
+		do {
+			class StreamOutput: HTTPOutput {
+				var counter = 0
+				override init() {
+					super.init()
+					kind = .stream
+				}
+				override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
+					if counter > 15 {
+						promise.succeed(result: nil)
+					} else {
+						let toSend = String(repeating: "\(counter % 10)", count: 1024)
+						counter += 1
+						let ary = Array(toSend.utf8)
+						var buf = allocator.buffer(capacity: ary.count)
+						buf.write(bytes: ary)
+						promise.succeed(result: .byteBuffer(buf))
+					}
+				}
+			}
+			let route = root() { return StreamOutput() as HTTPOutput }.compressed()
+			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
+			do {
+				let req = try CURLRequest("http://localhost:42000/", .acceptEncoding("gzip, deflate")).perform()
+				XCTAssertEqual(req.bodyString.count, 16384)
+				XCTAssert(req.headers.contains(where: { $0.0 == .contentEncoding && $0.1 == "gzip" }))
+			}
+			do {
+				let req = try CURLRequest("http://localhost:42000/", .acceptEncoding("deflate")).perform()
+				XCTAssertEqual(req.bodyString.count, 16384)
+				XCTAssert(req.headers.contains(where: { $0.0 == .contentEncoding && $0.1 == "deflate" }))
+			}
+		} catch {
+			XCTFail("\(error)")
+		}
+	}
+	
+	func testCompress3() {
+		do {
+			let tmpFilePath = "/tmp/test.txt"
+			let file = File(tmpFilePath)
+			defer { file.delete() }
+			do {
+				var bytes: [UInt8] = []
+				for i in 0..<16 {
+					let toSend = String(repeating: "\(i % 10)", count: 1024)
+					bytes.append(contentsOf: Array(toSend.utf8))
+				}
+				try file.open(.truncate, permissions: [.readUser, .writeUser])
+				try file.write(bytes: bytes)
+				file.close()
+			}
+			let route = root().test {
+				try FileOutput(localPath: tmpFilePath) as HTTPOutput
+				}.ext("txt").compressed()
+			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
+			let resp = try CURLRequest("http://localhost:42000/test.txt", .acceptEncoding("gzip, deflate")).perform()
+			XCTAssertEqual(resp.bodyBytes.count, 16384)
+			XCTAssert(resp.headers.contains(where: { $0.0 == .contentEncoding && $0.1 == "gzip" }))
+		} catch {
+			XCTFail("\(error)")
+		}
+	}
+	
+	func testFileOutput() {
+		do {
+			let tmpFilePath = "/tmp/test.txt"
+			let file = File(tmpFilePath)
+			defer { file.delete() }
+			do {
+				var bytes: [UInt8] = []
+				for i in 0..<16 {
+					let toSend = String(repeating: "\(i % 10)", count: 1024)
+					bytes.append(contentsOf: Array(toSend.utf8))
+				}
+				try file.open(.truncate, permissions: [.readUser, .writeUser])
+				try file.write(bytes: bytes)
+				file.close()
+			}
+			let route = root().test {
+				try FileOutput(localPath: tmpFilePath) as HTTPOutput
+			}.ext("txt")
+			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
+			let resp = try CURLRequest("http://localhost:42000/test.txt").perform().bodyBytes
+			XCTAssertEqual(resp.count, 16384)
 		} catch {
 			XCTFail("\(error)")
 		}
@@ -520,6 +681,8 @@ final class PerfectNIOTests: XCTestCase {
 		("testUnwrap", testUnwrap),
 		("testAuthEg", testAuthEg),
 		("testQueryDecoder", testQueryDecoder),
+		("testCompress1", testCompress1),
+		("testFileOutput", testFileOutput)
     ]
 }
 

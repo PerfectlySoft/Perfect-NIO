@@ -47,7 +47,7 @@ open class HTTPOutput {
 	/// Produce body data
 	/// Set nil on last chunk
 	/// Call promise.fail upon failure
-	open func body(_ p: EventLoopPromise<[UInt8]?>) {
-		p.succeed(result: nil)
+	open func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
+		promise.succeed(result: nil)
 	}
 }

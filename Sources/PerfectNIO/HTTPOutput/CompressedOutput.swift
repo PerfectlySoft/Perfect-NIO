@@ -39,6 +39,11 @@ internal extension String {
 	}
 }
 
+private extension IOData {
+	func getBytes(_ callback: @escaping (ByteBuffer) -> ()) {
+		
+	}
+}
 
 /// Given a header value, extracts the q value if there is one present. If one is not present,
 /// returns the default q value, 1.0.
@@ -56,12 +61,13 @@ private func qValueFromHeader(_ text: String) -> Float {
 	return qValue
 }
 
-public enum CompressionPolicy {
-	case minContentSize(Int) // smallest content-length which will be compressed
-	case testContentType((String) -> Bool)
-}
-
 public class CompressedOutput: HTTPOutput {
+	private static var fileIO: NonBlockingFileIO = {
+		let threadPool = BlockingIOThreadPool(numberOfThreads: 2) // !FIX! configurable?
+		threadPool.start()
+		return NonBlockingFileIO(threadPool: threadPool)
+	}()
+	
 	fileprivate enum CompressionAlgorithm: String {
 		case gzip = "gzip"
 		case deflate = "deflate"
@@ -71,21 +77,28 @@ public class CompressedOutput: HTTPOutput {
 	private var sourceContent: HTTPOutput
 	private let minCompressLength: Int
 	private var done = false
-	private var buffer: [UInt8] = []
+	private let chunkSize = 32 * 1024
+	private var consumingRegion: FileRegion?
 	init(source: HTTPOutput) {
 		sourceContent = source
 		minCompressLength = 1024 * 14 // !FIX!
 		super.init()
 		kind = .stream
 	}
+	deinit {
+		deinitializeEncoder()
+	}
+	
 	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
-		let sourceHead = sourceContent.head(request: request)
 		guard let algo = compressionAlgorithm(request.head) else {
-			return sourceHead
+			return sourceContent.head(request: request)
 		}
-		guard let contentLengthStr = sourceHead?.headers.first(where: { $0.name.lowercased() == "content-length" })?.value,
+		let newRequest = HTTPRequestInfo(head: request.head,
+										 options: request.options.union(.mayCompress))
+		let sourceHead = sourceContent.head(request: newRequest)
+		if let contentLengthStr = sourceHead?.headers["content-length"].first,
 			let contentLength = Int(contentLengthStr),
-			contentLength > minCompressLength else {
+			contentLength < minCompressLength {
 			return sourceHead
 		}
 		var head: HTTPHead
@@ -100,42 +113,61 @@ public class CompressedOutput: HTTPOutput {
 		head.headers.add(name: "Content-Encoding", value: algo.rawValue)
 		return head
 	}
-	public override func body(_ masterp: EventLoopPromise<[UInt8]?>) {
+	public override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
 		guard let _ = self.algorithm else {
-			return sourceContent.body(masterp)
+			return sourceContent.body(promise: promise, allocator: allocator)
 		}
 		guard !done else {
-			return masterp.succeed(result: nil)
+			return promise.succeed(result: nil)
 		}
-		let newp = masterp.futureResult.eventLoop.newPromise(of: [UInt8]?.self)
-		newp.futureResult.whenSuccess {
-			bytes in
-			if let bytes = bytes {
-				self.buffer.append(contentsOf: self.compress(bytes, flush: false))
-			} else {
-				self.done = true
-				self.buffer.append(contentsOf: self.compress([], flush: true))
+		let eventLoop = promise.futureResult.eventLoop
+		if let region = consumingRegion {
+			let readSize = min(chunkSize, region.readableBytes)
+			let newRegion = FileRegion(fileHandle: region.fileHandle,
+									   readerIndex: region.readerIndex,
+									   endIndex: region.readerIndex + readSize)
+			let readP = CompressedOutput.fileIO.read(fileRegion: newRegion,
+													 allocator: allocator,
+													 eventLoop: eventLoop)
+			readP.whenSuccess {
+				bytes in
+				self.consumingRegion?.moveReaderIndex(forwardBy: bytes.readableBytes)
+				if self.consumingRegion?.readableBytes == 0 {
+					self.consumingRegion = nil
+				}
+				promise.succeed(result: IOData.byteBuffer(self.compress(bytes, allocator: allocator)))
 			}
-			if self.buffer.count >= self.minCompressLength || self.done {
-				let c = self.buffer
-				self.buffer = []
-				masterp.succeed(result: c)
-			} else {
-				self.body(masterp)
+			readP.whenFailure { promise.fail(error: $0) }
+		} else {
+			let newp = eventLoop.newPromise(of: IOData?.self)
+			sourceContent.body(promise: newp, allocator: allocator)
+			newp.futureResult.whenSuccess {
+				data in
+				if let data = data {
+					switch data {
+					case .byteBuffer(let bytes):
+						promise.succeed(result: IOData.byteBuffer(self.compress(bytes, allocator: allocator)))
+					case .fileRegion(let region):
+						self.consumingRegion = region
+						self.body(promise: promise, allocator: allocator)
+					}
+				} else {
+					self.done = true
+					promise.succeed(result: IOData.byteBuffer(self.compress(nil, allocator: allocator)))
+				}
+			}
+			newp.futureResult.whenFailure {
+				promise.fail(error: $0)
 			}
 		}
-		newp.futureResult.whenFailure {
-			masterp.fail(error: $0)
-		}
-		sourceContent.body(newp)
 	}
 	private func compressionAlgorithm(_ head: HTTPRequestHead) -> CompressionAlgorithm? {
-		let acceptHeaders = head.headers.filter { $0.name.lowercased() == "accept-encoding" }.map { $0.value }
+		let acceptHeaders = head.headers["accept-encoding"]
 		var gzipQValue: Float = -1
 		var deflateQValue: Float = -1
 		var anyQValue: Float = -1
 		for fullHeader in acceptHeaders {
-			for acceptHeader in fullHeader.split(separator: ",").map(String.init) {
+			for acceptHeader in fullHeader.replacingOccurrences(of: " ", with: "").split(separator: ",").map(String.init) {
 				if acceptHeader.startsWithSameUnicodeScalars(string: "gzip") || acceptHeader.startsWithSameUnicodeScalars(string: "x-gzip") {
 					gzipQValue = qValueFromHeader(acceptHeader)
 				} else if acceptHeader.startsWithSameUnicodeScalars(string: "deflate") {
@@ -146,11 +178,8 @@ public class CompressedOutput: HTTPOutput {
 			}
 		}
 		if gzipQValue > 0 || deflateQValue > 0 {
-			return gzipQValue > deflateQValue ? .gzip : .deflate
+			return gzipQValue >= deflateQValue ? .gzip : .deflate
 		} else if anyQValue > 0 {
-			// Though gzip is usually less well compressed than deflate, it has slightly
-			// wider support because it's unabiguous. We therefore default to that unless
-			// the client has expressed a preference.
 			return .gzip
 		}
 		return nil
@@ -180,35 +209,42 @@ public class CompressedOutput: HTTPOutput {
 		// the pending data.
 		deflateEnd(&stream)
 	}
-	private func compress(_ bytes: [UInt8], flush: Bool) -> [UInt8] {
-		if bytes.isEmpty && !flush {
-			return []
-		}
-		let needed = Int(deflateBound(&stream, UInt(bytes.count)))
-		let dest = UnsafeMutablePointer<UInt8>.allocate(capacity: needed)
-		defer {
-			dest.deallocate()
-		}
-		if !bytes.isEmpty {
-			stream.next_in = UnsafeMutablePointer(mutating: bytes)
-			stream.avail_in = uInt(bytes.count)
-		} else {
-			stream.next_in = nil
-			stream.avail_in = 0
-		}
-		var out = [UInt8]()
-		repeat {
-			stream.next_out = dest
-			stream.avail_out = uInt(needed)
-			let err = deflate(&stream, flush ? Z_FINISH : Z_NO_FLUSH)
-			guard err != Z_STREAM_ERROR else {
-				break
+	// pass nil to flush
+	private func compress(_ bytes: ByteBuffer?, allocator: ByteBufferAllocator) -> ByteBuffer {
+		let readable = bytes?.readableBytes ?? 0
+		let needed = Int(deflateBound(&stream, UInt(readable)) + 256)
+		var dest = allocator.buffer(capacity: needed)
+		dest.writeWithUnsafeMutableBytes {
+			outputPtr in
+			let typedOutputPtr = UnsafeMutableBufferPointer(start: outputPtr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+															count: needed)
+			stream.next_out = typedOutputPtr.baseAddress!
+			stream.avail_out = UInt32(needed)
+			if var bytes = bytes {
+				bytes.readWithUnsafeMutableReadableBytes {
+					dataPtr in
+					let typedDataPtr = UnsafeMutableBufferPointer(start: dataPtr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+																  count: readable)
+					stream.next_in = typedDataPtr.baseAddress!
+					stream.avail_in = UInt32(readable)
+					let rc = deflate(&stream, Z_NO_FLUSH)
+					if rc != Z_OK {
+						debugPrint("deflate rc \(rc)")
+					}
+					return readable - Int(stream.avail_in)
+				}
+			} else {
+				stream.next_in = nil
+				stream.avail_in = 0
+				let rc = deflate(&stream, Z_FINISH)
+				if rc != Z_STREAM_END {
+					debugPrint("deflate rc \(rc)")
+				}
 			}
-			let have = uInt(needed) - stream.avail_out
-			let b2 = UnsafeRawBufferPointer(start: dest, count: Int(have))
-			out.append(contentsOf: b2.map { $0 })
-		} while stream.avail_out == 0
-		return out
+			return needed - Int(stream.avail_out)
+		}
+		print("comressed \(readable) bytes down to \(dest.readableBytes)")
+		return dest
 	}
 }
 
