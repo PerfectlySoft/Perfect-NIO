@@ -243,7 +243,7 @@ public class CompressedOutput: HTTPOutput {
 			}
 			return needed - Int(stream.avail_out)
 		}
-		print("comressed \(readable) bytes down to \(dest.readableBytes)")
+//		print("comressed \(readable) bytes down to \(dest.readableBytes)")
 		return dest
 	}
 }
