@@ -10,7 +10,6 @@ let package = Package(
 	],
 	dependencies: [
 		.package(url: "https://github.com/PerfectlySoft/Perfect-Mustache.git", .branch("4.0-dev")),
-		.package(url: "https://github.com/PerfectlySoft/Perfect-Thread.git", from: "3.0.0"), // ? linker error without this
 		.package(url: "https://github.com/PerfectlySoft/PerfectLib.git", from: "3.0.0"),
 		.package(url: "https://github.com/PerfectlySoft/Perfect-SQLite.git", from: "3.0.0"),
 		.package(url: "https://github.com/PerfectlySoft/Perfect-CRUD.git", from: "1.0.0"),
@@ -23,8 +22,8 @@ let package = Package(
 	targets: [
 		.target(name: "PerfectNIOExe", dependencies: [
 			"PerfectNIO",
-			"PerfectSQLite",
-			"PerfectThread"]),
+			"PerfectSQLite"
+			]),
 		.target(name: "PerfectNIO", dependencies: [
 			"PerfectLib",
 			"PerfectCRUD",
