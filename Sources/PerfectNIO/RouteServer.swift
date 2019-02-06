@@ -67,30 +67,6 @@ public protocol BoundRoutes {
 	func listen() throws -> ListeningRoutes
 }
 
-func configureHTTPServerPipeline(pipeline: ChannelPipeline, sslContext: NIOOpenSSL.SSLContext?) -> EventLoopFuture<Void> {
-	let responseEncoder = HTTPResponseEncoder()
-	let requestDecoder = HTTPRequestDecoder(leftOverBytesStrategy: .dropBytes)
-	var handlers: [ChannelHandler] = []
-	if let sslContext = sslContext {
-		let handler = try! OpenSSLServerHandler(context: sslContext)
-		handlers.append(handler)
-	}
-	handlers.append(responseEncoder)
-	handlers.append(requestDecoder)
-	handlers.append(HTTPServerPipelineHandler())
-	handlers.append(HTTPServerProtocolErrorHandler())
-	
-	// TBD
-//	if let (upgraders, completionHandler) = upgrade {
-//		let upgrader = HTTPServerUpgradeHandler(upgraders: upgraders,
-//												httpEncoder: responseEncoder,
-//												extraHTTPHandlers: Array(handlers.dropFirst()),
-//												upgradeCompletionHandler: completionHandler)
-//		handlers.append(upgrader)
-//	}
-	return pipeline.addHandlers(handlers, first: false)
-}
-
 class NIOBoundRoutes: BoundRoutes {
 	private let childGroup: EventLoopGroup
 	let acceptGroup: MultiThreadedEventLoopGroup
@@ -132,7 +108,7 @@ class NIOBoundRoutes: BoundRoutes {
 			.childChannelOption(ChannelOptions.recvAllocator, value: AdaptiveRecvByteBufferAllocator(minimum: 1024, initial: 4096, maximum: 65536))
 			.childChannelInitializer {
 				channel in
-				configureHTTPServerPipeline(pipeline: channel.pipeline, sslContext: sslContext)
+				NIOBoundRoutes.configureHTTPServerPipeline(pipeline: channel.pipeline, sslContext: sslContext)
 				.then {
 					channel.pipeline.add(handler: NIOHTTPHandler(finder: finder, isTLS: sslContext != nil))
 				}
@@ -140,6 +116,20 @@ class NIOBoundRoutes: BoundRoutes {
 	}
 	public func listen() throws -> ListeningRoutes {
 		return NIOListeningRoutes(channel: channel)
+	}
+	private static func configureHTTPServerPipeline(pipeline: ChannelPipeline, sslContext: NIOOpenSSL.SSLContext?) -> EventLoopFuture<Void> {
+		let responseEncoder = HTTPResponseEncoder()
+		let requestDecoder = HTTPRequestDecoder(leftOverBytesStrategy: .dropBytes)
+		var handlers: [ChannelHandler] = []
+		if let sslContext = sslContext {
+			let handler = try! OpenSSLServerHandler(context: sslContext)
+			handlers.append(handler)
+		}
+		return pipeline.addHandlers(handlers, first: false)
+			.then { pipeline.add(name: "responseEncoder", handler: responseEncoder, first: false) }
+			.then { pipeline.add(name: "requestDecoder", handler: requestDecoder, first: false) }
+			.then { pipeline.add(handler: HTTPServerPipelineHandler(), first: false) }
+			.then { pipeline.add(handler: HTTPServerProtocolErrorHandler(), first: false) }
 	}
 }
 
