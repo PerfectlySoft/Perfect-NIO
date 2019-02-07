@@ -63,6 +63,7 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 	var readState = State.none
 	var writeState = State.none
 	var forceKeepAlive: Bool? = nil
+	var upgraded = false
 	let isTLS: Bool
 	init(finder: RouteFinder, isTLS: Bool) {
 		self.finder = finder
@@ -103,7 +104,7 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 					body = ErrorOutput(status: .internalServerError, description: "Internal server error.")
 				}
 			default:
-				body = ErrorOutput(status: .internalServerError, description: "Internal server error: \(error).")
+				body = ErrorOutput(status: .internalServerError, description: "Internal server error: \(error)")
 			}
 			let head = state.responseHead.merged(with: body.head(request: requestInfo))
 			self.write(head: head, body: body)
@@ -361,13 +362,17 @@ extension NIOHTTPHandler {
 				}
 			} else {
 				let keepAlive = self.forceKeepAlive ?? self.head?.isKeepAlive ?? false
-				writeDonePromise.futureResult.whenComplete {
-					if !keepAlive {
-						channel.close(promise: nil)
-					}
-				}
 				self.reset()
-				channel.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: writeDonePromise)
+				if !self.upgraded {
+					writeDonePromise.futureResult.whenComplete {
+						if !keepAlive {
+							channel.close(promise: nil)
+						}
+					}
+					channel.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: writeDonePromise)
+				} else {
+					channel.flush()
+				}				
 			}
 			writeDonePromise.futureResult.whenFailure {
 				error in

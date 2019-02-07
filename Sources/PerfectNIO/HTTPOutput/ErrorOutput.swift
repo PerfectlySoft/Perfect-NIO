@@ -20,11 +20,12 @@ import Foundation
 import NIOHTTP1
 
 /// Output which can be thrown
-public class ErrorOutput: BytesOutput, Error {
+public class ErrorOutput: BytesOutput, Error, CustomStringConvertible {
+	public let description: String
 	/// Construct a ErrorOutput with a simple text message
 	public init(status: HTTPResponseStatus, description: String? = nil) {
-		let description = description ?? status.reasonPhrase
-		let chars = Array(description.utf8)
+		self.description = description ?? status.reasonPhrase
+		let chars = Array(self.description.utf8)
 		let headers = HTTPHeaders([("content-type", "text/plain"), ("content-length", "\(chars.count)")])
 		super.init(head: HTTPHead(status: status, headers: headers), body: chars)
 	}

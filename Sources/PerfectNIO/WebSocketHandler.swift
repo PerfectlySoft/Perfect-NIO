@@ -28,12 +28,44 @@ public enum WebSocketMessage {
 	case text(String), binary([UInt8])
 }
 
+/// Default options will automatically handle ping/pong and close sequence
+public enum WebSocketOption {
+	/// If manual close is not indicated (the default)
+	/// then the socket will automatically reply with a .close message.
+	/// If manual close is indicated then the handler must reply to the close itself.
+	/// In either case the handler will receive the .close message
+	case manualClose
+	/// If manual ping is not indicated (the default)
+	/// then the socket will automatically reply with a .pong message.
+	/// If manual ping is indicated then the handler must reply with a .pong.
+	/// In either case the handler will receive the .ping message
+	case manualPing
+	/// The frequency in seconds that the server should ping the client.
+	/// This defaults to 30 seconds.
+	/// An interval of zero will disable automatic ping/pong.
+	case pingInterval(Int)
+	
+	// pong response timeout?
+	case responseTimeout(Int)
+}
+
 public protocol WebSocket {
+	var options: [WebSocketOption] { get set }
 	func readMessage() -> EventLoopFuture<WebSocketMessage>
-	func writeMessage(_ message: WebSocketMessage, promise: EventLoopPromise<WebSocketMessage>?)
+	func writeMessage(_ message: WebSocketMessage) -> EventLoopFuture<Void>
 }
 
 public typealias WebSocketHandler = (WebSocket) -> ()
+
+public extension Routes {
+	func webSocket(protocol: String, _ callback: @escaping (OutType) throws -> WebSocketHandler) -> Routes<InType, HTTPOutput> {
+		return applyFuncs {
+			return $0.thenThrowing {
+				RouteValueBox($0.state, WebSocketUpgradeHTTPOutput(state: $0.state, handler: try callback($0.value)))
+			}
+		}
+	}
+}
 
 fileprivate extension HTTPHeaders {
 	func nonListHeader(_ name: String) -> String? {
@@ -73,115 +105,225 @@ private class WebSocketUpgradeHTTPOutput: HTTPOutput {
 		extraHeaders.replaceOrAdd(name: "Upgrade", value: "websocket")
 		extraHeaders.add(name: "Sec-WebSocket-Accept", value: acceptValue)
 		extraHeaders.replaceOrAdd(name: "Connection", value: "upgrade")
-		return HTTPHead(headers: extraHeaders)
+		return HTTPHead(status: .switchingProtocols, headers: extraHeaders)
 	}
 	
 	override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
 		guard !failed, let channel = state.request.channel else {
 			return promise.succeed(result: nil)
 		}
-		do {
-			try channel.pipeline.remove(name: "responseEncoder").then {
-				_ in
-				channel.pipeline.addHandlers([WebSocketFrameEncoder(),
-												WebSocketFrameDecoder(maxFrameSize: 1 << 14, automaticErrorHandling: false),
-												WebSocketProtocolErrorHandler(),
-												NIOWebSocketHandler(socketHandler: self.handler)],
-											 first: false)
-			}.map {
-				promise.succeed(result: nil)
-			}.wait()
-		} catch {
-			promise.fail(error: error)
+		state.request.upgraded = true
+		channel.pipeline.remove(name: "HTTPResponseEncoder")
+		.then {
+			_ in
+			channel.pipeline.remove(name: "HTTPRequestDecoder")
+		}.then {
+			_ in
+			channel.pipeline.remove(name: "HTTPServerPipelineHandler")
+		}.then {
+			_ in
+			channel.pipeline.remove(name: "HTTPServerProtocolErrorHandler")
+		}.then {
+			_ in
+			channel.pipeline.remove(name: "NIOHTTPHandler")
+		}.then {
+			_ in
+			channel.pipeline.addHandlers([	WebSocketFrameEncoder(),
+											WebSocketFrameDecoder(maxFrameSize: 1 << 14, automaticErrorHandling: false),
+											WebSocketProtocolErrorHandler(),
+											NIOWebSocketHandler(channel: channel, socketHandler: self.handler)],
+										 first: false)
+//		}.then {
+//			channel.setOption(option: ChannelOptions.autoRead, value: false) // !FIX! this made it stop reading altogether. rather have messages be pulled
+		}.whenComplete {
+			promise.succeed(result: nil)
 		}
 	}
 }
 
-private extension WebSocketUpgrader {
-	func upgrade(channel: Channel, upgradePipelineHandler: @escaping (Channel) -> EventLoopFuture<Void>) -> EventLoopFuture<Void> {
-		/// We never use the automatic error handling feature of the WebSocketFrameDecoder: we always use the separate channel
-		/// handler.
-		var upgradeFuture = channel.pipeline.add(handler: WebSocketFrameEncoder()).then {
-			_ in
-			channel.pipeline.add(handler: WebSocketFrameDecoder(maxFrameSize: 1 << 14, automaticErrorHandling: false))
-		}
-		upgradeFuture = upgradeFuture.then { channel.pipeline.add(handler: WebSocketProtocolErrorHandler())}
-		return upgradeFuture.then {
-			_ in
-			return upgradePipelineHandler(channel)
-		}
+public struct WebSocketError: Error, CustomStringConvertible {
+	public let description: String
+	init(_ description: String) {
+		self.description = description
 	}
 }
 
-public extension Routes {
-	func webSocket(protocol: String, _ callback: @escaping (OutType) throws -> WebSocketHandler) -> Routes<InType, HTTPOutput> {
-		return applyFuncs {
-			return $0.thenThrowing {
-				RouteValueBox($0.state, WebSocketUpgradeHTTPOutput(state: $0.state, handler: try callback($0.value)))
-			}
-//			$0.then {
-//				o in
-//				let value = try callback(o.value)
-//				return WebSocketUpgrader(
-//					shouldUpgrade: {
-//					head -> HTTPHeaders? in
-//					return HTTPHeaders([])
-//				}, upgradePipelineHandler: { // ignored. hacky
-//					channel, head -> EventLoopFuture<Void> in
-//					fatalError()
-//				}).upgrade(channel: o.state.request.channel!,
-//						   upgradePipelineHandler: { $0.pipeline.add(handler: NIOWebSocketHandler(socketHandler: value)) })
-//			}.map { RouteValueBox($0.state, WebSocketNoHTTPOutput()) }
-		}
+private struct NIOWebSocket: WebSocket {
+	let handler: NIOWebSocketHandler // !FIX! does this cause retain cycle?
+	var options: [WebSocketOption] {
+		get { return handler.options }
+		set { handler.options = newValue }
+	}
+	func readMessage() -> EventLoopFuture<WebSocketMessage> {
+		return handler.issueRead()
+	}
+	func writeMessage(_ message: WebSocketMessage) -> EventLoopFuture<Void> {
+		return handler.writeMessage(message)
 	}
 }
 
 private final class NIOWebSocketHandler: ChannelInboundHandler {
+	enum CloseState {
+		case open, closed, sentClose, receivedClose
+	}
 	typealias InboundIn = WebSocketFrame
 	typealias OutboundOut = WebSocketFrame
-	private var awaitingClose = false
-	private var socketHandler: WebSocketHandler
-	init(socketHandler: @escaping WebSocketHandler) {
+	let channel: Channel
+	fileprivate var sentClose = false
+	fileprivate var socketHandler: WebSocketHandler
+	private var waitingPromise: EventLoopPromise<WebSocketMessage>?
+	private var waitingMessages: [WebSocketMessage] = []
+	var options: [WebSocketOption] = [] {
+		didSet {
+			for option in options {
+				switch option {
+				case .manualClose:
+					manualClose = true
+				case .manualPing:
+					manualPing = true
+				case .pingInterval(let time):
+					pingInterval = time
+				case .responseTimeout(let time):
+					responseTimeout = time
+				}
+			}
+		}
+	}
+	var closeState = CloseState.open
+	var manualClose = false
+	var manualPing = false
+	var pingInterval: Int = 0
+	var responseTimeout: Int = 0
+	
+	init(channel: Channel, socketHandler: @escaping WebSocketHandler) {
+		self.channel = channel
 		self.socketHandler = socketHandler
 	}
+	func issueRead() -> EventLoopFuture<WebSocketMessage> {
+		if !waitingMessages.isEmpty {
+			return channel.eventLoop.newSucceededFuture(result: waitingMessages.removeFirst())
+		}
+		if let p = waitingPromise {
+			return p.futureResult
+		}
+		let p = channel.eventLoop.newPromise(of: WebSocketMessage.self)
+		waitingPromise = p
+		return p.futureResult
+	}
+	func writeMessage(_ message: WebSocketMessage) -> EventLoopFuture<Void> {
+		switch message {
+		case .close:
+			switch closeState {
+			case .open:
+				closeState = .sentClose
+			case .closed:
+				return channel.eventLoop.newFailedFuture(error: WebSocketError("Connection not open."))
+			case .sentClose:
+				return channel.eventLoop.newFailedFuture(error: WebSocketError("Close already sent."))
+			case .receivedClose:
+				closeState = .closed
+			}
+			let stupidEmptyBuffer = channel.allocator.buffer(capacity: 0)
+			let closeFrame = WebSocketFrame(fin: true, opcode: .connectionClose, data: stupidEmptyBuffer)
+			return channel.writeAndFlush(wrapOutboundOut(closeFrame))
+		case .ping:
+			let stupidEmptyBuffer = channel.allocator.buffer(capacity: 0)
+			let closeFrame = WebSocketFrame(fin: true, opcode: .ping, data: stupidEmptyBuffer)
+			return channel.writeAndFlush(wrapOutboundOut(closeFrame))
+		case .pong:
+			let stupidEmptyBuffer = channel.allocator.buffer(capacity: 0)
+			let closeFrame = WebSocketFrame(fin: true, opcode: .pong, data: stupidEmptyBuffer)
+			return channel.writeAndFlush(wrapOutboundOut(closeFrame))
+		case .text(let text):
+			let bytes = Array(text.utf8)
+			var buffer = channel.allocator.buffer(capacity: bytes.count)
+			buffer.write(bytes: bytes)
+			let frame = WebSocketFrame(fin: true, opcode: .text, data: buffer)
+			return channel.writeAndFlush(wrapOutboundOut(frame))
+		case .binary(let bytes):
+			var buffer = channel.allocator.buffer(capacity: bytes.count)
+			buffer.write(bytes: bytes)
+			let frame = WebSocketFrame(fin: true, opcode: .binary, data: buffer)
+			return channel.writeAndFlush(wrapOutboundOut(frame))
+		}
+	}
 	public func handlerAdded(ctx: ChannelHandlerContext) {
-		
+		socketHandler(NIOWebSocket(handler: self))
+	}
+	public func handlerRemoved(ctx: ChannelHandlerContext) {
+		print("handlerRemoved")
 	}
 	public func channelRead(ctx: ChannelHandlerContext, data: NIOAny) {
 		let frame = unwrapInboundIn(data)
 		switch frame.opcode {
 		case .connectionClose:
-			receivedClose(ctx: ctx, frame: frame)
+			switch closeState {
+			case .open:
+				closeState = .receivedClose
+			case .closed:
+				closeOnError(ctx: ctx)
+			case .sentClose:
+				closeState = .closed
+			case .receivedClose:
+				closeOnError(ctx: ctx)
+			}
+			if !manualClose {
+				writeMessage(.close).then { ctx.close() }.whenComplete {
+					self.queueMessage(.close)
+				}
+			} else {
+				queueMessage(.close)
+			}
 		case .unknownControl, .unknownNonControl:
 			closeOnError(ctx: ctx)
 		case .ping:
-			pong(ctx: ctx, frame: frame)
+			if !manualPing {
+				pong(ctx: ctx, frame: frame)
+			}
+			queueMessage(.ping)
 		case .text:
-			()
+			var data = frame.unmaskedData
+			let text = data.readString(length: data.readableBytes) ?? ""
+			queueMessage(.text(text))
 		case .binary:
-			()
+			var data = frame.unmaskedData
+			let binary = data.readBytes(length: data.readableBytes) ?? []
+			queueMessage(.binary(binary))
 		case .continuation:
 			()
 		case .pong:
-			()
+			queueMessage(.pong)
 		}
 	}
-	
+	private func queueMessage(_ msg: WebSocketMessage) {
+		waitingMessages.append(msg)
+		checkWaitingPromise()
+	}
+	@discardableResult
+	private func checkWaitingPromise() -> Bool {
+		guard !waitingMessages.isEmpty, let p = waitingPromise else {
+			return false
+		}
+		waitingPromise = nil
+		p.succeed(result: waitingMessages.removeFirst())
+		return true
+	}
 	public func channelReadComplete(ctx: ChannelHandlerContext) {
 		ctx.flush()
 	}
 	
 	private func receivedClose(ctx: ChannelHandlerContext, frame: WebSocketFrame) {
-		if awaitingClose {
+//		if awaitingClose {
 			ctx.close(promise: nil)
-		} else {
-			var data = frame.unmaskedData
-			let closeDataCode = data.readSlice(length: 2) ?? ctx.channel.allocator.buffer(capacity: 0)
-			let closeFrame = WebSocketFrame(fin: true, opcode: .connectionClose, data: closeDataCode)
-			_ = ctx.write(wrapOutboundOut(closeFrame)).map { () in
-				ctx.close(promise: nil)
-			}
-		}
+//		} else {
+//			var data = frame.unmaskedData
+//			let closeDataCode = data.readSlice(length: 2) ?? ctx.channel.allocator.buffer(capacity: 0)
+//			let closeFrame = WebSocketFrame(fin: true, opcode: .connectionClose, data: closeDataCode)
+//			_ = ctx.write(wrapOutboundOut(closeFrame)).map { () in
+//				ctx.close(promise: nil)
+//			}
+//		}
+		closeState = .closed
 	}
 	
 	private func pong(ctx: ChannelHandlerContext, frame: WebSocketFrame) {
@@ -201,7 +343,7 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 		ctx.write(wrapOutboundOut(frame)).whenComplete {
 			ctx.close(mode: .output, promise: nil)
 		}
-		awaitingClose = true
+		closeState = .closed
 	}
 }
 

@@ -110,7 +110,7 @@ class NIOBoundRoutes: BoundRoutes {
 				channel in
 				NIOBoundRoutes.configureHTTPServerPipeline(pipeline: channel.pipeline, sslContext: sslContext)
 				.then {
-					channel.pipeline.add(handler: NIOHTTPHandler(finder: finder, isTLS: sslContext != nil))
+					channel.pipeline.add(name: "NIOHTTPHandler", handler: NIOHTTPHandler(finder: finder, isTLS: sslContext != nil))
 				}
 			}.bind(host: address, port: port).wait()
 	}
@@ -118,18 +118,16 @@ class NIOBoundRoutes: BoundRoutes {
 		return NIOListeningRoutes(channel: channel)
 	}
 	private static func configureHTTPServerPipeline(pipeline: ChannelPipeline, sslContext: NIOOpenSSL.SSLContext?) -> EventLoopFuture<Void> {
-		let responseEncoder = HTTPResponseEncoder()
-		let requestDecoder = HTTPRequestDecoder(leftOverBytesStrategy: .dropBytes)
 		var handlers: [ChannelHandler] = []
 		if let sslContext = sslContext {
 			let handler = try! OpenSSLServerHandler(context: sslContext)
 			handlers.append(handler)
 		}
 		return pipeline.addHandlers(handlers, first: false)
-			.then { pipeline.add(name: "responseEncoder", handler: responseEncoder, first: false) }
-			.then { pipeline.add(name: "requestDecoder", handler: requestDecoder, first: false) }
-			.then { pipeline.add(handler: HTTPServerPipelineHandler(), first: false) }
-			.then { pipeline.add(handler: HTTPServerProtocolErrorHandler(), first: false) }
+			.then { pipeline.add(name: "HTTPResponseEncoder", handler: HTTPResponseEncoder(), first: false) }
+			.then { pipeline.add(name: "HTTPRequestDecoder", handler: HTTPRequestDecoder(leftOverBytesStrategy: .dropBytes), first: false) }
+			.then { pipeline.add(name: "HTTPServerPipelineHandler", handler: HTTPServerPipelineHandler(), first: false) }
+			.then { pipeline.add(name: "HTTPServerProtocolErrorHandler", handler: HTTPServerProtocolErrorHandler(), first: false) }
 	}
 }
 
