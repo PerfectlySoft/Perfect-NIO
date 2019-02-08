@@ -655,6 +655,33 @@ final class PerfectNIOTests: XCTestCase {
 		}
 	}
 	
+	func testMustacheOutput() {
+		do {
+			let expectedOutput = "<html><body>key1: value1<br>key2: value2</body></html>"
+			let tmpFilePath = "/tmp/test.mustache"
+			let file = File(tmpFilePath)
+			defer { file.delete() }
+			do {
+				try file.open(.truncate, permissions: [.readUser, .writeUser])
+				try file.write(string: "<html><body>key1: {{key1}}<br>key2: {{key2}}</body></html>")
+				file.close()
+			}
+			let route = root().test {
+				try MustacheOutput(templatePath: tmpFilePath,
+								   inputs: ["key1":"value1", "key2":"value2"],
+								   contentType: "text/html") as HTTPOutput
+				}.ext("html")
+			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
+			let resp = try CURLRequest("http://localhost:42000/test.html").perform().bodyString
+			XCTAssertEqual(resp, expectedOutput)
+		} catch {
+			XCTFail("\(error)")
+		}
+	}
+	
     static var allTests = [
 		("testRoot1", testRoot1),
 		("testRoot2", testRoot2),
@@ -675,14 +702,15 @@ final class PerfectNIOTests: XCTestCase {
 		("testGetRequest1", testGetRequest1),
 		("testAsync1", testAsync1),
 		("testAsync2", testAsync2),
-		("testCompress1", testCompress1),
 		("testStream1", testStream1),
 		("testStream2", testStream2),
 		("testUnwrap", testUnwrap),
 		("testAuthEg", testAuthEg),
-		("testQueryDecoder", testQueryDecoder),
 		("testCompress1", testCompress1),
-		("testFileOutput", testFileOutput)
+		("testCompress2", testCompress2),
+		("testCompress3", testCompress3),
+		("testFileOutput", testFileOutput),
+		("testMustacheOutput", testMustacheOutput)
     ]
 }
 

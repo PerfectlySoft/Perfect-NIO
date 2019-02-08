@@ -33,7 +33,8 @@ public enum WebSocketOption {
 	/// If manual close is not indicated (the default)
 	/// then the socket will automatically reply with a .close message.
 	/// If manual close is indicated then the handler must reply to the close itself.
-	/// In either case the handler will receive the .close message
+	/// In either case the handler will receive the .close message.
+	/// In either case the connection will be closed once the close handshake completes.
 	case manualClose
 	/// If manual ping is not indicated (the default)
 	/// then the socket will automatically reply with a .pong message.
@@ -225,7 +226,11 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 			}
 			let stupidEmptyBuffer = channel.allocator.buffer(capacity: 0)
 			let closeFrame = WebSocketFrame(fin: true, opcode: .connectionClose, data: stupidEmptyBuffer)
-			return channel.writeAndFlush(wrapOutboundOut(closeFrame))
+			let fut = channel.writeAndFlush(wrapOutboundOut(closeFrame))
+			if case .closed = closeState {
+				return fut.then { self.channel.close(mode: .all) }
+			}
+			return fut
 		case .ping:
 			let stupidEmptyBuffer = channel.allocator.buffer(capacity: 0)
 			let closeFrame = WebSocketFrame(fin: true, opcode: .ping, data: stupidEmptyBuffer)
@@ -251,7 +256,7 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 		socketHandler(NIOWebSocket(handler: self))
 	}
 	public func handlerRemoved(ctx: ChannelHandlerContext) {
-		print("handlerRemoved")
+		
 	}
 	public func channelRead(ctx: ChannelHandlerContext, data: NIOAny) {
 		let frame = unwrapInboundIn(data)
@@ -260,19 +265,20 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 			switch closeState {
 			case .open:
 				closeState = .receivedClose
-			case .closed:
-				closeOnError(ctx: ctx)
+				if !manualClose {
+					writeMessage(.close).whenComplete {
+						self.queueMessage(.close)
+					}
+				} else {
+					queueMessage(.close)
+				}
 			case .sentClose:
 				closeState = .closed
-			case .receivedClose:
-				closeOnError(ctx: ctx)
-			}
-			if !manualClose {
-				writeMessage(.close).then { ctx.close() }.whenComplete {
+				ctx.close(mode: .all).whenComplete {
 					self.queueMessage(.close)
 				}
-			} else {
-				queueMessage(.close)
+			case .closed, .receivedClose:
+				closeOnError(ctx: ctx)
 			}
 		case .unknownControl, .unknownNonControl:
 			closeOnError(ctx: ctx)

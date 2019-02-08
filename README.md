@@ -476,39 +476,6 @@ The above spins off an asynchronous activity (in this case, sleeping for 1 secon
 
 It's important to note that subsequent activities for the route will occur on the NIO event loop.
 
-#### stream
-Stream data to the client.
-
-Definitions:
-
-```swift
-public extension Routes {
-	/// Stream bytes to the client. Caller should use the `StreamToken` to send data in chunks.
-	/// Caller must call `StreamToken.complete()` when done.
-	/// Response data is always sent using chunked encoding.
-	func stream(_ call: @escaping (OutType, StreamToken) -> ()) -> Routes<InType, HTTPOutput>
-}
-```
-
-Example:
-
-```swift
-let route = root().stream {
-	req, token in
-	do {
-		for i in 0..<16 {
-			let toSend = String(repeating: "\(i % 10)", count: 1024)
-			try token.push(Array(toSend.utf8))
-		}
-		token.complete()
-	} catch {}
-}
-```
-
-This example streams 16k worth of data to the client in chunks of 1k bytes. the closure is called with a `StreamToken` as the second argument. This token can be used to send data to the client or complete the request. The sending function is run in a thread outside of the NIO event loop.
-
-A call to `stream` will make the return type an HTTPOutput, which is to say `stream` can be the final operation/element in a route.
-
 #### text
 Use a `CustomStringConvertible` as the output with a text/plain content type.
 
@@ -551,6 +518,46 @@ let route = root().foo { Foo(id: UUID(), date: Date()) }.json()
 
 This example create a route `/foo` which returns a Foo object. The Foo is converted to JSON and sent to the client.
 
+#### compressed
+
+Outgoing client content can be compressed using either gzip or deflate algorithms by calling the `compressed()` function on any route returning HTTPOutput.
+
+```swift
+/// Compresses eligible output
+public extension Routes where OutType: HTTPOutput {
+	func compressed() -> Routes<InType, HTTPOutput>
+}
+```
+
+Compressed content takes HTTPOutput and then selectively compresses and sends the content to the client. If the source HTTPOutput object specifies a response Content-Length and that content length is less than 14k, the response will not be compressed. If the source HTTPoutput specifies a content-type and that type begins with "image/", "video/", or "audio/", the response will not be compressed.
+
+Example:
+
+```swift
+class StreamOutput: HTTPOutput {
+	var counter = 0
+	override init() {
+		super.init()
+		kind = .stream
+	}
+	override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
+		if counter > 15 {
+			promise.succeed(result: nil)
+		} else {
+			let toSend = String(repeating: "\(counter % 10)", count: 1024)
+			counter += 1
+			let ary = Array(toSend.utf8)
+			var buf = allocator.buffer(capacity: ary.count)
+			buf.write(bytes: ary)
+			promise.succeed(result: .byteBuffer(buf))
+		}
+	}
+}
+let route = root() { return StreamOutput() as HTTPOutput }.compressed()
+```
+
+This example streams text content to the client. The usage of `.compressed()` at the end of the route will turn on content compression.
+
 ### HTTPOutput
 
 Considering a complete set of routes as a function, it would look like:
@@ -559,7 +566,65 @@ Considering a complete set of routes as a function, it would look like:
 
 <a href="httpoutput">`HTTPOutput`</a> is a base class which can optionally set the HTTP response status, headers and body data. Several concrete HTTPOutput implementations are provided for you, but you can add your own custom output by sub-classing and returning your object.
 
-Built-in HTTPOutput types include `HTTPOutputError`, which can be thrown, JSONOutput, TextOutput, and BytesOutput.
+Built-in HTTPOutput types include `HTTPOutputError`, which can be thrown, JSONOutput, TextOutput, CompressedOutput, FileOutput, MustacheOutput, and BytesOutput.
+
+```swift
+/// The response output for the client
+open class HTTPOutput {
+	/// Indicates how the `body` func data, and possibly content-length, should be handled
+	var kind: HTTPOutputResponseHint
+	/// Optional HTTP head
+	open func head(request: HTTPRequestHead) -> HTTPHead?
+	/// Produce body data
+	/// Set nil on last chunk
+	/// Call promise.fail upon failure
+	open func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator)
+}
+```
+
+#### FileOutput
+
+File content can be returned from a route by using the `FileOutput` type.
+
+```swift
+public class FileOutput: HTTPOutput {
+	public init(localPath: String) throws
+}
+```
+
+Example:
+
+```swift
+let route = root().test {
+	try FileOutput(localPath: "/tmp/test.txt") as HTTPOutput
+}.ext("txt")
+```
+
+This example serves the route /test.txt and returns the content of a local file. If the file does not exist or is not readable then an Error will be thrown.
+
+#### MustacheOutput
+
+Content from mustache templates can be returned from a route by using the `MustacheOutput` type. 
+
+```swift
+public class MustacheOutput: HTTPOutput {
+	public init(templatePath: String,
+				inputs: [String:Any],
+				contentType: String) throws 
+}
+```
+
+Example:
+
+```swift
+let route = root().test {
+	try MustacheOutput(templatePath: tmpFilePath,
+					   inputs: ["key1":"value1", "key2":"value2"],
+					   contentType: "text/html") as HTTPOutput
+}.ext("html")
+```
+
+This example processes and serves a mustache template file as text/html.
 
 ### Caveats
 
@@ -570,10 +635,7 @@ doing blocking activities in a non-async func
 
 *TBD:*
 
-* Static file output
-* Mustache output
-* Compression
-* Logging
+* Logging - use the new sss logging stuff
 
 ### Reference
 
@@ -683,21 +745,7 @@ open class HTTPOutput {
 	/// Produce body data
 	/// Set nil on last chunk
 	/// Call promise.fail upon failure
-	open func body(_ p: EventLoopPromise<[UInt8]?>)
-}
-```
-
-<a name="streamtoken"></a>
-#### StreamToken
-
-```swift
-/// An object given to a content streamer
-public struct StreamToken {
-	/// Push a chunk of bytes to the client.
-	/// An error thrown from this call will generally indicate that the client has closed the connection.
-	public func push(_ bytes: [UInt8]) throws
-	/// Complete the response streaming.
-	public func complete()
+	open func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator)
 }
 ```
 

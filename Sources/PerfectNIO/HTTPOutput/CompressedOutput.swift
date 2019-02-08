@@ -39,12 +39,6 @@ internal extension String {
 	}
 }
 
-private extension IOData {
-	func getBytes(_ callback: @escaping (ByteBuffer) -> ()) {
-		
-	}
-}
-
 /// Given a header value, extracts the q value if there is one present. If one is not present,
 /// returns the default q value, 1.0.
 private func qValueFromHeader(_ text: String) -> Float {
@@ -79,6 +73,7 @@ public class CompressedOutput: HTTPOutput {
 	private var done = false
 	private let chunkSize = 32 * 1024
 	private var consumingRegion: FileRegion?
+	private let noCompressMimes = ["image/", "video/", "audio/"]
 	init(source: HTTPOutput) {
 		sourceContent = source
 		minCompressLength = 1024 * 14 // !FIX!
@@ -99,6 +94,10 @@ public class CompressedOutput: HTTPOutput {
 		if let contentLengthStr = sourceHead?.headers["content-length"].first,
 			let contentLength = Int(contentLengthStr),
 			contentLength < minCompressLength {
+			return sourceHead
+		}
+		if let contentTypeStr = sourceHead?.headers["content-type"].first,
+			let _ = noCompressMimes.first(where: { contentTypeStr.hasPrefix($0) }) {
 			return sourceHead
 		}
 		var head: HTTPHead
