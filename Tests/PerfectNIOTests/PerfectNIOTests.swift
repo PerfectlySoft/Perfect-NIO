@@ -626,6 +626,36 @@ final class PerfectNIOTests: XCTestCase {
 		}
 	}
 	
+	func testCompress4() {
+		do {
+			let tmpFilePath = "/tmp/test.gif"
+			let file = File(tmpFilePath)
+			defer { file.delete() }
+			do {
+				var bytes: [UInt8] = []
+				for i in 0..<16 {
+					let toSend = String(repeating: "\(i % 10)", count: 1024)
+					bytes.append(contentsOf: Array(toSend.utf8))
+				}
+				try file.open(.truncate, permissions: [.readUser, .writeUser])
+				try file.write(bytes: bytes)
+				file.close()
+			}
+			let route = root().test {
+				try FileOutput(localPath: tmpFilePath) as HTTPOutput
+				}.ext("gif").compressed()
+			let server = try route.bind(port: 42000).listen()
+			defer {
+				try? server.stop().wait()
+			}
+			let resp = try CURLRequest("http://localhost:42000/test.gif", .acceptEncoding("gzip, deflate")).perform()
+			XCTAssertEqual(resp.bodyBytes.count, 16384)
+			XCTAssert(!resp.headers.contains(where: { $0.0 == .contentEncoding && $0.1 == "gzip" }))
+		} catch {
+			XCTFail("\(error)")
+		}
+	}
+	
 	func testFileOutput() {
 		do {
 			let tmpFilePath = "/tmp/test.txt"

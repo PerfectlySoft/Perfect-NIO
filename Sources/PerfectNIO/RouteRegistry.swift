@@ -246,6 +246,21 @@ public extension Routes {
 		let ext = ext.ext
 		return applyPaths { $0 + ext }
 	}
+	/// Adds the indicated file extension to the route set
+	/// and sets the response's content type.
+	func ext(_ ext: String,
+			 contentType: String) -> Routes {
+		let ext = ext.ext
+		return apply(
+			paths: {$0 + ext},
+			funcs: {
+				$0.thenThrowing {
+					$0.state.responseHead.headers.add(name: "content-type", value: contentType)
+					return $0
+				}
+			}
+		)
+	}
 	/// Adds the indicated file extension to the route set.
 	/// Optionally set the response's content type.
 	/// The given function accepts the input value and returns a new value.
