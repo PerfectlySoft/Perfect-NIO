@@ -815,6 +815,7 @@ public extension Routes {
 ### Package.swift Usage
 
 In your Package.swift:
+
 ```swift
 .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", .branch("master"))
 ```

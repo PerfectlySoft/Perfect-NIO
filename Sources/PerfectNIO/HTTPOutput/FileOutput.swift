@@ -20,6 +20,7 @@ import Foundation
 import NIO
 import NIOHTTP1
 import PerfectLib
+import PerfectMIME
 import CNIOSHA1
 
 extension String.UTF8View {
@@ -83,7 +84,7 @@ public class FileOutput: HTTPOutput {
 			// region is nil. no body
 			return HTTPHead(status: HTTPResponseStatus.notModified, headers: HTTPHeaders(headers))
 		}
-		let contentType = MimeType.forExtension(path.filePathExtension)
+		let contentType = MIMEType.forExtension(path.filePathExtension)
 		headers.append(("Content-Type", contentType))
 		if let rangeRequest = request.head.headers["range"].first {
 			let ranges = parseRangeHeader(fromHeader: rangeRequest, max: size)

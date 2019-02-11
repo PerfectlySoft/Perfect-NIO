@@ -12,6 +12,7 @@ let package = Package(
 		.package(url: "https://github.com/PerfectlySoft/Perfect-Mustache.git", .branch("4.0-dev")),
 		.package(url: "https://github.com/PerfectlySoft/PerfectLib.git", from: "3.0.0"),
 		.package(url: "https://github.com/PerfectlySoft/Perfect-CRUD.git", from: "1.0.0"),
+		.package(url: "https://github.com/PerfectlySoft/Perfect-MIME.git", from: "1.0.0"),
 		.package(url: "https://github.com/apple/swift-nio.git", from: "1.0.0"),
 		.package(url: "https://github.com/apple/swift-nio-ssl.git", from: "1.0.0"),
 		
@@ -28,6 +29,7 @@ let package = Package(
 		.target(name: "PerfectNIO", dependencies: [
 			"PerfectLib",
 			"PerfectCRUD",
+			"PerfectMIME",
 			"PerfectMustache",
 			"NIOHTTP1",
 			"NIOOpenSSL",
