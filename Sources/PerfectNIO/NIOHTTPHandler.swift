@@ -55,6 +55,9 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 			assert(contentConsumed <= contentRead && contentConsumed <= contentLength)
 		}
 	}
+	var localAddress: SocketAddress? { return channel?.localAddress }
+	var remoteAddress: SocketAddress? { return channel?.remoteAddress }
+	
 	let finder: RouteFinder
 	var head: HTTPRequestHead?
 	var channel: Channel?

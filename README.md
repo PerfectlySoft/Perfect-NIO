@@ -680,6 +680,8 @@ public protocol HTTPRequest {
 	var contentLength: Int { get }
 	var contentRead: Int { get }
 	var contentConsumed: Int { get }
+	var localAddress: SocketAddress? { get }
+	var remoteAddress: SocketAddress? { get }
 	func readSomeContent() -> EventLoopFuture<[ByteBuffer]>
 	func readContent() -> EventLoopFuture<HTTPRequestContentType>
 }
@@ -800,11 +802,11 @@ public protocol BoundRoutes {
 
 ```swift
 public extension Routes {
-	var GET: Routes<InType, OutType> { return method(.GET) }
-	var POST: Routes { return method(.POST) }
-	var PUT: Routes { return method(.PUT) }
-	var DELETE: Routes { return method(.DELETE) }
-	var OPTIONS: Routes { return method(.OPTIONS) }
+	var GET: Routes<InType, OutType>
+	var POST: Routes
+	var PUT: Routes
+	var DELETE: Routes
+	var OPTIONS: Routes
 	func method(_ method: HTTPMethod, _ methods: HTTPMethod...) -> Routes
 }
 ```

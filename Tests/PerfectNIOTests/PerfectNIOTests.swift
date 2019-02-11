@@ -712,6 +712,21 @@ final class PerfectNIOTests: XCTestCase {
 		}
 	}
 	
+	func testAddress() {
+		do {
+			let port = 42000
+			let route = root().address { $0.localAddress?.port }.unwrap { "\($0)" }.text()
+			let server = try route.bind(port: port).listen()
+			defer {
+				try? server.stop().wait()
+			}
+			let req1 = try CURLRequest("http://localhost:\(port)/address").perform().bodyString
+			XCTAssertEqual(req1, "\(port)")
+		} catch {
+			XCTFail("\(error)")
+		}
+	}
+	
     static var allTests = [
 		("testRoot1", testRoot1),
 		("testRoot2", testRoot2),
@@ -740,7 +755,8 @@ final class PerfectNIOTests: XCTestCase {
 		("testCompress2", testCompress2),
 		("testCompress3", testCompress3),
 		("testFileOutput", testFileOutput),
-		("testMustacheOutput", testMustacheOutput)
+		("testMustacheOutput", testMustacheOutput),
+		("testAddress", testAddress)
     ]
 }
 
