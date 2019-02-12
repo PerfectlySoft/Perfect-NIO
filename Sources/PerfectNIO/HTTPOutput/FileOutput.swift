@@ -52,7 +52,6 @@ extension UInt8 {
 	}
 }
 
-// write me. all of me
 public class FileOutput: HTTPOutput {
 	let path: String
 	let size: Int // !FIX! NIO FileRegions only accept Int in init. should be UInt64
