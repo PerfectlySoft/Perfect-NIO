@@ -45,13 +45,17 @@ public struct QueryDecoder {
 		build()
 	}
 	
+	private func decodedString(_ bytes: ArraySlice<UInt8>) -> String {
+		return String(bytes: bytes, encoding: .utf8)?.stringByDecodingURL ?? ""
+	}
+	
 	public subscript(_ key: String) -> [String] {
-		return get(key).map { String(bytes: $0, encoding: .utf8) ?? "" }
+		return get(key).map { self.decodedString($0) }
 	}
 	
 	public func map<T>(_ call: ((String,String)) throws -> T) rethrows -> [T] {
 		return try mapBytes {
-			return try call(($0.0, String(bytes: $0.1, encoding: .utf8) ?? ""))
+			return try call(($0.0, self.decodedString($0.1)))
 		}
 	}
 	

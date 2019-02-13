@@ -40,6 +40,7 @@ public enum HTTPOutputResponseHint {
 open class HTTPOutput {
 	/// Indicates how the `body` func data, and possibly content-length, should be handled
 	var kind: HTTPOutputResponseHint = .fixed
+	public init() {}
 	/// Optional HTTP head
 	open func head(request: HTTPRequestInfo) -> HTTPHead? {
 		return nil
