@@ -62,7 +62,7 @@ public extension Routes {
 	func webSocket(protocol: String, _ callback: @escaping (OutType) throws -> WebSocketHandler) -> Routes<InType, HTTPOutput> {
 		return applyFuncs {
 			return $0.thenThrowing {
-				RouteValueBox($0.state, WebSocketUpgradeHTTPOutput(state: $0.state, handler: try callback($0.value)))
+				RouteValueBox($0.state, WebSocketUpgradeHTTPOutput(request: $0.state.request, handler: try callback($0.value)))
 			}
 		}
 	}
@@ -78,16 +78,16 @@ fileprivate extension HTTPHeaders {
 	}
 }
 
-private class WebSocketUpgradeHTTPOutput: HTTPOutput {
+public final class WebSocketUpgradeHTTPOutput: HTTPOutput {
 	private let magicWebSocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-	let state: HandlerState
+	let request: HTTPRequest
 	let handler: WebSocketHandler
 	var failed = false
-	init(state: HandlerState, handler: @escaping WebSocketHandler) {
-		self.state = state
+	public init(request: HTTPRequest, handler: @escaping WebSocketHandler) {
+		self.request = request
 		self.handler = handler
 	}
-	override func head(request: HTTPRequestInfo) -> HTTPHead? {
+	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
 		var extraHeaders = HTTPHeaders()
 		// The version must be 13.
 		guard let key = request.head.headers.nonListHeader("Sec-WebSocket-Key"),
@@ -109,11 +109,11 @@ private class WebSocketUpgradeHTTPOutput: HTTPOutput {
 		return HTTPHead(status: .switchingProtocols, headers: extraHeaders)
 	}
 	
-	override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
-		guard !failed, let channel = state.request.channel else {
+	public override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
+		guard !failed, let channel = request.channel, let request = self.request as? NIOHTTPHandler else {
 			return promise.succeed(result: nil)
 		}
-		state.request.upgraded = true
+		request.upgraded = true
 		channel.pipeline.remove(name: "HTTPResponseEncoder")
 		.then {
 			_ in
@@ -209,6 +209,7 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 		}
 		let p = channel.eventLoop.newPromise(of: WebSocketMessage.self)
 		waitingPromise = p
+		channel.read()
 		return p.futureResult
 	}
 	func writeMessage(_ message: WebSocketMessage) -> EventLoopFuture<Void> {

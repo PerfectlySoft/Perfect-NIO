@@ -22,6 +22,7 @@ public enum HTTPRequestContentType {
 }
 
 public protocol HTTPRequest {
+	var channel: Channel? { get }
 	var method: HTTPMethod { get }
 	var uri: String { get }
 	var headers: HTTPHeaders { get }

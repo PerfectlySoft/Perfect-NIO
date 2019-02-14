@@ -320,7 +320,7 @@ public extension Routes {
 			paths: {$0.appending(component: "**")},
 			funcs: {
 				$0.thenThrowing {
-					let c = $0.state.trailingComponents ?? "-error-"
+					let c = $0.state.trailingComponents ?? ""
 					$0.state.advanceComponent()
 					return RouteValueBox($0.state, try call($0.value, c))
 				}
