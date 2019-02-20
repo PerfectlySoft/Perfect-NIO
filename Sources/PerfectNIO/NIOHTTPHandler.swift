@@ -356,7 +356,9 @@ extension NIOHTTPHandler {
 			let writeDonePromise: EventLoopPromise<Void> = channel.eventLoop.newPromise()
 			if let bytes = $0 {
 				writeDonePromise.futureResult.whenSuccess {
-					self.writeBody(body)
+					_ = channel.eventLoop.submit {
+						self.writeBody(body)
+					}
 				}
 				if bytes.readableBytes > 0 {
 					channel.writeAndFlush(self.wrapOutboundOut(.body(bytes)), promise: writeDonePromise)
