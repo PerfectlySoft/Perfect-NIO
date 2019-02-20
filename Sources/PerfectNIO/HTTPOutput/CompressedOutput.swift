@@ -74,7 +74,7 @@ public class CompressedOutput: HTTPOutput {
 	private let chunkSize = 32 * 1024
 	private var consumingRegion: FileRegion?
 	private let noCompressMimes = ["image/", "video/", "audio/"]
-	init(source: HTTPOutput) {
+	public init(source: HTTPOutput) {
 		sourceContent = source
 		minCompressLength = 1024 * 14 // !FIX!
 		super.init()
