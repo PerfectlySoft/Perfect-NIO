@@ -85,11 +85,10 @@ public class FileOutput: HTTPOutput {
 		}
 		let contentType = MIMEType.forExtension(path.filePathExtension)
 		headers.append(("Content-Type", contentType))
-		if let rangeRequest = request.head.headers["range"].first {
-			let ranges = parseRangeHeader(fromHeader: rangeRequest, max: size)
-			headers.append(("Content-Length", "\(ranges.count)"))
-			headers.append(("Content-Range", "bytes \(ranges.startIndex)-\(ranges.endIndex-1)/\(size)"))
-			region = FileRegion(fileHandle: file, readerIndex: ranges.startIndex, endIndex: ranges.endIndex)
+		if let rangeRequest = request.head.headers["range"].first, let range = parseRangeHeader(fromHeader: rangeRequest, max: size).first {
+			headers.append(("Content-Length", "\(range.count)"))
+			headers.append(("Content-Range", "bytes \(range.startIndex)-\(range.endIndex-1)/\(size)"))
+			region = FileRegion(fileHandle: file, readerIndex: range.startIndex, endIndex: range.endIndex)
 		} else {
 			headers.append(("Content-Length", "\(size)"))
 			region = FileRegion(fileHandle: file, readerIndex: 0, endIndex: size)

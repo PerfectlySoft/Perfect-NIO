@@ -72,6 +72,9 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 		self.finder = finder
 		self.isTLS = isTLS
 	}
+	deinit {
+		print("~NIOHTTPHandler")
+	}
 	
 	func runRequest() {
 		guard let requestHead = self.head else {
@@ -115,9 +118,10 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 	}
 	func channelActive(ctx: ChannelHandlerContext) {
 		channel = ctx.channel
+		print("channelActive")
 	}
 	func channelInactive(ctx: ChannelHandlerContext) {
-		return
+		print("~channelInactive")
 	}
 	func channelRead(ctx: ChannelHandlerContext, data: NIOAny) {
 		let reqPart = unwrapInboundIn(data)

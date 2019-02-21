@@ -210,39 +210,57 @@ public class CompressedOutput: HTTPOutput {
 	}
 	// pass nil to flush
 	private func compress(_ bytes: ByteBuffer?, allocator: ByteBufferAllocator) -> ByteBuffer {
+		defer {
+			stream.next_out = nil
+			stream.avail_out = 0
+			stream.next_in = nil
+			stream.avail_in = 0
+		}
 		let readable = bytes?.readableBytes ?? 0
-		let needed = Int(deflateBound(&stream, UInt(readable)) + 256)
+		let needed = Int(deflateBound(&stream, UInt(readable))) + (readable == 0 ? 4096 : 0)
 		var dest = allocator.buffer(capacity: needed)
-		dest.writeWithUnsafeMutableBytes {
-			outputPtr in
-			let typedOutputPtr = UnsafeMutableBufferPointer(start: outputPtr.baseAddress!.assumingMemoryBound(to: UInt8.self),
-															count: needed)
-			stream.next_out = typedOutputPtr.baseAddress!
-			stream.avail_out = UInt32(needed)
-			if var bytes = bytes {
+		
+		if var bytes = bytes {
+			dest.writeWithUnsafeMutableBytes {
+				outputPtr in
+				let typedOutputPtr = UnsafeMutableBufferPointer(start: outputPtr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+																count: needed)
+				stream.next_out = typedOutputPtr.baseAddress
+				stream.avail_out = UInt32(needed)
 				bytes.readWithUnsafeMutableReadableBytes {
 					dataPtr in
 					let typedDataPtr = UnsafeMutableBufferPointer(start: dataPtr.baseAddress!.assumingMemoryBound(to: UInt8.self),
 																  count: readable)
-					stream.next_in = typedDataPtr.baseAddress!
+					stream.next_in = typedDataPtr.baseAddress
 					stream.avail_in = UInt32(readable)
 					let rc = deflate(&stream, Z_NO_FLUSH)
-					if rc != Z_OK {
+					if rc != Z_OK || stream.avail_in != 0 {
 						debugPrint("deflate rc \(rc)")
 					}
 					return readable - Int(stream.avail_in)
 				}
-			} else {
-				stream.next_in = nil
-				stream.avail_in = 0
-				let rc = deflate(&stream, Z_FINISH)
-				if rc != Z_STREAM_END {
-					debugPrint("deflate rc \(rc)")
-				}
+				return needed - Int(stream.avail_out)
 			}
-			return needed - Int(stream.avail_out)
+		} else {
+			stream.next_in = nil
+			stream.avail_in = 0
+			var rc = Z_OK
+			while rc != Z_ERRNO {
+				dest.writeWithUnsafeMutableBytes {
+					outputPtr in
+					let typedOutputPtr = UnsafeMutableBufferPointer(start: outputPtr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+																	count: needed)
+					stream.next_out = typedOutputPtr.baseAddress
+					stream.avail_out = UInt32(needed)
+					rc = deflate(&stream, Z_FINISH)
+					return needed - Int(stream.avail_out)
+				}
+				if rc == Z_STREAM_END {
+					break
+				}
+				dest.reserveCapacity(dest.capacity + needed)
+			}
 		}
-//		print("comressed \(readable) bytes down to \(dest.readableBytes)")
 		return dest
 	}
 }
