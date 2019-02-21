@@ -26,7 +26,7 @@ public class ErrorOutput: BytesOutput, Error, CustomStringConvertible {
 	public init(status: HTTPResponseStatus, description: String? = nil) {
 		self.description = description ?? status.reasonPhrase
 		let chars = Array(self.description.utf8)
-		let headers = HTTPHeaders([("content-type", "text/plain"), ("content-length", "\(chars.count)")])
+		let headers = HTTPHeaders([("Content-Type", "text/plain")])
 		super.init(head: HTTPHead(status: status, headers: headers), body: chars)
 	}
 }

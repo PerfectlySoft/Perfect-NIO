@@ -59,12 +59,20 @@ public class FileOutput: HTTPOutput {
 	let file: NIO.FileHandle
 	var region: FileRegion?
 	var useSendfile = true
-	public init(localPath: String) throws {
+	public init(localPath inPath: String) throws {
+		var localPath = inPath
 		let fm = FileManager.default
 		guard fm.fileExists(atPath: localPath) else {
 			throw ErrorOutput(status: .notFound, description: "The specified file did not exist.")
 		}
-		let attr = try fm.attributesOfItem(atPath: localPath)
+		var attr = try fm.attributesOfItem(atPath: localPath)
+		if attr[.type] as? String == "NSFileTypeDirectory" {
+			localPath = inPath + "/index.html"
+			guard fm.fileExists(atPath: localPath) else {
+				throw ErrorOutput(status: .notFound, description: "The specified file did not exist.")
+			}
+			attr = try fm.attributesOfItem(atPath: localPath)
+		}
 		size = Int(attr[FileAttributeKey.size] as! UInt64) // ...
 		modDate = Int((attr[.modificationDate] as! Date).timeIntervalSince1970)
 		path = localPath

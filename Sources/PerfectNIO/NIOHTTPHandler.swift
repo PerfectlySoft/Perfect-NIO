@@ -109,6 +109,8 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 				case .internalError:
 					body = ErrorOutput(status: .internalServerError, description: "Internal server error.")
 				}
+			case let error as ErrorOutput:
+				body = error
 			default:
 				body = ErrorOutput(status: .internalServerError, description: "Internal server error: \(error)")
 			}
