@@ -72,6 +72,9 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 		self.finder = finder
 		self.isTLS = isTLS
 	}
+	deinit {
+//		print("~NIOHTTPHandler")
+	}
 	
 	func runRequest() {
 		guard let requestHead = self.head else {
@@ -106,6 +109,8 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 				case .internalError:
 					body = ErrorOutput(status: .internalServerError, description: "Internal server error.")
 				}
+			case let error as ErrorOutput:
+				body = error
 			default:
 				body = ErrorOutput(status: .internalServerError, description: "Internal server error: \(error)")
 			}
@@ -115,9 +120,10 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 	}
 	func channelActive(ctx: ChannelHandlerContext) {
 		channel = ctx.channel
+//		print("channelActive")
 	}
 	func channelInactive(ctx: ChannelHandlerContext) {
-		return
+//		print("~channelInactive")
 	}
 	func channelRead(ctx: ChannelHandlerContext, data: NIOAny) {
 		let reqPart = unwrapInboundIn(data)
@@ -369,6 +375,7 @@ extension NIOHTTPHandler {
 				let keepAlive = self.forceKeepAlive ?? self.head?.isKeepAlive ?? false
 				self.reset()
 				if !self.upgraded {
+					body.closed()
 					writeDonePromise.futureResult.whenComplete {
 						if !keepAlive {
 							channel.close(promise: nil)
@@ -382,11 +389,13 @@ extension NIOHTTPHandler {
 			writeDonePromise.futureResult.whenFailure {
 				error in
 				channel.close(promise: nil)
+				body.closed()
 			}
 		}
 		promiseBytes.futureResult.whenFailure {
 			error in
 			channel.close(promise: nil)
+			body.closed()
 		}
 		body.body(promise: promiseBytes, allocator: channel.allocator)
 	}

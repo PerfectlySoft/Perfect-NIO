@@ -59,12 +59,20 @@ public class FileOutput: HTTPOutput {
 	let file: NIO.FileHandle
 	var region: FileRegion?
 	var useSendfile = true
-	public init(localPath: String) throws {
+	public init(localPath inPath: String) throws {
+		var localPath = inPath
 		let fm = FileManager.default
 		guard fm.fileExists(atPath: localPath) else {
 			throw ErrorOutput(status: .notFound, description: "The specified file did not exist.")
 		}
-		let attr = try fm.attributesOfItem(atPath: localPath)
+		var attr = try fm.attributesOfItem(atPath: localPath)
+		if attr[.type] as? String == "NSFileTypeDirectory" {
+			localPath = inPath + "/index.html"
+			guard fm.fileExists(atPath: localPath) else {
+				throw ErrorOutput(status: .notFound, description: "The specified file did not exist.")
+			}
+			attr = try fm.attributesOfItem(atPath: localPath)
+		}
 		size = Int(attr[FileAttributeKey.size] as! UInt64) // ...
 		modDate = Int((attr[.modificationDate] as! Date).timeIntervalSince1970)
 		path = localPath
@@ -85,11 +93,10 @@ public class FileOutput: HTTPOutput {
 		}
 		let contentType = MIMEType.forExtension(path.filePathExtension)
 		headers.append(("Content-Type", contentType))
-		if let rangeRequest = request.head.headers["range"].first {
-			let ranges = parseRangeHeader(fromHeader: rangeRequest, max: size)
-			headers.append(("Content-Length", "\(ranges.count)"))
-			headers.append(("Content-Range", "bytes \(ranges.startIndex)-\(ranges.endIndex-1)/\(size)"))
-			region = FileRegion(fileHandle: file, readerIndex: ranges.startIndex, endIndex: ranges.endIndex)
+		if let rangeRequest = request.head.headers["range"].first, let range = parseRangeHeader(fromHeader: rangeRequest, max: size).first {
+			headers.append(("Content-Length", "\(range.count)"))
+			headers.append(("Content-Range", "bytes \(range.startIndex)-\(range.endIndex-1)/\(size)"))
+			region = FileRegion(fileHandle: file, readerIndex: range.startIndex, endIndex: range.endIndex)
 		} else {
 			headers.append(("Content-Length", "\(size)"))
 			region = FileRegion(fileHandle: file, readerIndex: 0, endIndex: size)
