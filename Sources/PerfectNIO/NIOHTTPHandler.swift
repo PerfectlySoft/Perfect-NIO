@@ -73,7 +73,7 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 		self.isTLS = isTLS
 	}
 	deinit {
-		print("~NIOHTTPHandler")
+//		print("~NIOHTTPHandler")
 	}
 	
 	func runRequest() {
@@ -120,10 +120,10 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 	}
 	func channelActive(ctx: ChannelHandlerContext) {
 		channel = ctx.channel
-		print("channelActive")
+//		print("channelActive")
 	}
 	func channelInactive(ctx: ChannelHandlerContext) {
-		print("~channelInactive")
+//		print("~channelInactive")
 	}
 	func channelRead(ctx: ChannelHandlerContext, data: NIOAny) {
 		let reqPart = unwrapInboundIn(data)
@@ -375,6 +375,7 @@ extension NIOHTTPHandler {
 				let keepAlive = self.forceKeepAlive ?? self.head?.isKeepAlive ?? false
 				self.reset()
 				if !self.upgraded {
+					body.closed()
 					writeDonePromise.futureResult.whenComplete {
 						if !keepAlive {
 							channel.close(promise: nil)
@@ -388,11 +389,13 @@ extension NIOHTTPHandler {
 			writeDonePromise.futureResult.whenFailure {
 				error in
 				channel.close(promise: nil)
+				body.closed()
 			}
 		}
 		promiseBytes.futureResult.whenFailure {
 			error in
 			channel.close(promise: nil)
+			body.closed()
 		}
 		body.body(promise: promiseBytes, allocator: channel.allocator)
 	}

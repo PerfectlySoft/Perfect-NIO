@@ -39,7 +39,7 @@ public enum HTTPOutputResponseHint {
 /// The response output for the client
 open class HTTPOutput {
 	/// Indicates how the `body` func data, and possibly content-length, should be handled
-	var kind: HTTPOutputResponseHint = .fixed
+	var kind: HTTPOutputResponseHint = .fixed // !FIX! is this utilized?
 	public init() {}
 	/// Optional HTTP head
 	open func head(request: HTTPRequestInfo) -> HTTPHead? {
@@ -50,5 +50,9 @@ open class HTTPOutput {
 	/// Call promise.fail upon failure
 	open func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
 		promise.succeed(result: nil)
+	}
+	
+	open func closed() {
+		
 	}
 }
