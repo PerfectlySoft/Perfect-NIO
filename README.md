@@ -392,11 +392,11 @@ public extension Routes {
 	/// Read the client content body and then attempt to decode it as the indicated `Decodable` type.
 	/// Both the original input value and the newly decoded object are delivered to the provided function.
 	func decode<Type: Decodable, NewOut>(_ type: Type.Type,
-										 _ handler: @escaping (OutType, Type) throws -> NewOut) -> Routes<InType, NewOut>
+					     _ handler: @escaping (OutType, Type) throws -> NewOut) -> Routes<InType, NewOut>
 	/// Read the client content body and then attempt to decode it as the indicated `Decodable` type.
 	/// The newly decoded object is delivered to the provided function.
 	func decode<Type: Decodable, NewOut>(_ type: Type.Type,
-										 _ handler: @escaping (Type) throws -> NewOut) -> Routes<InType, NewOut>
+					     _ handler: @escaping (Type) throws -> NewOut) -> Routes<InType, NewOut>
 	/// Read the client content body and then attempt to decode it as the indicated `Decodable` type.
 	/// The newly decoded object becomes the route set's new output value.
 	func decode<Type: Decodable>(_ type: Type.Type) -> Routes<InType, Type>
