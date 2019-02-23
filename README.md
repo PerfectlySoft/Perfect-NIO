@@ -609,8 +609,8 @@ Content from mustache templates can be returned from a route by using the `Musta
 ```swift
 public class MustacheOutput: HTTPOutput {
 	public init(templatePath: String,
-				inputs: [String:Any],
-				contentType: String) throws 
+		    inputs: [String:Any],
+		    contentType: String) throws 
 }
 ```
 
@@ -619,8 +619,8 @@ Example:
 ```swift
 let route = root().test {
 	try MustacheOutput(templatePath: tmpFilePath,
-					   inputs: ["key1":"value1", "key2":"value2"],
-					   contentType: "text/html") as HTTPOutput
+			   inputs: ["key1":"value1", "key2":"value2"],
+			   contentType: "text/html") as HTTPOutput
 }.ext("html")
 ```
 
