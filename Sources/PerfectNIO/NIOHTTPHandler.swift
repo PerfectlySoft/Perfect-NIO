@@ -136,6 +136,11 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 			http(end: headers, ctx: ctx)
 		}
 	}
+	func errorCaught(ctx: ChannelHandlerContext, error: Error) {
+		// we don't have any recognized errors to be caught here
+		// !FIX! make sure this is a true statement
+		ctx.close(promise: nil)
+	}
 	func http(head: HTTPRequestHead, ctx: ChannelHandlerContext) {
 		assert(contentLength == 0)
 		readState = .head

@@ -253,13 +253,17 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 			return channel.writeAndFlush(wrapOutboundOut(frame))
 		}
 	}
-	public func handlerAdded(ctx: ChannelHandlerContext) {
+	func handlerAdded(ctx: ChannelHandlerContext) {
 		socketHandler(NIOWebSocket(handler: self))
 	}
-	public func handlerRemoved(ctx: ChannelHandlerContext) {
+	func handlerRemoved(ctx: ChannelHandlerContext) {
 		
 	}
-	public func channelRead(ctx: ChannelHandlerContext, data: NIOAny) {
+	func errorCaught(ctx: ChannelHandlerContext, error: Error) {
+		// we don't have any recognized errors to be caught here
+		ctx.close(promise: nil)
+	}
+	func channelRead(ctx: ChannelHandlerContext, data: NIOAny) {
 		let frame = unwrapInboundIn(data)
 		switch frame.opcode {
 		case .connectionClose:
@@ -315,10 +319,9 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 		p.succeed(result: waitingMessages.removeFirst())
 		return true
 	}
-	public func channelReadComplete(ctx: ChannelHandlerContext) {
+	func channelReadComplete(ctx: ChannelHandlerContext) {
 		ctx.flush()
 	}
-	
 	private func receivedClose(ctx: ChannelHandlerContext, frame: WebSocketFrame) {
 //		if awaitingClose {
 			ctx.close(promise: nil)
