@@ -48,7 +48,7 @@ try listeningServer.wait()
 
 ### Root
 
-The `root` function is used to create a route beginning with `/`. The root is, by default, a function accepting an <a href="#httprequest">`HTTPRequest`</a> and returning an `HTTPRequest`; an identity function. There are a few other variants of the `root` func. These are listed here: <a href="#root">root</a>.
+The `root` function is used to create a route beginning with `/`. The root is, by default, a function accepting an <a href="#httprequest">`HTTPRequest`</a> and returning an `HTTPRequest`; an identity function. There are a few other variants of the `root` func. These are listed here: <a href="#rooot">root</a>.
 
 The type of object returned by `root` is a `Routes` object. Routes is defined simply as:
 
