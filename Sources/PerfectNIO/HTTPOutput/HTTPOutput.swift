@@ -51,7 +51,9 @@ open class HTTPOutput {
 	open func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
 		promise.succeed(result: nil)
 	}
-	
+	/// Called when the request has completed either successfully or with a failure.
+	/// Sub-classes can override to take special actions or perform cleanup operations.
+	/// Inherited implimenation does nothing.
 	open func closed() {
 		
 	}

@@ -579,6 +579,10 @@ open class HTTPOutput {
 	/// Set nil on last chunk
 	/// Call promise.fail upon failure
 	open func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator)
+	/// Called when the request has completed either successfully or with a failure.
+	/// Sub-classes can override to take special actions or perform cleanup operations.
+	/// Inherited implimenation does nothing.
+	open func closed()
 }
 ```
 
@@ -639,7 +643,7 @@ doing blocking activities in a non-async func
 
 ### Reference
 
-<a name="root"></a>
+<a name="rooot"></a>
 #### root()
 
 ```swift
