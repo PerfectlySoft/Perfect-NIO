@@ -38,3 +38,18 @@ public protocol HTTPRequest {
 	func readSomeContent() -> EventLoopFuture<[ByteBuffer]>
 	func readContent() -> EventLoopFuture<HTTPRequestContentType>
 }
+
+public extension HTTPRequest {
+	/// Returns all the cookie name/value pairs parsed from the request.
+	public var cookies: [String:String] {
+		guard let cookie = self.headers["cookie"].first else {
+			return [:]
+		}
+		return Dictionary(cookie.split(separator: ";").compactMap {
+			let d = $0.split(separator: "=")
+			guard d.count == 2 else { return nil }
+			let d2 = d.map { String($0.filter { $0 != Character(" ") }).stringByDecodingURL ?? "" }
+			return (d2[0], d2[1])
+			}, uniquingKeysWith: {$1})
+	}
+}
