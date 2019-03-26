@@ -251,7 +251,9 @@ extension HTTPMethod {
 }
 
 extension HTTPMethod: Hashable {
-	public var hashValue: Int { return name.hashValue }
+	public func hash(into hasher: inout Hasher) {
+		hasher.combine(name.hashValue)
+	}
 }
 
 extension String {

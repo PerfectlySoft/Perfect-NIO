@@ -41,7 +41,7 @@ public protocol HTTPRequest {
 
 public extension HTTPRequest {
 	/// Returns all the cookie name/value pairs parsed from the request.
-	public var cookies: [String:String] {
+	var cookies: [String:String] {
 		guard let cookie = self.headers["cookie"].first else {
 			return [:]
 		}
