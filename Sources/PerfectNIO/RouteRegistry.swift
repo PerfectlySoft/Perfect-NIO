@@ -134,12 +134,12 @@ public func root() -> Routes<HTTPRequest, HTTPRequest> {
 
 /// Create a root route accepting the HTTPRequest and returning some new value.
 public func root<NewOut>(_ call: @escaping (HTTPRequest) throws -> NewOut) -> Routes<HTTPRequest, NewOut> {
-	return .init(.init(["/":{$0.thenThrowing{RouteValueBox($0.state, try call($0.value))}}]))
+	return .init(.init(["/":{$0.flatMapThrowing{RouteValueBox($0.state, try call($0.value))}}]))
 }
 
 /// Create a root route returning some new value.
 public func root<NewOut>(_ call: @escaping () throws -> NewOut) -> Routes<HTTPRequest, NewOut> {
-	return .init(.init(["/":{$0.thenThrowing{RouteValueBox($0.state, try call())}}]))
+	return .init(.init(["/":{$0.flatMapThrowing{RouteValueBox($0.state, try call())}}]))
 }
 
 /// Create a root route accepting and returning some new value.
@@ -151,7 +151,7 @@ public extension Routes {
 	/// Add a function mapping the input to the output.
 	func map<NewOut>(_ call: @escaping (OutType) throws -> NewOut) -> Routes<InType, NewOut> {
 		return applyFuncs {
-			return $0.thenThrowing {
+			return $0.flatMapThrowing {
 				return RouteValueBox($0.state, try call($0.value))
 			}
 		}
@@ -159,7 +159,7 @@ public extension Routes {
 	/// Add a function mapping the input to the output.
 	func map<NewOut>(_ call: @escaping () throws -> NewOut) -> Routes<InType, NewOut> {
 		return applyFuncs {
-			return $0.thenThrowing {
+			return $0.flatMapThrowing {
 				return RouteValueBox($0.state, try call())
 			}
 		}
@@ -167,7 +167,7 @@ public extension Routes {
 	/// Map the values of a Collection to a new Array.
 	func map<NewOut>(_ call: @escaping (OutType.Element) throws -> NewOut) -> Routes<InType, Array<NewOut>> where OutType: Collection {
 		return applyFuncs {
-			return $0.thenThrowing {
+			return $0.flatMapThrowing {
 				return RouteValueBox($0.state, try $0.value.map(call))
 			}
 		}
@@ -203,7 +203,7 @@ public extension Routes {
 		return apply(
 			paths: {$0.appending(component: name)},
 			funcs: {
-				$0.thenThrowing {
+				$0.flatMapThrowing {
 					$0.state.advanceComponent()
 					return $0
 				}
@@ -217,7 +217,7 @@ public extension Routes {
 		return apply(
 			paths: {$0.appending(component: name)},
 			funcs: {
-				$0.thenThrowing {
+				$0.flatMapThrowing {
 					$0.state.advanceComponent()
 					return RouteValueBox($0.state, try call($0.value))
 				}
@@ -231,7 +231,7 @@ public extension Routes {
 		return apply(
 			paths: {$0.appending(component: name)},
 			funcs: {
-				$0.thenThrowing {
+				$0.flatMapThrowing {
 					$0.state.advanceComponent()
 					return RouteValueBox($0.state, try call())
 				}
@@ -254,7 +254,7 @@ public extension Routes {
 		return apply(
 			paths: {$0 + ext},
 			funcs: {
-				$0.thenThrowing {
+				$0.flatMapThrowing {
 					$0.state.responseHead.headers.add(name: "content-type", value: contentType)
 					return $0
 				}
@@ -271,7 +271,7 @@ public extension Routes {
 		return apply(
 			paths: {$0 + ext},
 			funcs: {
-				$0.thenThrowing {
+				$0.flatMapThrowing {
 					if let c = contentType {
 						$0.state.responseHead.headers.add(name: "content-type", value: c)
 					}
@@ -290,7 +290,7 @@ public extension Routes {
 		return apply(
 			paths: {$0.appending(component: "*")},
 			funcs: {
-				$0.thenThrowing {
+				$0.flatMapThrowing {
 					let c = $0.state.currentComponent ?? "-error-"
 					$0.state.advanceComponent()
 					return RouteValueBox($0.state, try call($0.value, c))
@@ -304,7 +304,7 @@ public extension Routes {
 		return apply(
 			paths: {$0.appending(component: "*")},
 			funcs: {
-				$0.thenThrowing {
+				$0.flatMapThrowing {
 					$0.state.request.uriVariables[name] = $0.state.currentComponent ?? "-error-"
 					$0.state.advanceComponent()
 					return $0
@@ -319,7 +319,7 @@ public extension Routes {
 		return apply(
 			paths: {$0.appending(component: "**")},
 			funcs: {
-				$0.thenThrowing {
+				$0.flatMapThrowing {
 					let c = $0.state.trailingComponents ?? ""
 					$0.state.advanceComponent()
 					return RouteValueBox($0.state, try call($0.value, c))
@@ -333,7 +333,7 @@ public extension Routes {
 	/// Adds the current HTTPRequest as a parameter to the function.
 	func request<NewOut>(_ call: @escaping (OutType, HTTPRequest) throws -> NewOut) -> Routes<InType, NewOut> {
 		return applyFuncs {
-			$0.thenThrowing {
+			$0.flatMapThrowing {
 				return RouteValueBox($0.state, try call($0.value, $0.state.request))
 			}
 		}
@@ -341,9 +341,9 @@ public extension Routes {
 	/// Reads the client content body and delivers it to the provided function.
 	func readBody<NewOut>(_ call: @escaping (OutType, HTTPRequestContentType) throws -> NewOut) -> Routes<InType, NewOut> {
 		return applyFuncs {
-			$0.then {
+			$0.flatMap {
 				box in
-				return box.state.request.readContent().thenThrowing {
+				return box.state.request.readContent().flatMapThrowing {
 					return RouteValueBox(box.state, try call(box.value, $0))
 				}
 			}
@@ -353,7 +353,7 @@ public extension Routes {
 	/// If any code outside of 200..<300 is return the request is aborted.
 	func statusCheck(_ handler: @escaping (OutType) throws -> HTTPResponseStatus) -> Routes<InType, OutType> {
 		return applyFuncs {
-			$0.thenThrowing {
+			$0.flatMapThrowing {
 				box in
 				let status = try handler(box.value)
 				box.state.responseHead.status = status

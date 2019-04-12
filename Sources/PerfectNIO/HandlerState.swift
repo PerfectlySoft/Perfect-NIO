@@ -46,7 +46,7 @@ final class HandlerState {
 	}
 	func readContent() -> EventLoopFuture<HTTPRequestContentType> {
 		if let c = content {
-			return request.channel!.eventLoop.newSucceededFuture(result: c)
+			return request.channel!.eventLoop.makeSucceededFuture(c)
 		}
 		return request.readContent().map {
 			self.content = $0

@@ -61,7 +61,7 @@ public typealias WebSocketHandler = (WebSocket) -> ()
 public extension Routes {
 	func webSocket(protocol: String, _ callback: @escaping (OutType) throws -> WebSocketHandler) -> Routes<InType, HTTPOutput> {
 		return applyFuncs {
-			return $0.thenThrowing {
+			return $0.flatMapThrowing {
 				RouteValueBox($0.state, WebSocketUpgradeHTTPOutput(request: $0.state.request, handler: try callback($0.value)))
 			}
 		}
@@ -74,7 +74,7 @@ fileprivate extension HTTPHeaders {
 		guard fields.count == 1 else {
 			return nil
 		}
-		return fields.first
+		return String(fields[0])
 	}
 }
 
@@ -111,33 +111,34 @@ public final class WebSocketUpgradeHTTPOutput: HTTPOutput {
 	
 	public override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
 		guard !failed, let channel = request.channel, let request = self.request as? NIOHTTPHandler else {
-			return promise.succeed(result: nil)
+			return promise.succeed(nil)
 		}
 		request.upgraded = true
-		channel.pipeline.remove(name: "HTTPResponseEncoder")
-		.then {
+		channel.pipeline.removeHandler(name: "HTTPResponseEncoder")
+		.flatMap {
 			_ in
-			channel.pipeline.remove(name: "HTTPRequestDecoder")
-		}.then {
+			channel.pipeline.removeHandler(name: "HTTPRequestDecoder")
+		}.flatMap {
 			_ in
-			channel.pipeline.remove(name: "HTTPServerPipelineHandler")
-		}.then {
+			channel.pipeline.removeHandler(name: "HTTPServerPipelineHandler")
+		}.flatMap {
 			_ in
-			channel.pipeline.remove(name: "HTTPServerProtocolErrorHandler")
-		}.then {
+			channel.pipeline.removeHandler(name: "HTTPServerProtocolErrorHandler")
+		}.flatMap {
 			_ in
-			channel.pipeline.remove(name: "NIOHTTPHandler")
-		}.then {
+			channel.pipeline.removeHandler(name: "NIOHTTPHandler")
+		}.flatMap {
 			_ in
 			channel.pipeline.addHandlers([	WebSocketFrameEncoder(),
-											WebSocketFrameDecoder(maxFrameSize: 1 << 14, automaticErrorHandling: false),
+											ByteToMessageHandler(WebSocketFrameDecoder()),
 											WebSocketProtocolErrorHandler(),
 											NIOWebSocketHandler(channel: channel, socketHandler: self.handler)],
-										 first: false)
+										 position: .last)
 //		}.then {
 //			channel.setOption(option: ChannelOptions.autoRead, value: false) // !FIX! this made it stop reading altogether. rather have messages be pulled
 		}.whenComplete {
-			promise.succeed(result: nil)
+			_ in
+			promise.succeed(nil)
 		}
 	}
 }
@@ -202,12 +203,12 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 	}
 	func issueRead() -> EventLoopFuture<WebSocketMessage> {
 		if !waitingMessages.isEmpty {
-			return channel.eventLoop.newSucceededFuture(result: waitingMessages.removeFirst())
+			return channel.eventLoop.makeSucceededFuture(waitingMessages.removeFirst())
 		}
 		if let p = waitingPromise {
 			return p.futureResult
 		}
-		let p = channel.eventLoop.newPromise(of: WebSocketMessage.self)
+		let p = channel.eventLoop.makePromise(of: WebSocketMessage.self)
 		waitingPromise = p
 		channel.read()
 		return p.futureResult
@@ -219,9 +220,9 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 			case .open:
 				closeState = .sentClose
 			case .closed:
-				return channel.eventLoop.newFailedFuture(error: WebSocketError("Connection not open."))
+				return channel.eventLoop.makeFailedFuture(WebSocketError("Connection not open."))
 			case .sentClose:
-				return channel.eventLoop.newFailedFuture(error: WebSocketError("Close already sent."))
+				return channel.eventLoop.makeFailedFuture(WebSocketError("Close already sent."))
 			case .receivedClose:
 				closeState = .closed
 			}
@@ -229,7 +230,7 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 			let closeFrame = WebSocketFrame(fin: true, opcode: .connectionClose, data: stupidEmptyBuffer)
 			let fut = channel.writeAndFlush(wrapOutboundOut(closeFrame))
 			if case .closed = closeState {
-				return fut.then { self.channel.close(mode: .all) }
+				return fut.flatMap { self.channel.close(mode: .all) }
 			}
 			return fut
 		case .ping:
@@ -243,27 +244,27 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 		case .text(let text):
 			let bytes = Array(text.utf8)
 			var buffer = channel.allocator.buffer(capacity: bytes.count)
-			buffer.write(bytes: bytes)
+			buffer.writeBytes(bytes)
 			let frame = WebSocketFrame(fin: true, opcode: .text, data: buffer)
 			return channel.writeAndFlush(wrapOutboundOut(frame))
 		case .binary(let bytes):
 			var buffer = channel.allocator.buffer(capacity: bytes.count)
-			buffer.write(bytes: bytes)
+			buffer.writeBytes(bytes)
 			let frame = WebSocketFrame(fin: true, opcode: .binary, data: buffer)
 			return channel.writeAndFlush(wrapOutboundOut(frame))
 		}
 	}
-	func handlerAdded(ctx: ChannelHandlerContext) {
+	func handlerAdded(context ctx: ChannelHandlerContext) {
 		socketHandler(NIOWebSocket(handler: self))
 	}
-	func handlerRemoved(ctx: ChannelHandlerContext) {
+	func handlerRemoved(context ctx: ChannelHandlerContext) {
 		
 	}
-	func errorCaught(ctx: ChannelHandlerContext, error: Error) {
+	func errorCaught(context ctx: ChannelHandlerContext, error: Error) {
 		// we don't have any recognized errors to be caught here
 		ctx.close(promise: nil)
 	}
-	func channelRead(ctx: ChannelHandlerContext, data: NIOAny) {
+	func channelRead(context ctx: ChannelHandlerContext, data: NIOAny) {
 		let frame = unwrapInboundIn(data)
 		switch frame.opcode {
 		case .connectionClose:
@@ -271,7 +272,7 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 			case .open:
 				closeState = .receivedClose
 				if !manualClose {
-					writeMessage(.close).whenComplete {
+					writeMessage(.close).whenComplete {_ in
 						self.queueMessage(.close)
 					}
 				} else {
@@ -279,17 +280,15 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 				}
 			case .sentClose:
 				closeState = .closed
-				ctx.close(mode: .all).whenComplete {
+				ctx.close(mode: .all).whenComplete {_ in
 					self.queueMessage(.close)
 				}
 			case .closed, .receivedClose:
-				closeOnError(ctx: ctx)
+				closeOnError(context: ctx)
 			}
-		case .unknownControl, .unknownNonControl:
-			closeOnError(ctx: ctx)
 		case .ping:
 			if !manualPing {
-				pong(ctx: ctx, frame: frame)
+				pong(context: ctx, frame: frame)
 			}
 			queueMessage(.ping)
 		case .text:
@@ -304,6 +303,8 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 			()
 		case .pong:
 			queueMessage(.pong)
+		default:
+			closeOnError(context: ctx)
 		}
 	}
 	private func queueMessage(_ msg: WebSocketMessage) {
@@ -316,13 +317,13 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 			return false
 		}
 		waitingPromise = nil
-		p.succeed(result: waitingMessages.removeFirst())
+		p.succeed(waitingMessages.removeFirst())
 		return true
 	}
-	func channelReadComplete(ctx: ChannelHandlerContext) {
+	func channelReadComplete(context ctx: ChannelHandlerContext) {
 		ctx.flush()
 	}
-	private func receivedClose(ctx: ChannelHandlerContext, frame: WebSocketFrame) {
+	private func receivedClose(context ctx: ChannelHandlerContext, frame: WebSocketFrame) {
 //		if awaitingClose {
 			ctx.close(promise: nil)
 //		} else {
@@ -336,7 +337,7 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 		closeState = .closed
 	}
 	
-	private func pong(ctx: ChannelHandlerContext, frame: WebSocketFrame) {
+	private func pong(context ctx: ChannelHandlerContext, frame: WebSocketFrame) {
 		var frameData = frame.data
 		let maskingKey = frame.maskKey
 		if let maskingKey = maskingKey {
@@ -346,11 +347,12 @@ private final class NIOWebSocketHandler: ChannelInboundHandler {
 		ctx.write(wrapOutboundOut(responseFrame), promise: nil)
 	}
 	
-	private func closeOnError(ctx: ChannelHandlerContext) {
+	private func closeOnError(context ctx: ChannelHandlerContext) {
 		var data = ctx.channel.allocator.buffer(capacity: 2)
 		data.write(webSocketErrorCode: .protocolError)
 		let frame = WebSocketFrame(fin: true, opcode: .connectionClose, data: data)
 		ctx.write(wrapOutboundOut(frame)).whenComplete {
+			_ in
 			ctx.close(mode: .output, promise: nil)
 		}
 		closeState = .closed

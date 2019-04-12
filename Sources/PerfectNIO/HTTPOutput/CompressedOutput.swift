@@ -57,7 +57,7 @@ private func qValueFromHeader(_ text: String) -> Float {
 
 public class CompressedOutput: HTTPOutput {
 	private static var fileIO: NonBlockingFileIO = {
-		let threadPool = BlockingIOThreadPool(numberOfThreads: 2) // !FIX! configurable?
+		let threadPool = NIOThreadPool(numberOfThreads: 2) // !FIX! configurable?
 		threadPool.start()
 		return NonBlockingFileIO(threadPool: threadPool)
 	}()
@@ -117,7 +117,7 @@ public class CompressedOutput: HTTPOutput {
 			return sourceContent.body(promise: promise, allocator: allocator)
 		}
 		guard !done else {
-			return promise.succeed(result: nil)
+			return promise.succeed(nil)
 		}
 		let eventLoop = promise.futureResult.eventLoop
 		if let region = consumingRegion {
@@ -134,29 +134,29 @@ public class CompressedOutput: HTTPOutput {
 				if self.consumingRegion?.readableBytes == 0 {
 					self.consumingRegion = nil
 				}
-				promise.succeed(result: IOData.byteBuffer(self.compress(bytes, allocator: allocator)))
+				promise.succeed(IOData.byteBuffer(self.compress(bytes, allocator: allocator)))
 			}
-			readP.whenFailure { promise.fail(error: $0) }
+			readP.whenFailure { promise.fail($0) }
 		} else {
-			let newp = eventLoop.newPromise(of: IOData?.self)
+			let newp = eventLoop.makePromise(of: IOData?.self)
 			sourceContent.body(promise: newp, allocator: allocator)
 			newp.futureResult.whenSuccess {
 				data in
 				if let data = data {
 					switch data {
 					case .byteBuffer(let bytes):
-						promise.succeed(result: IOData.byteBuffer(self.compress(bytes, allocator: allocator)))
+						promise.succeed(IOData.byteBuffer(self.compress(bytes, allocator: allocator)))
 					case .fileRegion(let region):
 						self.consumingRegion = region
 						self.body(promise: promise, allocator: allocator)
 					}
 				} else {
 					self.done = true
-					promise.succeed(result: IOData.byteBuffer(self.compress(nil, allocator: allocator)))
+					promise.succeed(IOData.byteBuffer(self.compress(nil, allocator: allocator)))
 				}
 			}
 			newp.futureResult.whenFailure {
-				promise.fail(error: $0)
+				promise.fail($0)
 			}
 		}
 	}

@@ -18,7 +18,7 @@
 
 import NIO
 import NIOHTTP1
-import NIOOpenSSL
+import NIOSSL
 import Foundation
 
 /// Routes which have been bound to a port and have started listening for connections.
@@ -59,9 +59,9 @@ class NIOBoundRoutes: BoundRoutes {
 		self.port = port
 		self.address = address
 		
-		let sslContext: NIOOpenSSL.SSLContext?
+		let sslContext: NIOSSLContext?
 		if let tls = tls {
-			sslContext = try SSLContext(configuration: tls)
+			sslContext = try NIOSSLContext(configuration: tls)
 		} else {
 			sslContext = nil
 		}
@@ -82,25 +82,29 @@ class NIOBoundRoutes: BoundRoutes {
 			.childChannelInitializer {
 				channel in
 				NIOBoundRoutes.configureHTTPServerPipeline(pipeline: channel.pipeline, sslContext: sslContext)
-				.then {
-					channel.pipeline.add(name: "NIOHTTPHandler", handler: NIOHTTPHandler(finder: finder, isTLS: sslContext != nil))
+				.flatMap {
+					_ in
+					channel.pipeline.addHandler(NIOHTTPHandler(finder: finder, isTLS: sslContext != nil), name: "NIOHTTPHandler")
 				}
 			}.bind(host: address, port: port).wait()
 	}
 	public func listen() throws -> ListeningRoutes {
 		return NIOListeningRoutes(channel: channel)
 	}
-	private static func configureHTTPServerPipeline(pipeline: ChannelPipeline, sslContext: NIOOpenSSL.SSLContext?) -> EventLoopFuture<Void> {
+	private static func configureHTTPServerPipeline(pipeline: ChannelPipeline, sslContext: NIOSSLContext?) -> EventLoopFuture<Void> {
 		var handlers: [ChannelHandler] = []
 		if let sslContext = sslContext {
-			let handler = try! OpenSSLServerHandler(context: sslContext)
+			let handler = try! NIOSSLServerHandler(context: sslContext)
 			handlers.append(handler)
 		}
-		return pipeline.addHandlers(handlers, first: false)
-			.then { pipeline.add(name: "HTTPResponseEncoder", handler: HTTPResponseEncoder(), first: false) }
-			.then { pipeline.add(name: "HTTPRequestDecoder", handler: HTTPRequestDecoder(leftOverBytesStrategy: .dropBytes), first: false) }
-			.then { pipeline.add(name: "HTTPServerPipelineHandler", handler: HTTPServerPipelineHandler(), first: false) }
-			.then { pipeline.add(name: "HTTPServerProtocolErrorHandler", handler: HTTPServerProtocolErrorHandler(), first: false) }
+		let responseEncoder = HTTPResponseEncoder()
+		let requestDecoder = HTTPRequestDecoder(leftOverBytesStrategy: .dropBytes)
+
+		return pipeline.addHandlers(handlers)
+			.flatMap { pipeline.addHandler(responseEncoder, name: "HTTPResponseEncoder", position: .last) }
+			.flatMap { pipeline.addHandler(ByteToMessageHandler(requestDecoder), name: "HTTPRequestDecoder", position: .last) }
+			.flatMap { pipeline.addHandler(HTTPServerPipelineHandler(), name: "HTTPServerPipelineHandler", position: .last) }
+			.flatMap { pipeline.addHandler(HTTPServerProtocolErrorHandler(), name: "HTTPServerProtocolErrorHandler", position: .last) }
 	}
 }
 
@@ -244,6 +248,8 @@ extension HTTPMethod {
 			return "MKACTIVITY"
 		case .UNSUBSCRIBE:
 			return "UNSUBSCRIBE"
+		case .SOURCE:
+			return "SOURCE"
 		case .RAW(let value):
 			return value
 		}

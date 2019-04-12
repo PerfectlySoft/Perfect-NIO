@@ -15,8 +15,8 @@ import Foundation
 
 @_exported import NIO
 @_exported import NIOHTTP1
-@_exported import NIOOpenSSL
-@_exported import CNIOOpenSSL
+@_exported import NIOSSL
+//@_exported import CNIOOpenSSL
 
 public typealias ComponentGenerator = IndexingIterator<[String]>
 

@@ -37,10 +37,10 @@ public class BytesOutput: HTTPOutput {
 		if let b = bodyBytes {
 			bodyBytes = nil
 			var buf = allocator.buffer(capacity: b.count)
-			buf.write(bytes: b)
-			promise.succeed(result: IOData.byteBuffer(buf))
+			buf.writeBytes(b)
+			promise.succeed(IOData.byteBuffer(buf))
 		} else {
-			promise.succeed(result: nil)
+			promise.succeed(nil)
 		}
 	}
 }

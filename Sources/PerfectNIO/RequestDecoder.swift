@@ -32,7 +32,7 @@ public extension HTTPRequest {
 		case .urlForm(let t):
 			postTuples = t.map {$0}
 		case .other(let body):
-			return try JSONDecoder().decode(A.self, from: Data(bytes: body))
+			return try JSONDecoder().decode(A.self, from: Data(body))
 		}
 		return try A.init(from:
 			RequestDecoder(params: uriVariables.map {($0.key, $0.value)} + (searchArgs?.map {$0} ?? []) + postTuples))

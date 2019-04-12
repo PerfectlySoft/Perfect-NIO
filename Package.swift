@@ -1,4 +1,4 @@
-// swift-tools-version:4.2
+// swift-tools-version:5.0
 
 import PackageDescription
 
@@ -13,8 +13,8 @@ let package = Package(
 		.package(url: "https://github.com/PerfectlySoft/PerfectLib.git", from: "3.0.0"),
 		.package(url: "https://github.com/PerfectlySoft/Perfect-CRUD.git", from: "1.0.0"),
 		.package(url: "https://github.com/PerfectlySoft/Perfect-MIME.git", from: "1.0.0"),
-		.package(url: "https://github.com/apple/swift-nio.git", from: "1.0.0"),
-		.package(url: "https://github.com/apple/swift-nio-ssl.git", from: "1.0.0"),
+		.package(url: "https://github.com/apple/swift-nio.git", from: "2.0.0"),
+		.package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.0.0"),
 		
 		// tests only
 		.package(url: "https://github.com/PerfectlySoft/Perfect-CURL.git", from: "4.0.0"),
@@ -29,7 +29,7 @@ let package = Package(
 			"PerfectMIME",
 			"PerfectMustache",
 			"NIOHTTP1",
-			"NIOOpenSSL",
+			"NIOSSL",
 			"NIOWebSocket"]),
 		.testTarget(name: "PerfectNIOTests", dependencies: [
 			"PerfectNIO",

@@ -1,7 +1,7 @@
 import XCTest
 import NIOHTTP1
 import NIO
-import NIOOpenSSL
+import NIOSSL
 import PerfectCRUD
 import PerfectCURL
 import PerfectLib
@@ -356,7 +356,7 @@ final class PerfectNIOTests: XCTestCase {
 			let route = root().async {
 				(req: HTTPRequest, p: EventLoopPromise<String>) in
 				sleep(1)
-				p.succeed(result: "OK")
+				p.succeed("OK")
 				}.text()
 			let server = try route.bind(port: 42000).listen()
 			defer {
@@ -375,7 +375,7 @@ final class PerfectNIOTests: XCTestCase {
 			let route = root().async {
 				(req: HTTPRequest, p: EventLoopPromise<String>) in
 				sleep(1)
-				p.fail(error: MyError())
+				p.fail(MyError())
 				}.text()
 			let server = try route.bind(port: 42000).listen()
 			defer { try! server.stop().wait() }
@@ -399,14 +399,14 @@ final class PerfectNIOTests: XCTestCase {
 				}
 				override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
 					if counter > 15 {
-						promise.succeed(result: nil)
+						promise.succeed(nil)
 					} else {
 						let toSend = String(repeating: "\(counter % 10)", count: 1024)
 						counter += 1
 						let ary = Array(toSend.utf8)
 						var buf = allocator.buffer(capacity: ary.count)
-						buf.write(bytes: ary)
-						promise.succeed(result: .byteBuffer(buf))
+						buf.writeBytes(ary)
+						promise.succeed(.byteBuffer(buf))
 					}
 				}
 			}
@@ -432,14 +432,14 @@ final class PerfectNIOTests: XCTestCase {
 				}
 				override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
 					if counter > 15 {
-						promise.succeed(result: nil)
+						promise.succeed(nil)
 					} else {
 						let toSend = String(repeating: "\(counter % 10)", count: 1024)
 						counter += 1
 						let ary = Array(toSend.utf8)
 						var buf = allocator.buffer(capacity: ary.count)
-						buf.write(bytes: ary)
-						promise.succeed(result: .byteBuffer(buf))
+						buf.writeBytes(ary)
+						promise.succeed(.byteBuffer(buf))
 					}
 				}
 			}
@@ -564,14 +564,14 @@ final class PerfectNIOTests: XCTestCase {
 				}
 				override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
 					if counter > 15 {
-						promise.succeed(result: nil)
+						promise.succeed(nil)
 					} else {
 						let toSend = String(repeating: "\(counter % 10)", count: 1024)
 						counter += 1
 						let ary = Array(toSend.utf8)
 						var buf = allocator.buffer(capacity: ary.count)
-						buf.write(bytes: ary)
-						promise.succeed(result: .byteBuffer(buf))
+						buf.writeBytes(ary)
+						promise.succeed(.byteBuffer(buf))
 					}
 				}
 			}
@@ -759,7 +759,7 @@ final class PerfectNIOTests: XCTestCase {
     ]
 }
 
-let serverCert = try! OpenSSLCertificate(buffer:
+let serverCert = try! NIOSSLCertificate(buffer:
 Array("""
 -----BEGIN CERTIFICATE-----
 MIICpDCCAYwCCQCW58Rktc4bnjANBgkqhkiG9w0BAQUFADAUMRIwEAYDVQQDDAkx
@@ -780,7 +780,7 @@ hU4SF5sARed3pySfEhoGAQD7N24QZX8uYo6/DqpBNJ48oJuDQh6mbwmpzise3gRx
 -----END CERTIFICATE-----
 """.utf8).map{Int8($0)}, format: .pem)
 
-let serverKey = try! OpenSSLPrivateKey(buffer:
+let serverKey = try! NIOSSLPrivateKey(buffer:
 Array("""
 -----BEGIN RSA PRIVATE KEY-----
 MIIEpQIBAAKCAQEA10yd4jPwVkMvo2EG2Ycj2iHC1bf2u4NnmirROeWohl6L20l5

@@ -19,8 +19,7 @@
 import Foundation
 import NIO
 import NIOHTTP1
-import NIOOpenSSL
-import class NIOOpenSSL.SSLContext
+import NIOSSL
 import Dispatch
 
 extension SocketAddress: Hashable {

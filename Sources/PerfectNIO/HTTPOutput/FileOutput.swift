@@ -56,7 +56,7 @@ public class FileOutput: HTTPOutput {
 	let path: String
 	let size: Int // !FIX! NIO FileRegions only accept Int in init. should be UInt64
 	let modDate: Int
-	let file: NIO.FileHandle
+	let file: NIOFileHandle
 	var region: FileRegion?
 	var useSendfile = true
 	public init(localPath inPath: String) throws {
@@ -106,9 +106,9 @@ public class FileOutput: HTTPOutput {
 	public override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
 		if let r = region {
 			region = nil
-			promise.succeed(result: .fileRegion(r))
+			promise.succeed(.fileRegion(r))
 		} else {
-			promise.succeed(result: nil)
+			promise.succeed(nil)
 		}
 	}
 	

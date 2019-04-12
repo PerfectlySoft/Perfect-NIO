@@ -32,9 +32,9 @@ public extension Routes {
 			i, promise in
 			do {
 				let db = try provide()
-				promise.succeed(result: try call(i, db))
+				promise.succeed(try call(i, db))
 			} catch {
-				promise.fail(error: error)
+				promise.fail(error)
 			}
 		}
 	}
@@ -45,9 +45,9 @@ public extension Routes {
 			i, promise in
 			do {
 				let table = try provide().table(type)
-				promise.succeed(result: try call(i, table))
+				promise.succeed(try call(i, table))
 			} catch {
-				promise.fail(error: error)
+				promise.fail(error)
 			}
 		}
 	}
