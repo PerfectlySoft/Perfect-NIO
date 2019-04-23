@@ -23,7 +23,7 @@
 
 import Foundation
 import NIOHTTP1
-import CNIOZlib
+import PerfectCZlib
 import NIO
 
 internal extension String {
@@ -199,7 +199,7 @@ public class CompressedOutput: HTTPOutput {
 			windowBits = 16 + 15
 		}
 		
-		let rc = CNIOZlib_deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, windowBits, 8, Z_DEFAULT_STRATEGY)
+		let rc = deflateInit2_(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, windowBits, 8, Z_DEFAULT_STRATEGY, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
 		precondition(rc == Z_OK, "Unexpected return from zlib init: \(rc)")
 	}
 	

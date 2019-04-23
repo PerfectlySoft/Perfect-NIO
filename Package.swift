@@ -15,6 +15,7 @@ let package = Package(
 		.package(url: "https://github.com/PerfectlySoft/Perfect-MIME.git", from: "1.0.0"),
 		.package(url: "https://github.com/apple/swift-nio.git", from: "2.0.0"),
 		.package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.0.0"),
+		.package(url: "https://github.com/PerfectlySoft/Perfect-CZlib-src.git", from: "0.0.0"),
 		
 		// tests only
 		.package(url: "https://github.com/PerfectlySoft/Perfect-CURL.git", from: "4.0.0"),
@@ -30,7 +31,8 @@ let package = Package(
 			"PerfectMustache",
 			"NIOHTTP1",
 			"NIOSSL",
-			"NIOWebSocket"]),
+			"NIOWebSocket",
+			"PerfectCZlib"]),
 		.testTarget(name: "PerfectNIOTests", dependencies: [
 			"PerfectNIO",
 			"PerfectCURL"]),
