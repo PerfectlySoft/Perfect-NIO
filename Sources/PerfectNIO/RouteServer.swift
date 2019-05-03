@@ -30,7 +30,7 @@ public protocol ListeningRoutes {
 	func wait() throws
 }
 
-/// Routes which have been bound to a port but are not yet listening for requests.
+/// Routes which have been bound to an address but are not yet listening for requests.
 public protocol BoundRoutes {
 	/// The address the server is bound to.
 	var address: SocketAddress { get }

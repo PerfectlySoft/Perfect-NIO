@@ -1,6 +1,6 @@
 <p align="center">
     <a href="https://developer.apple.com/swift/" target="_blank">
-        <img src="https://img.shields.io/badge/Swift-4.2-orange.svg?style=flat" alt="Swift 4.2">
+        <img src="https://img.shields.io/badge/Swift-5.0-orange.svg?style=flat" alt="Swift 5.0">
     </a>
     <a href="https://developer.apple.com/swift/" target="_blank">
         <img src="https://img.shields.io/badge/Platforms-macOS%20%7C%20Linux%20-lightgray.svg?style=flat" alt="Platforms macOS | Linux">
@@ -794,12 +794,10 @@ public protocol ListeningRoutes {
 #### BoundRoutes
 
 ```swift
-/// Routes which have been bound to a port but are not yet listening for requests.
+/// Routes which have been bound to an address but are not yet listening for requests.
 public protocol BoundRoutes {
-	/// The port
-	var port: Int { get }
-	/// The address
-	var address: String { get }
+	/// The address the server is bound to.
+	var address: SocketAddress { get }
 	/// Start listening
 	func listen() throws -> ListeningRoutes
 }
