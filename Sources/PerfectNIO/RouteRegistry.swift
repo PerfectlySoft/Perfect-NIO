@@ -349,6 +349,9 @@ public extension Routes {
 			}
 		}
 	}
+}
+
+public extension Routes {
 	/// The caller can inspect the given input value and choose to return an HTTP error code.
 	/// If any code outside of 200..<300 is return the request is aborted.
 	func statusCheck(_ handler: @escaping (OutType) throws -> HTTPResponseStatus) -> Routes<InType, OutType> {
@@ -371,6 +374,9 @@ public extension Routes {
 	func statusCheck(_ handler: @escaping () throws -> HTTPResponseStatus) -> Routes<InType, OutType> {
 		return statusCheck { _ in try handler() }
 	}
+}
+
+public extension Routes {
 	/// Read the client content body and then attempt to decode it as the indicated `Decodable` type.
 	/// Both the original input value and the newly decoded object are delivered to the provided function.
 	func decode<Type: Decodable, NewOut>(_ type: Type.Type,
