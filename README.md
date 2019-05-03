@@ -686,6 +686,8 @@ public protocol HTTPRequest {
 	var contentConsumed: Int { get }
 	var localAddress: SocketAddress? { get }
 	var remoteAddress: SocketAddress? { get }
+	/// Returns all the cookie name/value pairs parsed from the request.
+	var cookies: [String:String]
 	func readSomeContent() -> EventLoopFuture<[ByteBuffer]>
 	func readContent() -> EventLoopFuture<HTTPRequestContentType>
 }
