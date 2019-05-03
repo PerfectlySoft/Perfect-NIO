@@ -828,4 +828,4 @@ In your Package.swift:
 .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", .branch("master"))
 ```
 
-Your code may need to `import PerfectNIO`, `import NIO`, `import NIOHTTP1`, or `import NIOOpenSSL`.
+Your code may need to `import PerfectNIO`, `import NIO`, `import NIOHTTP1`, or `import NIOSSL`.
