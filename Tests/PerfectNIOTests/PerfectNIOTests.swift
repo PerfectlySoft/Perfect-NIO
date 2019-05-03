@@ -726,6 +726,24 @@ final class PerfectNIOTests: XCTestCase {
 		}
 	}
 	
+	func testDescribe() {
+		let expected = Set(["/b/*/foo2",
+							"POST:///c/foo3",
+							"HEAD:///d/foo4",
+							"/a/foo1",
+							"GET:///d/foo4"])
+		let routes = try! root().dir{[
+			$0.a.foo1 { "foo" },
+			$0.b.wild(name: "p1").foo2 { "foo" },
+			$0.POST.c.foo3 { "foo" },
+			$0.method(.GET, .HEAD).d.foo4 { "foo" },
+		]}.text()
+		for desc in routes.describe {
+			let uri = desc.uri
+			XCTAssert(expected.contains(uri))
+		}
+	}
+	
     static var allTests = [
 		("testRoot1", testRoot1),
 		("testRoot2", testRoot2),
@@ -755,7 +773,8 @@ final class PerfectNIOTests: XCTestCase {
 		("testCompress3", testCompress3),
 		("testFileOutput", testFileOutput),
 		("testMustacheOutput", testMustacheOutput),
-		("testAddress", testAddress)
+		("testAddress", testAddress),
+		("testDescribe", testDescribe)
     ]
 }
 
