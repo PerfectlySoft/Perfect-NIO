@@ -715,7 +715,8 @@ final class PerfectNIOTests: XCTestCase {
 		do {
 			let port = 42000
 			let route = root().address { $0.localAddress?.port }.unwrap { "\($0)" }.text()
-			let server = try route.bind(port: port).listen()
+			let address = try SocketAddress(ipAddress: "127.0.0.1", port: port)
+			let server = try route.bind(address: address).listen()
 			defer {
 				try? server.stop().wait()
 			}

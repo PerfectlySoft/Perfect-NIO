@@ -32,10 +32,8 @@ public protocol ListeningRoutes {
 
 /// Routes which have been bound to a port but are not yet listening for requests.
 public protocol BoundRoutes {
-	/// The port
-	var port: Int { get }
-	/// The address
-	var address: String { get }
+	/// The address the server is bound to.
+	var address: SocketAddress { get }
 	/// Start listening
 	func listen() throws -> ListeningRoutes
 }
@@ -44,11 +42,9 @@ class NIOBoundRoutes: BoundRoutes {
 	private let childGroup: EventLoopGroup
 	let acceptGroup: MultiThreadedEventLoopGroup
 	private let channel: Channel
-	public let port: Int
-	public let address: String
+	public let address: SocketAddress
 	init(registry: Routes<HTTPRequest, HTTPOutput>,
-		 port: Int,
-		 address: String,
+		 address: SocketAddress,
 		 threadGroup: EventLoopGroup?,
 		 tls: TLSConfiguration?) throws {
 		
@@ -56,7 +52,6 @@ class NIOBoundRoutes: BoundRoutes {
 		acceptGroup = ag
 		childGroup = threadGroup ?? ag
 		let finder = try RouteFinderDual(registry)
-		self.port = port
 		self.address = address
 		
 		let sslContext: NIOSSLContext?
@@ -86,7 +81,7 @@ class NIOBoundRoutes: BoundRoutes {
 					_ in
 					channel.pipeline.addHandler(NIOHTTPHandler(finder: finder, isTLS: sslContext != nil), name: "NIOHTTPHandler")
 				}
-			}.bind(host: address, port: port).wait()
+			}.bind(to: address).wait()
 	}
 	public func listen() throws -> ListeningRoutes {
 		return NIOListeningRoutes(channel: channel)
@@ -150,20 +145,22 @@ class NIOListeningRoutes: ListeningRoutes {
 }
 
 public extension Routes where InType == HTTPRequest, OutType == HTTPOutput {
-	func bind(port: Int, address: String = "0.0.0.0", tls: TLSConfiguration? = nil) throws -> BoundRoutes {
+	func bind(port: Int, tls: TLSConfiguration? = nil) throws -> BoundRoutes {
+		let address = try SocketAddress(ipAddress: "0.0.0.0", port: port)
+		return try bind(address: address, tls: tls)
+	}
+	func bind(address: SocketAddress, tls: TLSConfiguration? = nil) throws -> BoundRoutes {
 		return try NIOBoundRoutes(registry: self,
-								  port: port,
 								  address: address,
 								  threadGroup: MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount),
 								  tls: tls)
 	}
-	func bind(count: Int, port: Int, address: String = "0.0.0.0", tls: TLSConfiguration? = nil) throws -> [BoundRoutes] {
+	func bind(count: Int, address: SocketAddress, tls: TLSConfiguration? = nil) throws -> [BoundRoutes] {
 		if count == 1 {
-			return [try bind(port: port, address: address)]
+			return [try bind(address: address)]
 		}
 		return try (0..<count).map { _ in
 			return try NIOBoundRoutes(registry: self,
-									  port: port,
 									  address: address,
 									  threadGroup: nil,
 									  tls: tls)
