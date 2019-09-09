@@ -1,6 +1,18 @@
 
 import PerfectNIO
 
+let foo = try root().dir {
+	$0.foo { "Hello!" }
+	try $0.foo.dir {
+		$0.bar { "bar" }
+		$0.baz { "baz" }
+	}
+	$0.bar { "Hello!" }
+}.text()
+
+
+
+
 let index = root {
 	try FileOutput(localPath: "./webroot/index.html") as HTTPOutput
 }
