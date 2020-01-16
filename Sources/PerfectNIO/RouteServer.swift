@@ -21,6 +21,12 @@ import NIOHTTP1
 import NIOSSL
 import Foundation
 
+var sharedNonBlockingFileIO: NonBlockingFileIO = {
+	let threadPool = NIOThreadPool(numberOfThreads: NonBlockingFileIO.defaultThreadPoolSize)
+	threadPool.start()
+	return NonBlockingFileIO(threadPool: threadPool)
+}()
+
 /// Routes which have been bound to a port and have started listening for connections.
 public protocol ListeningRoutes {
 	/// Stop listening for requests
@@ -91,6 +97,7 @@ class NIOBoundRoutes: BoundRoutes {
 		if let sslContext = sslContext {
 			let handler = try! NIOSSLServerHandler(context: sslContext)
 			handlers.append(handler)
+			handlers.append(SSLFileRegionHandler())
 		}
 		let responseEncoder = HTTPResponseEncoder()
 		let requestDecoder = HTTPRequestDecoder(leftOverBytesStrategy: .dropBytes)
@@ -100,6 +107,26 @@ class NIOBoundRoutes: BoundRoutes {
 			.flatMap { pipeline.addHandler(ByteToMessageHandler(requestDecoder), name: "HTTPRequestDecoder", position: .last) }
 			.flatMap { pipeline.addHandler(HTTPServerPipelineHandler(), name: "HTTPServerPipelineHandler", position: .last) }
 			.flatMap { pipeline.addHandler(HTTPServerProtocolErrorHandler(), name: "HTTPServerProtocolErrorHandler", position: .last) }
+	}
+}
+
+private final class SSLFileRegionHandler: ChannelOutboundHandler {
+	private static let fileIO = sharedNonBlockingFileIO
+	typealias OutboundIn = IOData
+	func write(context: ChannelHandlerContext,
+			   data: NIOAny,
+			   promise: EventLoopPromise<Void>?) {
+		let unwrapped = unwrapOutboundIn(data)
+		switch unwrapped {
+		case .fileRegion(let region):
+			SSLFileRegionHandler.fileIO.readChunked(fileRegion: region,
+													allocator: ByteBufferAllocator(),
+													eventLoop: context.eventLoop) {
+				context.writeAndFlush(NIOAny(IOData.byteBuffer($0)))
+			}.cascade(to: promise)
+		case .byteBuffer(_):
+			context.write(data, promise: promise)
+		}
 	}
 }
 
