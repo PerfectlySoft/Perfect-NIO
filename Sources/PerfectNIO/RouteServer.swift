@@ -120,8 +120,8 @@ private final class SSLFileRegionHandler: ChannelOutboundHandler {
 		switch unwrapped {
 		case .fileRegion(let region):
 			SSLFileRegionHandler.fileIO.readChunked(fileRegion: region,
-													allocator: ByteBufferAllocator(),
-													eventLoop: context.eventLoop) {
+								allocator: ByteBufferAllocator(),
+								eventLoop: context.eventLoop) {
 				context.writeAndFlush(NIOAny(IOData.byteBuffer($0)))
 			}.cascade(to: promise)
 		case .byteBuffer(_):
