@@ -56,11 +56,7 @@ private func qValueFromHeader(_ text: String) -> Float {
 }
 
 public class CompressedOutput: HTTPOutput {
-	private static var fileIO: NonBlockingFileIO = {
-		let threadPool = NIOThreadPool(numberOfThreads: 2) // !FIX! configurable?
-		threadPool.start()
-		return NonBlockingFileIO(threadPool: threadPool)
-	}()
+	private static let fileIO = sharedNonBlockingFileIO
 	
 	fileprivate enum CompressionAlgorithm: String {
 		case gzip = "gzip"
