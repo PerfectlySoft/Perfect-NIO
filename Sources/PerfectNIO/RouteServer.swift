@@ -111,21 +111,45 @@ class NIOBoundRoutes: BoundRoutes {
 }
 
 private final class SSLFileRegionHandler: ChannelOutboundHandler {
-	private static let fileIO = sharedNonBlockingFileIO
 	typealias OutboundIn = IOData
+	typealias OutboundOut = IOData
+	
+	private static let fileIO = sharedNonBlockingFileIO
+	private typealias BufferedWrite = (data: IOData, promise: EventLoopPromise<Void>?)
+	private var buffer = MarkedCircularBuffer<BufferedWrite>(initialCapacity: 96)
+	
 	func write(context: ChannelHandlerContext,
 			   data: NIOAny,
 			   promise: EventLoopPromise<Void>?) {
-		let unwrapped = unwrapOutboundIn(data)
+		buffer.append((data: unwrapOutboundIn(data), promise: promise))
+	}
+	func flush(context: ChannelHandlerContext) {
+		buffer.mark()
+		flushBuffer(context: context)
+	}
+	func flushBuffer(context: ChannelHandlerContext) {
+		guard buffer.hasMark else {
+			return context.flush()
+		}
+		guard let item = buffer.popFirst() else {
+			return
+		}
+		let unwrapped = item.data
+		let promise = item.promise
+		
 		switch unwrapped {
 		case .fileRegion(let region):
 			SSLFileRegionHandler.fileIO.readChunked(fileRegion: region,
 													allocator: ByteBufferAllocator(),
 													eventLoop: context.eventLoop) {
-				context.writeAndFlush(NIOAny(IOData.byteBuffer($0)))
+														context.writeAndFlush(self.wrapOutboundOut(.byteBuffer($0)))
+			}.always {
+				_ in
+				self.flushBuffer(context: context)
 			}.cascade(to: promise)
 		case .byteBuffer(_):
-			context.write(data, promise: promise)
+			context.write(wrapOutboundOut(unwrapped), promise: promise)
+			flushBuffer(context: context)
 		}
 	}
 }
