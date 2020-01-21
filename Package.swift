@@ -1,4 +1,4 @@
-// swift-tools-version:5.0
+// swift-tools-version:5.1
 
 import PackageDescription
 
@@ -11,7 +11,7 @@ let package = Package(
 	dependencies: [
 		.package(url: "https://github.com/PerfectlySoft/Perfect-Mustache.git", .branch("4.0-dev")),
 		.package(url: "https://github.com/PerfectlySoft/PerfectLib.git", from: "3.0.0"),
-		.package(url: "https://github.com/PerfectlySoft/Perfect-CRUD.git", from: "1.0.0"),
+		.package(url: "https://github.com/PerfectlySoft/Perfect-CRUD.git", .branch("swift-5.1")),
 		.package(url: "https://github.com/PerfectlySoft/Perfect-MIME.git", from: "1.0.0"),
 		.package(url: "https://github.com/apple/swift-nio.git", from: "2.0.0"),
 		.package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.0.0"),
