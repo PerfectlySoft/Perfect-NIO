@@ -774,7 +774,7 @@ final class PerfectNIOTests: XCTestCase {
     ]
 }
 
-let serverCert = try! NIOSSLCertificate(buffer:
+let serverCert = try! NIOSSLCertificate(bytes:
 Array("""
 -----BEGIN CERTIFICATE-----
 MIICpDCCAYwCCQCW58Rktc4bnjANBgkqhkiG9w0BAQUFADAUMRIwEAYDVQQDDAkx
@@ -793,9 +793,9 @@ ei1F8GlXlybx8P7uYOGfvXYU2NFenmAIEHhzsx9LJRfPdb/IGgGfr9TfyIngVc9K
 hU4SF5sARed3pySfEhoGAQD7N24QZX8uYo6/DqpBNJ48oJuDQh6mbwmpzise3gRx
 8QvZfOf/dSY=
 -----END CERTIFICATE-----
-""".utf8).map{Int8($0)}, format: .pem)
+""".utf8), format: .pem)
 
-let serverKey = try! NIOSSLPrivateKey(buffer:
+let serverKey = try! NIOSSLPrivateKey(bytes:
 Array("""
 -----BEGIN RSA PRIVATE KEY-----
 MIIEpQIBAAKCAQEA10yd4jPwVkMvo2EG2Ycj2iHC1bf2u4NnmirROeWohl6L20l5
@@ -824,4 +824,4 @@ DCONhMAxAoGAaokOEY3wwEK34KOWDRrAEpMH5DQagecCB3L+QclkdratcqtGIt62
 Z8TvyV3f6Wl89pcpI1y5RZm8cbUF2rvlHjJ8WLSBEcR5vFnRCOplAQZdmg9Tmv/6
 toWGTsOXMHUr1s3T2Lh4UtWW+kMSNU16Es+DcGP2Rq3VJ3juuywdkCQ=
 -----END RSA PRIVATE KEY-----
-""".utf8).map{Int8($0)}, format: .pem)
+""".utf8), format: .pem)
