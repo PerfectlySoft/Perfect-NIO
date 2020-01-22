@@ -1,9 +1,11 @@
 
 import PerfectNIO
+import Foundation
 
 let index = root {
 	try FileOutput(localPath: "./webroot/index.html") as HTTPOutput
 }
+
 class EchoSocket {
 	var socket: WebSocket
 	var closed = false

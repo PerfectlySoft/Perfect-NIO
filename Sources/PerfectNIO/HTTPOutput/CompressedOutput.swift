@@ -217,7 +217,7 @@ public class CompressedOutput: HTTPOutput {
 		var dest = allocator.buffer(capacity: needed)
 		
 		if var bytes = bytes {
-			dest.writeWithUnsafeMutableBytes {
+			dest.writeWithUnsafeMutableBytes(minimumWritableBytes: needed) {
 				outputPtr in
 				let typedOutputPtr = UnsafeMutableBufferPointer(start: outputPtr.baseAddress!.assumingMemoryBound(to: UInt8.self),
 																count: needed)
@@ -242,7 +242,7 @@ public class CompressedOutput: HTTPOutput {
 			stream.avail_in = 0
 			var rc = Z_OK
 			while rc != Z_ERRNO {
-				dest.writeWithUnsafeMutableBytes {
+				dest.writeWithUnsafeMutableBytes(minimumWritableBytes: needed) {
 					outputPtr in
 					let typedOutputPtr = UnsafeMutableBufferPointer(start: outputPtr.baseAddress!.assumingMemoryBound(to: UInt8.self),
 																	count: needed)

@@ -12,11 +12,6 @@ protocol APIResponse: Codable {}
 let userCount = 10
 
 final class PerfectNIOTests: XCTestCase {
-	private func soSleepy() -> Never {
-		while true {
-			sleep(UInt32.max)
-		}
-	}
 	func testRoot1() {
 		do {
 			let route = root { "OK" }.text()
@@ -48,11 +43,11 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testDir1() {
 		do {
-			let route = try root().dir{[
-				$0.foo1 { "OK1" },
-				$0.foo2 { "OK2" },
-				$0.foo3 { "OK3" },
-				]}.text()
+			let route = try root {
+				$0.foo1 { "OK1" }
+				$0.foo2 { "OK2" }
+				$0.foo3 { "OK3" }
+			}.text()
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -69,11 +64,11 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testDuplicates() {
 		do {
-			let route = try root().dir{[
-				$0.foo1 { "OK1" },
-				$0.foo1 { "OK2" },
-				$0.foo3 { "OK3" },
-				]}.text()
+			let route = try root {
+				$0.foo1 { "OK1" }
+				$0.foo1 { "OK2" }
+				$0.foo3 { "OK3" }
+			}.text()
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -135,10 +130,10 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testMap1() {
 		do {
-			let route = try root().dir {[
-				$0.a { 1 }.map { "\($0)" }.text(),
+			let route = try root().dir {
+				$0.a { 1 }.map { "\($0)" }.text()
 				$0.b { [1,2,3] }.map { (i: Int) -> String in "\(i)" }.json()
-			]}
+			}
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -153,11 +148,11 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testStatusCheck1() {
 		do {
-			let route = try root().dir {[
-				$0.a.statusCheck { .internalServerError }.map { "BAD" }.text(),
-				$0.b.statusCheck { _ in .internalServerError }.map { "BAD" }.text(),
+			let route = try root().dir {
+				$0.a.statusCheck { .internalServerError }.map { "BAD" }.text()
+				$0.b.statusCheck { _ in .internalServerError }.map { "BAD" }.text()
 				$0.c.statusCheck { _ in .ok }.map { "OK" }.text()
-				]}
+			}
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -174,10 +169,10 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testMethods1() {
 		do {
-			let route = try root().dir {[
-				$0.GET.foo1 { "GET OK" },
-				$0.POST.foo2 { "POST OK" },
-				]}.text()
+			let route = try root {
+				$0.GET.foo1 { "GET OK" }
+				$0.POST.foo2 { "POST OK" }
+			}.text()
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -194,35 +189,35 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testReadBody1() {
 		do {
-			let route = try root().dir(type: String.self) {[
+			let route = try root(type: String.self) {
 				$0.multi.readBody {
-					req, cont in
+					(req, cont) -> String in
 					switch cont {
 					case .multiPartForm(_):
 						return "OK"
 					case .none, .urlForm, .other:
 						throw ErrorOutput(status: .badRequest)
 					}
-				},
+				}
 				$0.url.readBody {
-					req, cont in
+					(req, cont) -> String in
 					switch cont {
 					case .urlForm(_):
 						return "OK"
 					case .none, .multiPartForm, .other:
 						throw ErrorOutput(status: .badRequest)
 					}
-				},
+				}
 				$0.other.readBody {
-					req, cont in
+					(req, cont) -> String in
 					switch cont {
 					case .other(_):
 						return "OK"
 					case .none, .multiPartForm, .urlForm:
 						throw ErrorOutput(status: .badRequest)
 					}
-				},
-			]}.POST.text()
+				}
+			}.POST.text()
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -243,11 +238,11 @@ final class PerfectNIOTests: XCTestCase {
 			let date: Date
 		}
 		do {
-			let route = try root().POST.dir{[
-				$0.1.decode(Foo.self),
-				$0.2.decode(Foo.self) { $1 },
-				$0.3.decode(Foo.self) { $0 },
-				]}.json()
+			let route = try root().POST.dir {
+				$0.1.decode(Foo.self)
+				$0.2.decode(Foo.self) { $1 }
+				$0.3.decode(Foo.self) { $0 }
+			}.json()
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -733,12 +728,12 @@ final class PerfectNIOTests: XCTestCase {
 							"HEAD:///d/foo4",
 							"/a/foo1",
 							"GET:///d/foo4"])
-		let routes = try! root().dir{[
-			$0.a.foo1 { "foo" },
-			$0.b.wild(name: "p1").foo2 { "foo" },
-			$0.POST.c.foo3 { "foo" },
-			$0.method(.GET, .HEAD).d.foo4 { "foo" },
-		]}.text()
+		let routes = try! root {
+			$0.a.foo1 { "foo" }
+			$0.b.wild(name: "p1").foo2 { "foo" }
+			$0.POST.c.foo3 { "foo" }
+			$0.method(.GET, .HEAD).d.foo4 { "foo" }
+		}.text()
 		for desc in routes.describe {
 			let uri = desc.uri
 			XCTAssert(expected.contains(uri))
@@ -779,7 +774,7 @@ final class PerfectNIOTests: XCTestCase {
     ]
 }
 
-let serverCert = try! NIOSSLCertificate(buffer:
+let serverCert = try! NIOSSLCertificate(bytes:
 Array("""
 -----BEGIN CERTIFICATE-----
 MIICpDCCAYwCCQCW58Rktc4bnjANBgkqhkiG9w0BAQUFADAUMRIwEAYDVQQDDAkx
@@ -798,9 +793,9 @@ ei1F8GlXlybx8P7uYOGfvXYU2NFenmAIEHhzsx9LJRfPdb/IGgGfr9TfyIngVc9K
 hU4SF5sARed3pySfEhoGAQD7N24QZX8uYo6/DqpBNJ48oJuDQh6mbwmpzise3gRx
 8QvZfOf/dSY=
 -----END CERTIFICATE-----
-""".utf8).map{Int8($0)}, format: .pem)
+""".utf8), format: .pem)
 
-let serverKey = try! NIOSSLPrivateKey(buffer:
+let serverKey = try! NIOSSLPrivateKey(bytes:
 Array("""
 -----BEGIN RSA PRIVATE KEY-----
 MIIEpQIBAAKCAQEA10yd4jPwVkMvo2EG2Ycj2iHC1bf2u4NnmirROeWohl6L20l5
@@ -829,4 +824,4 @@ DCONhMAxAoGAaokOEY3wwEK34KOWDRrAEpMH5DQagecCB3L+QclkdratcqtGIt62
 Z8TvyV3f6Wl89pcpI1y5RZm8cbUF2rvlHjJ8WLSBEcR5vFnRCOplAQZdmg9Tmv/6
 toWGTsOXMHUr1s3T2Lh4UtWW+kMSNU16Es+DcGP2Rq3VJ3juuywdkCQ=
 -----END RSA PRIVATE KEY-----
-""".utf8).map{Int8($0)}, format: .pem)
+""".utf8), format: .pem)
