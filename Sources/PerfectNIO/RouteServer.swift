@@ -182,7 +182,6 @@ class NIOListeningRoutes: ListeningRoutes {
 	init(channel: Channel) {
 		_ = NIOListeningRoutes.globalInitialized
 		self.channel = channel
-//		channel.read()
 		f = channel.closeFuture
 	}
 	@discardableResult

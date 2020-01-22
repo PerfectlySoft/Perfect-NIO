@@ -439,6 +439,20 @@ public extension Routes {
 		return try dir(makeChildren(root(path: "/", OutType.self)))
 	}
 	
+	/// Append new routes to the set given a new output type.
+	/// At times, Swift's type inference can fail to discern what the programmer intends when calling functions like this.
+	/// Calling the second version of this method, the one accepting a `type: NewOut.Type` as the first parameter,
+	/// can often clarify your intentions to the compiler. If you experience a compilation error with this function, try the other.
+	func dir<NewOut>(@RouteBuilder<OutType, NewOut> makeChildren: (Routes<OutType, OutType>) throws -> Routes<OutType, NewOut>) throws -> Routes<InType, NewOut> {
+		return try dir([makeChildren(root(path: "/", OutType.self))])
+	}
+	
+	/// Append new routes to the set given a new output type.
+	/// The first `type` argument to this function serves to help type inference.
+	func dir<NewOut>(type: NewOut.Type, @RouteBuilder<OutType, NewOut> makeChildren: (Routes<OutType, OutType>) throws -> Routes<OutType, NewOut>) throws -> Routes<InType, NewOut> {
+		return try dir([makeChildren(root(path: "/", OutType.self))])
+	}
+	
 	/// Append new routes to this set given an array.
 	func dir<NewOut>(_ registries: [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
 		let reg = try RouteRegistry(checkedRoutes: registries.flatMap { $0.registry.routes })
