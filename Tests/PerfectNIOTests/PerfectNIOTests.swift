@@ -12,11 +12,6 @@ protocol APIResponse: Codable {}
 let userCount = 10
 
 final class PerfectNIOTests: XCTestCase {
-	private func soSleepy() -> Never {
-		while true {
-			sleep(UInt32.max)
-		}
-	}
 	func testRoot1() {
 		do {
 			let route = root { "OK" }.text()
@@ -48,7 +43,7 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testDir1() {
 		do {
-			let route = try root().dir {
+			let route = try root {
 				$0.foo1 { "OK1" }
 				$0.foo2 { "OK2" }
 				$0.foo3 { "OK3" }
@@ -69,7 +64,7 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testDuplicates() {
 		do {
-			let route = try root().dir {
+			let route = try root {
 				$0.foo1 { "OK1" }
 				$0.foo1 { "OK2" }
 				$0.foo3 { "OK3" }
@@ -174,7 +169,7 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testMethods1() {
 		do {
-			let route = try root().dir {
+			let route = try root {
 				$0.GET.foo1 { "GET OK" }
 				$0.POST.foo2 { "POST OK" }
 			}.text()
@@ -194,9 +189,9 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testReadBody1() {
 		do {
-			let route = try root().dir(type: String.self) {
+			let route = try root(type: String.self) {
 				$0.multi.readBody {
-					req, cont in
+					(req, cont) -> String in
 					switch cont {
 					case .multiPartForm(_):
 						return "OK"
@@ -205,7 +200,7 @@ final class PerfectNIOTests: XCTestCase {
 					}
 				}
 				$0.url.readBody {
-					req, cont in
+					(req, cont) -> String in
 					switch cont {
 					case .urlForm(_):
 						return "OK"
@@ -214,7 +209,7 @@ final class PerfectNIOTests: XCTestCase {
 					}
 				}
 				$0.other.readBody {
-					req, cont in
+					(req, cont) -> String in
 					switch cont {
 					case .other(_):
 						return "OK"
@@ -243,7 +238,7 @@ final class PerfectNIOTests: XCTestCase {
 			let date: Date
 		}
 		do {
-			let route = try root().POST.dir{
+			let route = try root().POST.dir {
 				$0.1.decode(Foo.self)
 				$0.2.decode(Foo.self) { $1 }
 				$0.3.decode(Foo.self) { $0 }
@@ -733,7 +728,7 @@ final class PerfectNIOTests: XCTestCase {
 							"HEAD:///d/foo4",
 							"/a/foo1",
 							"GET:///d/foo4"])
-		let routes = try! root().dir {
+		let routes = try! root {
 			$0.a.foo1 { "foo" }
 			$0.b.wild(name: "p1").foo2 { "foo" }
 			$0.POST.c.foo3 { "foo" }
