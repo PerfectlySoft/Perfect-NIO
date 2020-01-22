@@ -128,23 +128,35 @@ public struct Routes<InType, OutType> {
 }
 
 /// Create a root route accepting/returning the HTTPRequest.
+/// `root()`
 public func root() -> Routes<HTTPRequest, HTTPRequest> {
 	return .init(.init(["/":{$0}]))
 }
 
 /// Create a root route accepting the HTTPRequest and returning some new value.
+/// `root { r in … }`
 public func root<NewOut>(_ call: @escaping (HTTPRequest) throws -> NewOut) -> Routes<HTTPRequest, NewOut> {
 	return .init(.init(["/":{$0.flatMapThrowing{RouteValueBox($0.state, try call($0.value))}}]))
 }
 
 /// Create a root route returning some new value.
+/// `root { ... }`
 public func root<NewOut>(_ call: @escaping () throws -> NewOut) -> Routes<HTTPRequest, NewOut> {
 	return .init(.init(["/":{$0.flatMapThrowing{RouteValueBox($0.state, try call())}}]))
 }
 
 /// Create a root route accepting and returning some new value.
+/// `root("/", Foo.self)`
 public func root<NewOut>(path: String, _ type: NewOut.Type) -> Routes<NewOut, NewOut> {
 	return .init(.init([path:{$0}]))
+}
+
+public func root<NewOut>(@RouteBuilder<HTTPRequest, NewOut> makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
+	return try root().dir(makeChildren(root()))
+}
+
+public func root<NewOut>(type: NewOut.Type, @RouteBuilder<HTTPRequest, NewOut> makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
+	return try root().dir(makeChildren(root()))
 }
 
 public extension Routes {
