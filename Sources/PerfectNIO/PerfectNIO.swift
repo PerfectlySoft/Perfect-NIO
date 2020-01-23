@@ -55,9 +55,9 @@ extension String {
 	}
 	var splitQuery: (String, String?) {
 		guard let r = self.range(of: "?") else {
-			return (self, nil)
+			return (self.cleanedPath, nil)
 		}
-		return (String(self[self.startIndex..<r.lowerBound]), String(self[r.upperBound...]))
+		return (String(self[self.startIndex..<r.lowerBound]).cleanedPath, String(self[r.upperBound...]))
 	}
 	var decodedQuery: [(String, String)] {
 		var ret: [(String, String)] = []
