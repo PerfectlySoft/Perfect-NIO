@@ -18,24 +18,54 @@
 
 import Foundation
 import NIOHTTP1
+import PerfectLib
+import PerfectMIME
+import struct Foundation.UUID
+
+public struct FileUpload: Codable {
+	public let contentType: MIMEType
+	public let fileName: String
+	public let fileSize: Int
+	public let tmpFileName: String
+}
+
+enum RequestParamValue {
+	case string(String), file(FileUpload)
+}
+
+typealias RequestTuples = (String, RequestParamValue)
 
 /// Extensions on HTTPRequest which permit the request body to be decoded to a Codable type.
 public extension HTTPRequest {
 	/// Decode the request body into the desired type, or throw an error.
 	func decode<A: Decodable>(_ type: A.Type, content: HTTPRequestContentType) throws -> A {
-		let postTuples: [(String, String)]
+		let postTuples: [RequestTuples]
 		switch content {
 		case .none:
 			postTuples = []
 		case .multiPartForm(let mime):
-			postTuples = mime.bodySpecs.map {($0.fieldName, $0.fieldValue)}
+			postTuples = mime.bodySpecs.map {
+				spec in
+				let value: RequestParamValue
+				if spec.file != nil {
+					value = .file(FileUpload(contentType: MIMEType(spec.contentType),
+										 fileName: spec.fileName,
+										 fileSize: spec.fileSize,
+										 tmpFileName: spec.tmpFileName))
+				} else {
+					value = .string(spec.fieldValue)
+				}
+				return (spec.fieldName, value)
+			}
 		case .urlForm(let t):
-			postTuples = t.map {$0}
+			postTuples = t.map {($0.0, .string($0.1))}
 		case .other(let body):
 			return try JSONDecoder().decode(A.self, from: Data(body))
 		}
 		return try A.init(from:
-			RequestDecoder(params: uriVariables.map {($0.key, $0.value)} + (searchArgs?.map {$0} ?? []) + postTuples))
+			RequestDecoder(params:
+				uriVariables.map {($0.key, .string($0.value))}
+					+ (searchArgs?.map {($0.0, .string($0.1))} ?? []) + postTuples))
 	}
 }
 
@@ -64,29 +94,33 @@ class RequestReader<K : CodingKey>: KeyedDecodingContainerProtocol {
 	var codingPath: [CodingKey] = []
 	var allKeys: [Key] = []
 	let parent: RequestDecoder
-	let params: [(String, String)]
-	init(_ p: RequestDecoder, params: [(String, String)]) {
+	let params: [RequestTuples]
+	init(_ p: RequestDecoder, params: [RequestTuples]) {
 		parent = p
 		self.params = params
 	}
 	func getValue<T: LosslessStringConvertible>(_ key: Key) throws -> T {
-		let str: String
+		let str: RequestParamValue
 		let keyStr = key.stringValue
 		if let v = params.first(where: {$0.0 == keyStr}) {
 			str = v.1
 		} else {
 			throw DecodingError.keyNotFound(key, .init(codingPath: codingPath, debugDescription: "Key \(keyStr) not found."))
 		}
-		guard let ret = T.init(str) else {
+		let finalStr: String
+		switch str {
+		case .string(let string):
+			finalStr = string
+		case .file(let file):
+			finalStr = "\(file.tmpFileName);\(file.contentType);\(file.fileName);\(file.fileSize)"
+		}
+		guard let ret = T.init(finalStr) else {
 			throw DecodingError.dataCorruptedError(forKey: key, in: self, debugDescription: "Could not convert to \(T.self).")
 		}
 		return ret
 	}
 	func contains(_ key: Key) -> Bool {
-		if let _: String = try? getValue(key) {
-			return true
-		}
-		return false
+		return nil != params.first(where: {$0.0 == key.stringValue})
 	}
 	func decodeNil(forKey key: Key) throws -> Bool {
 		return !contains(key)
@@ -152,6 +186,12 @@ class RequestReader<K : CodingKey>: KeyedDecodingContainerProtocol {
 					throw DecodingError.dataCorruptedError(forKey: key, in: self, debugDescription: "Could not convert to \(t).")
 				}
 				return date as! T
+			}
+		} else if t == FileUpload.self {
+			let keyStr = key.stringValue
+			if let v = params.first(where: {$0.0 == keyStr}),
+				case .file(let f) = v.1 {
+				return f as! T
 			}
 		}
 		throw DecodingError.keyNotFound(key, .init(codingPath: codingPath,
@@ -264,8 +304,8 @@ class RequestUnkeyedReader: UnkeyedDecodingContainer, SingleValueDecodingContain
 class RequestDecoder: Decoder {
 	var codingPath: [CodingKey] = []
 	var userInfo: [CodingUserInfoKey : Any] = [:]
-	let params: [(String, String)]
-	init(params: [(String, String)]) {
+	let params: [RequestTuples]
+	init(params: [RequestTuples]) {
 		self.params = params
 	}
 	func container<Key>(keyedBy type: Key.Type) throws -> KeyedDecodingContainer<Key> where Key : CodingKey {
