@@ -44,7 +44,16 @@ public extension HTTPRequest {
 		case .none:
 			postTuples = []
 		case .multiPartForm(let mime):
-			postTuples = mime.bodySpecs.map {
+			postTuples = mime.bodySpecs.filter {
+				spec in
+				// prune empty file uploads
+				if nil == spec.file,
+					spec.fileName == "",
+					spec.contentType == "application/octet-stream" {
+					return false
+				}
+				return true
+			}.map {
 				spec in
 				let value: RequestParamValue
 				if spec.file != nil {
