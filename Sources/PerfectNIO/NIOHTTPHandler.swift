@@ -80,7 +80,7 @@ final class NIOHTTPHandler: ChannelInboundHandler, HTTPRequest {
 		guard let requestHead = self.head else {
 			return
 		}
-		let requestInfo = HTTPRequestInfo(head: requestHead, options: isTLS ? .isTLS : .none)
+		let requestInfo = HTTPRequestInfo(head: requestHead, options: isTLS ? .isTLS : [])
 		guard let fnc = finder[requestHead.method, path] else {
 			
 			// !FIX! routes need pre-request error handlers, 404

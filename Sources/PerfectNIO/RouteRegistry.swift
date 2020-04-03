@@ -151,14 +151,6 @@ public func root<NewOut>(path: String, _ type: NewOut.Type) -> Routes<NewOut, Ne
 	return .init(.init([path:{$0}]))
 }
 
-public func root<NewOut>(@RouteBuilder<HTTPRequest, NewOut> makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
-	return try root().dir(makeChildren(root()))
-}
-
-public func root<NewOut>(type: NewOut.Type, @RouteBuilder<HTTPRequest, NewOut> makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
-	return try root().dir(makeChildren(root()))
-}
-
 public extension Routes {
 	/// Add a function mapping the input to the output.
 	func map<NewOut>(_ call: @escaping (OutType) throws -> NewOut) -> Routes<InType, NewOut> {
@@ -409,7 +401,7 @@ public extension Routes {
 		return decode(type) { $1 }
 	}
 }
-
+/* broke with swift 5.2
 @_functionBuilder
 public struct RouteBuilder<InType, OutType> {
 	public typealias RouteType = Routes<InType, OutType>
@@ -452,7 +444,60 @@ public extension Routes {
 	func dir<NewOut>(type: NewOut.Type, @RouteBuilder<OutType, NewOut> makeChildren: (Routes<OutType, OutType>) throws -> Routes<OutType, NewOut>) throws -> Routes<InType, NewOut> {
 		return try dir([makeChildren(root(path: "/", OutType.self))])
 	}
+}
+
+public func root<NewOut>(@RouteBuilder<HTTPRequest, NewOut> makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
+	return try root().dir(makeChildren(root()))
+}
+
+public func root<NewOut>(type: NewOut.Type, @RouteBuilder<HTTPRequest, NewOut> makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
+	return try root().dir(makeChildren(root()))
+}
+*/
+
+// non-function builder versions
+/// These extensions append new route sets to an existing set.
+public extension Routes {
+	/// Append new routes to the set given a new output type.
+	/// At times, Swift's type inference can fail to discern what the programmer intends when calling functions like this.
+	/// Calling the second version of this method, the one accepting a `type: NewOut.Type` as the first parameter,
+	/// can often clarify your intentions to the compiler. If you experience a compilation error with this function, try the other.
+	func dir<NewOut>(makeChildren: (Routes<OutType, OutType>) throws -> [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
+		return try dir(makeChildren(root(path: "/", OutType.self)))
+	}
 	
+	/// Append new routes to the set given a new output type.
+	/// The first `type` argument to this function serves to help type inference.
+	func dir<NewOut>(type: NewOut.Type, makeChildren: (Routes<OutType, OutType>) throws -> [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
+		return try dir(makeChildren(root(path: "/", OutType.self)))
+	}
+	
+	/// Append new routes to the set given a new output type.
+	/// At times, Swift's type inference can fail to discern what the programmer intends when calling functions like this.
+	/// Calling the second version of this method, the one accepting a `type: NewOut.Type` as the first parameter,
+	/// can often clarify your intentions to the compiler. If you experience a compilation error with this function, try the other.
+	func dir<NewOut>(makeChildren: (Routes<OutType, OutType>) throws -> Routes<OutType, NewOut>) throws -> Routes<InType, NewOut> {
+		return try dir([makeChildren(root(path: "/", OutType.self))])
+	}
+	
+	/// Append new routes to the set given a new output type.
+	/// The first `type` argument to this function serves to help type inference.
+	func dir<NewOut>(type: NewOut.Type, makeChildren: (Routes<OutType, OutType>) throws -> Routes<OutType, NewOut>) throws -> Routes<InType, NewOut> {
+		return try dir([makeChildren(root(path: "/", OutType.self))])
+	}
+}
+
+public func root<NewOut>(makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
+	return try root().dir(makeChildren(root()))
+}
+
+public func root<NewOut>(type: NewOut.Type, makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
+	return try root().dir(makeChildren(root()))
+}
+// --
+
+/// These extensions append new route sets to an existing set.
+public extension Routes {
 	/// Append new routes to this set given an array.
 	func dir<NewOut>(_ registries: [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
 		let reg = try RouteRegistry(checkedRoutes: registries.flatMap { $0.registry.routes })

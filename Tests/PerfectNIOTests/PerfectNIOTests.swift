@@ -43,11 +43,11 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testDir1() {
 		do {
-			let route = try root {
-				$0.foo1 { "OK1" }
-				$0.foo2 { "OK2" }
+			let route = try root().dir {[
+				$0.foo1 { "OK1" },
+				$0.foo2 { "OK2" },
 				$0.foo3 { "OK3" }
-			}.text()
+				]}.text()
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -64,11 +64,11 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testDuplicates() {
 		do {
-			let route = try root {
-				$0.foo1 { "OK1" }
-				$0.foo1 { "OK2" }
-				$0.foo3 { "OK3" }
-			}.text()
+			let route = try root().dir{[
+				$0.foo1 { "OK1" },
+				$0.foo1 { "OK2" },
+				$0.foo3 { "OK3" },
+				]}.text()
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -130,10 +130,10 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testMap1() {
 		do {
-			let route = try root().dir {
-				$0.a { 1 }.map { "\($0)" }.text()
+			let route: Routes<HTTPRequest, HTTPOutput> = try root().dir {[
+				$0.a { 1 }.map { "\($0)" }.text(),
 				$0.b { [1,2,3] }.map { (i: Int) -> String in "\(i)" }.json()
-			}
+			]}
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -148,11 +148,11 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testStatusCheck1() {
 		do {
-			let route = try root().dir {
-				$0.a.statusCheck { .internalServerError }.map { "BAD" }.text()
-				$0.b.statusCheck { _ in .internalServerError }.map { "BAD" }.text()
+			let route: Routes<HTTPRequest, HTTPOutput> = try root().dir {[
+				$0.a.statusCheck { .internalServerError }.map { "BAD" }.text(),
+				$0.b.statusCheck { _ in .internalServerError }.map { "BAD" }.text(),
 				$0.c.statusCheck { _ in .ok }.map { "OK" }.text()
-			}
+			]}
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -169,10 +169,10 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testMethods1() {
 		do {
-			let route = try root {
-				$0.GET.foo1 { "GET OK" }
+			let route: Routes<HTTPRequest, HTTPOutput> = try root().dir {[
+				$0.GET.foo1 { "GET OK" },
 				$0.POST.foo2 { "POST OK" }
-			}.text()
+			]}.text()
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -189,7 +189,7 @@ final class PerfectNIOTests: XCTestCase {
 	}
 	func testReadBody1() {
 		do {
-			let route = try root(type: String.self) {
+			let route = try root(type: String.self) {[
 				$0.multi.readBody {
 					(req, cont) -> String in
 					switch cont {
@@ -198,7 +198,7 @@ final class PerfectNIOTests: XCTestCase {
 					case .none, .urlForm, .other:
 						throw ErrorOutput(status: .badRequest)
 					}
-				}
+				},
 				$0.url.readBody {
 					(req, cont) -> String in
 					switch cont {
@@ -207,7 +207,7 @@ final class PerfectNIOTests: XCTestCase {
 					case .none, .multiPartForm, .other:
 						throw ErrorOutput(status: .badRequest)
 					}
-				}
+				},
 				$0.other.readBody {
 					(req, cont) -> String in
 					switch cont {
@@ -217,7 +217,7 @@ final class PerfectNIOTests: XCTestCase {
 						throw ErrorOutput(status: .badRequest)
 					}
 				}
-			}.POST.text()
+			]}.POST.text()
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -238,11 +238,11 @@ final class PerfectNIOTests: XCTestCase {
 			let date: Date
 		}
 		do {
-			let route = try root().POST.dir {
-				$0.1.decode(Foo.self)
-				$0.2.decode(Foo.self) { $1 }
+			let route = try root().POST.dir {[
+				$0.1.decode(Foo.self),
+				$0.2.decode(Foo.self) { $1 },
 				$0.3.decode(Foo.self) { $0 }
-			}.json()
+			]}.json()
 			let server = try route.bind(port: 42000).listen()
 			defer {
 				try? server.stop().wait()
@@ -728,12 +728,12 @@ final class PerfectNIOTests: XCTestCase {
 							"HEAD:///d/foo4",
 							"/a/foo1",
 							"GET:///d/foo4"])
-		let routes = try! root {
-			$0.a.foo1 { "foo" }
-			$0.b.wild(name: "p1").foo2 { "foo" }
-			$0.POST.c.foo3 { "foo" }
+		let routes = try! root().dir {[
+			$0.a.foo1 { "foo" },
+			$0.b.wild(name: "p1").foo2 { "foo" },
+			$0.POST.c.foo3 { "foo" },
 			$0.method(.GET, .HEAD).d.foo4 { "foo" }
-		}.text()
+		]}.text() 
 		for desc in routes.describe {
 			let uri = desc.uri
 			XCTAssert(expected.contains(uri))

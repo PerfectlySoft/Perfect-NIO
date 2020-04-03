@@ -14,7 +14,6 @@ public struct HTTPRequestOptions: OptionSet {
 	public init(rawValue: RawValue) {
 		self.rawValue = rawValue
 	}
-	public static let none = HTTPRequestOptions(rawValue: 0)
 	public static let isTLS = HTTPRequestOptions(rawValue: 1<<0)
 	public static let mayCompress = HTTPRequestOptions(rawValue: 1<<1)
 }
