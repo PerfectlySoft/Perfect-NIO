@@ -21,7 +21,7 @@ let package = Package(
 		.package(url: "https://github.com/PerfectlySoft/Perfect-CZlib-src.git", from: "0.0.0"),
 		
 		// tests only
-		.package(url: "https://github.com/PerfectlySoft/Perfect-CURL.git", from: "4.0.0"),
+		.package(url: "https://github.com/PerfectlySoft/Perfect-CURL.git", from: "5.0.0"),
 	],
 	targets: [
 		.target(name: "PerfectNIOExe", dependencies: [
