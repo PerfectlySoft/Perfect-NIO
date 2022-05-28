@@ -95,7 +95,7 @@ class NIOBoundRoutes: BoundRoutes {
 	private static func configureHTTPServerPipeline(pipeline: ChannelPipeline, sslContext: NIOSSLContext?) -> EventLoopFuture<Void> {
 		var handlers: [ChannelHandler] = []
 		if let sslContext = sslContext {
-			let handler = try! NIOSSLServerHandler(context: sslContext)
+			let handler = NIOSSLServerHandler(context: sslContext)
 			handlers.append(handler)
 			handlers.append(SSLFileRegionHandler())
 		}
