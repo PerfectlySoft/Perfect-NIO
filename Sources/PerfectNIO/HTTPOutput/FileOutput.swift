@@ -15,7 +15,7 @@
 //
 
 import Foundation
-import CryptoKit
+import Crypto
 import NIO
 import NIOHTTP1
 

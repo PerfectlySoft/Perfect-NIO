@@ -20,6 +20,10 @@
 // a reload. The open fd is held on the directory, so the watch survives the
 // symlink swap.
 //
+// Linux has no equivalent to Darwin's DispatchSource file-system-object watch
+// (swift-corelibs-libdispatch doesn't implement it) — falls back to polling
+// fullchain.pem/privkey.pem's modification dates on a fixed interval instead.
+//
 // One CertificateWatcher per domain. Create and start after building the
 // TLSContextManager, before calling Server.run().
 //
@@ -37,14 +41,21 @@ import NIOSSL
 
 /// Watches a cert directory and keeps TLSContextManager up to date.
 ///
-/// `@unchecked Sendable`: the mutable `source` property is written once in
+/// `@unchecked Sendable`: the mutable `source`/`pollTask` property is written once in
 /// `watch()` (called from `start()`) and read once in `stop()`. Callers are
 /// expected to call those two methods in a non-concurrent fashion.
 public final class CertificateWatcher: @unchecked Sendable {
 	private let hostname: String
 	private let directory: URL
 	private let manager: TLSContextManager
+#if canImport(Darwin)
 	private var source: DispatchSourceFileSystemObject?
+#else
+	private var pollTask: Task<Void, Never>?
+	/// No filesystem-change-notification API exists on Linux via swift-corelibs-libdispatch,
+	/// so mtime is checked on a fixed cadence instead of reacting to real events.
+	private static let pollInterval: Duration = .seconds(5)
+#endif
 
 	/// - Parameters:
 	///   - hostname: The SNI hostname this cert covers. Must match the key used in
@@ -68,12 +79,18 @@ public final class CertificateWatcher: @unchecked Sendable {
 
 	/// Cancel the directory watch. Call during graceful shutdown.
 	public func stop() {
+#if canImport(Darwin)
 		source?.cancel()
 		source = nil
+#else
+		pollTask?.cancel()
+		pollTask = nil
+#endif
 	}
 
 	// MARK: -
 
+#if canImport(Darwin)
 	private func watch() {
 		let path = directory.path
 		let fd = open(path, O_RDONLY)
@@ -92,6 +109,30 @@ public final class CertificateWatcher: @unchecked Sendable {
 		src.resume()
 		source = src
 	}
+#else
+	private func watch() {
+		let certPath = directory.appendingPathComponent("fullchain.pem").path
+		let keyPath = directory.appendingPathComponent("privkey.pem").path
+		pollTask = Task { [weak self] in
+			var lastCert = Self.modificationDate(certPath)
+			var lastKey = Self.modificationDate(keyPath)
+			while !Task.isCancelled {
+				try? await Task.sleep(for: Self.pollInterval)
+				guard !Task.isCancelled, let self else { return }
+				let currentCert = Self.modificationDate(certPath)
+				let currentKey = Self.modificationDate(keyPath)
+				guard currentCert != lastCert || currentKey != lastKey else { continue }
+				lastCert = currentCert
+				lastKey = currentKey
+				try? await self.reload()
+			}
+		}
+	}
+
+	private static func modificationDate(_ path: String) -> Date? {
+		(try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+	}
+#endif
 
 	/// Re-read PEM files from disk and push the new context to `TLSContextManager`.
 	/// Called automatically by the directory watcher; also callable programmatically

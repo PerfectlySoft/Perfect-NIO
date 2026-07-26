@@ -17,6 +17,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.27.0"),
         .package(url: "https://github.com/apple/swift-nio-extras.git", from: "1.21.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
         .package(url: "https://github.com/taplin/Perfect-CRUD.git", branch: "main"),
         .package(url: "https://github.com/taplin/Perfect-MySQL.git", branch: "main"),
     ],
@@ -45,6 +46,7 @@ let package = Package(
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
                 .product(name: "NIOExtras", package: "swift-nio-extras"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "Crypto", package: "swift-crypto"),
                 "CZlib",
             ]
         ),

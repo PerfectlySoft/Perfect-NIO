@@ -143,7 +143,7 @@ public actor AdminConsole {
     public func run() async throws {
         let routes = try buildRoutes()
         let server = Server(routes: routes, host: "127.0.0.1", port: port)
-        fputs("[AdminConsole] http://127.0.0.1:\(port) — token: \(tokenStore.filePath)\n", stderr)
+        FileHandle.standardError.write(Data("[AdminConsole] http://127.0.0.1:\(port) — token: \(tokenStore.filePath)\n".utf8))
         try await server.run()
     }
 

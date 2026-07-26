@@ -13,6 +13,9 @@
 
 import XCTest
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import NIO
 import NIOCore
 import NIOPosix
