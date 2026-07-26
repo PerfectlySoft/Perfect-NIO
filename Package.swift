@@ -17,7 +17,10 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.27.0"),
         .package(url: "https://github.com/apple/swift-nio-extras.git", from: "1.21.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
+        // Wide range (not `from:`) so this resolves alongside consumers pinning swift-crypto 4.x,
+        // e.g. Perfect-Lasso's LassoPerfectSMTP -> Perfect-SMTP, which pins `exact: "4.5.1"`.
+        // Insecure.SHA1.hash(data:) (the only API this target uses) is stable across 3.x/4.x.
+        .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0"..<"5.0.0"),
         .package(url: "https://github.com/taplin/Perfect-CRUD.git", branch: "main"),
         .package(url: "https://github.com/taplin/Perfect-MySQL.git", branch: "main"),
     ],
