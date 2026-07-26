@@ -3,7 +3,7 @@
         <img src="https://img.shields.io/badge/Swift-6.2-orange.svg?style=flat" alt="Swift 6.2">
     </a>
     <a href="https://developer.apple.com/swift/" target="_blank">
-        <img src="https://img.shields.io/badge/Platforms-macOS%2026%2B%20%7C%20Linux-lightgray.svg?style=flat" alt="Platforms macOS 26+ | Linux">
+        <img src="https://img.shields.io/badge/Platforms-macOS%2012%2B%20%7C%20Linux-lightgray.svg?style=flat" alt="Platforms macOS 12+ | Linux">
     </a>
     <a href="http://perfect.org/licensing.html" target="_blank">
         <img src="https://img.shields.io/badge/License-Apache-lightgrey.svg?style=flat" alt="License Apache">
@@ -75,13 +75,7 @@ targets: [
 
 Your code will typically `import PerfectNIO`. The library re-exports `NIO`, `NIOHTTP1`, and `NIOSSL`, so you usually do not need to import those separately.
 
-**In-ecosystem consumers** (Perfect-Lasso, `FMTestApp`, `PerfectTemplate`) don't use the GitHub remote above — they check out this repo as a sibling directory and depend on it via a local path:
-
-```swift
-.package(path: "../Perfect-NIO"),
-```
-
-This package's own `Package.swift` resolves `PerfectNIOCRUD` and the `PerfectNIOMySQLTests` test target via two more local path dependencies: `.package(path: "../Perfect-CRUD")` and `.package(path: "../Perfect-MySQL")`. Because SwiftPM resolves a manifest's full dependency graph up front, those sibling checkouts must exist at `../Perfect-CRUD` and `../Perfect-MySQL` for `swift build`/`swift test` to resolve at all — cloning this repo on its own, without the sibling directories present, will fail dependency resolution. This repo is not currently buildable/testable in isolation.
+**In-ecosystem consumers** (Perfect-Lasso, `FMTestApp`, `PerfectTemplate`) use the same GitHub URL above — no local sibling checkout is needed. This package's own `Package.swift` likewise resolves `PerfectNIOCRUD` and the `PerfectNIOMySQLTests` test target's `Perfect-CRUD`/`Perfect-MySQL` dependencies via `.package(url:, branch: "main")`, not a local path. Cloning this repo on its own and running `swift build`/`swift test` works standalone; fast local cross-repo iteration during development uses a gitignored SwiftPM mirror (`swift package config set-mirror`) instead of editing `Package.swift`.
 
 There is no `PerfectNIOMustache` target — an earlier version of this package had one, but it was deliberately removed (dead weight pulling in an unresurrected `PerfectLib`). Mustache template output is not currently available.
 
