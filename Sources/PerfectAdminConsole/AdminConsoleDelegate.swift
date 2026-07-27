@@ -15,6 +15,10 @@
 //
 // Phase 1: status sections, route inspector
 // Phase 2: custom actions, TLS certificate reload
+// Phase 6: model schema browser (ADR-0001 Phase 5 -- see ModelInfo.swift's
+// header comment for why the numbering doesn't line up: this file's own
+// Phase N is local to PerfectAdminConsole's build history, unrelated to
+// ADR-0001's PerfectCRUD roadmap phase numbers)
 
 import Foundation
 
@@ -111,6 +115,16 @@ public protocol AdminConsoleDelegate: AnyObject, Sendable {
     /// Implement to re-read certificate PEM files and push them to your `TLSContextManager`.
     /// Default implementation is a no-op (the built-in action will report success silently).
     func reloadTLSCertificates() async throws
+
+    // MARK: Phase 6 — model schema browser (ADR-0001 Phase 5)
+
+    /// Models/tables to surface in the admin console's schema browser.
+    ///
+    /// PerfectAdminConsole has no PerfectCRUD dependency -- convert your own
+    /// reflected schema (e.g. `SomeModel.CRUDTableStructure()`) into
+    /// `ModelInfo` here. Return an empty array (default) to suppress the
+    /// panel. Schema only, never row data.
+    func registeredModels() async -> [ModelInfo]
 }
 
 public extension AdminConsoleDelegate {
@@ -132,4 +146,5 @@ public extension AdminConsoleDelegate {
     func switchDatasource(name: String, to configID: String) async throws -> DatasourceTestResult {
         .failed("Config switching not supported for '\(name)'")
     }
+    func registeredModels() async -> [ModelInfo] { [] }
 }

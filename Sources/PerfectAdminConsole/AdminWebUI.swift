@@ -148,6 +148,7 @@ main{padding:20px;max-width:980px;margin:0 auto}
       <div class="card"><h2>Metrics</h2><div id="metrics-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
     </div>
     <div class="card" id="datasource-card"><h2>Datasources</h2><div id="datasource-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
+    <div class="card" id="models-card"><h2>Models</h2><div id="models-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
     <div class="card" id="log-card">
       <h2>Log Tail <span id="log-meta" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)"></span></h2>
       <div class="log-box" id="log-box">Loading…</div>
@@ -197,10 +198,10 @@ async function api(path) {
 
 async function refresh() {
   try {
-    const [status, tls, acme, logs, routes, datasources, metrics, actions] = await Promise.all([
+    const [status, tls, acme, logs, routes, datasources, metrics, actions, models] = await Promise.all([
       api('/api/status'), api('/api/tls'), api('/api/acme'),
       api('/api/logs?count=100'), api('/api/routes'), api('/api/datasources'),
-      api('/api/metrics'), api('/api/actions'),
+      api('/api/metrics'), api('/api/actions'), api('/api/models'),
     ]);
     renderStatus(status);
     renderTLS(tls);
@@ -209,6 +210,7 @@ async function refresh() {
     renderRoutes(routes);
     renderDatasources(datasources);
     renderMetrics(metrics);
+    renderModels(models);
     // Re-rendered every cycle (not just on first load) so an action whose
     // description reflects live state — e.g. a crawl-report delegate
     // showing "Running now — 340/1,989 pages" — updates without a reload.
@@ -401,6 +403,28 @@ async function testDS(name) {
   } catch(e) {
     showToast('Test failed: ' + e.message, 'err');
   }
+}
+
+// ---- Phase 6: model schema browser (ADR-0001 Phase 5) ----
+// Schema only -- no row data or row-browsing UI in this first slice.
+
+function renderModels(m) {
+  const el = document.getElementById('models-content');
+  if (!m.models || !m.models.length) {
+    el.innerHTML = '<div class="row"><span class="rl" style="color:var(--muted)">No models registered</span></div>';
+    return;
+  }
+  el.innerHTML = m.models.map(model => {
+    const cols = model.columns.map(c => {
+      const badges = (c.isPrimaryKey ? ' <span class="mini-btn" style="pointer-events:none">PK</span>' : '') +
+        (c.isOptional ? ' <span class="mini-btn" style="pointer-events:none">optional</span>' : '');
+      return '<div class="row"><span class="rl">' + esc(c.name) + '</span>' +
+        '<span class="rv">' + esc(c.typeName) + badges + '</span></div>';
+    }).join('');
+    return '<div class="row" style="border-bottom:none;padding-bottom:0"><span class="rl" style="font-weight:600">' +
+      esc(model.label) + '</span><span class="rv" style="color:var(--muted)">' +
+      model.columns.length + ' column' + (model.columns.length === 1 ? '' : 's') + '</span></div>' + cols;
+  }).join('<div class="ds-divider"></div>');
 }
 
 function renderDelegate(sections) {
