@@ -51,23 +51,43 @@ private func _typeCheckTablePool() throws {
 @Suite("Pooled routes")
 struct PooledRouteTests {
 
+	// Env-var-driven (MYSQL_TEST_HOST/USER/PASSWORD/DATABASE), not the
+	// sibling MySQLIntegrationTests.swift's hardcoded root/no-password --
+	// confirmed during review that assumption doesn't hold against this
+	// machine's actual server (a real mysqld requiring real credentials,
+	// not Homebrew's passwordless-root default). Matches the
+	// MySQLFixtureConfig.fromEnvironment() pattern already established in
+	// Perfect-MySQL's own test suite (GenericCatalogFixtureTests.swift).
 	@Test(
 		"a real MySQL connection flows through the pool end-to-end",
 		.enabled(if: ProcessInfo.processInfo.environment["MYSQL_TESTS"] == "1")
 	)
 	func liveConnectionThroughPool() async throws {
+		let env = ProcessInfo.processInfo.environment
+		let host = env["MYSQL_TEST_HOST"] ?? "127.0.0.1"
+		let user = env["MYSQL_TEST_USER"] ?? "root"
+		let pass = env["MYSQL_TEST_PASSWORD"] ?? ""
+		let database = env["MYSQL_TEST_DATABASE"] ?? "test"
+
+		// Ensure the target database exists -- this server doesn't ship
+		// MySQL's historical default "test" schema, and connecting a
+		// MySQLDatabaseConfiguration straight to a nonexistent db fails.
+		let admin = try MySQLDatabaseConfiguration(database: env["MYSQL_TEST_ADMIN_DATABASE"] ?? "mysql",
+													host: host, username: user, password: pass)
+		try Database(configuration: admin).sql("CREATE DATABASE IF NOT EXISTS `\(database)`")
+
 		let pool = try DatabaseConnectionPool(
 			configuration: .init(minConnections: 0, maxConnections: 2),
 			makeConnection: {
-				try MySQLDatabaseConfiguration(database: "test", host: "127.0.0.1",
-												username: "root", password: "")
+				try MySQLDatabaseConfiguration(database: database, host: host,
+												username: user, password: pass)
 			}
 		)
 
 		// Seed via a direct connection first (same pattern as the sibling
 		// MySQLIntegrationTests.swift's liveDB() helper).
-		let seedConfig = try MySQLDatabaseConfiguration(database: "test", host: "127.0.0.1",
-														 username: "root", password: "")
+		let seedConfig = try MySQLDatabaseConfiguration(database: database, host: host,
+														 username: user, password: pass)
 		let seedDB = Database(configuration: seedConfig)
 		try seedDB.create(PooledWidget.self, policy: [.dropTable, .shallow])
 		try seedDB.table(PooledWidget.self).insert([
