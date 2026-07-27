@@ -22,6 +22,8 @@
 //          (Lasso: reload a .conf file; MySQL pool: reconnect; custom API: swap env profile).
 // Phase 4: In-process metrics (GET /api/metrics via AdminMetrics actor),
 //          per-domain TLS ops (POST /api/tls/reload, DELETE /api/tls/domain).
+// Phase 6: Model schema browser (GET /api/models) -- ADR-0001 Phase 5.
+//          ModelInfo (schema only, no row data, no PerfectCRUD dependency).
 //
 // Security model:
 //   - Binds exclusively to 127.0.0.1; no configuration option to change this.
@@ -291,6 +293,23 @@ public actor AdminConsole {
             return try JSONOutput(ResultEnc(success: result.success, message: result.message, latencyMs: result.latencyMs))
         }
 
+        // ── Phase 6: model schema browser (ADR-0001 Phase 5) ─────────────────
+
+        // GET /api/models — registered model schemas (name + columns), no row data
+        let modelsRoute = root().GET.path("api").path("models").map { (req: any HTTPRequest) async throws -> HTTPOutput in
+            try tokenStore.requireAuth(from: req.headers)
+            let models = await delegate?.registeredModels() ?? []
+            struct ColumnEnc: Encodable { let name, typeName: String; let isPrimaryKey, isOptional: Bool }
+            struct ModelEnc: Encodable { let name, label: String; let columns: [ColumnEnc] }
+            struct ModelsEnc: Encodable { let models: [ModelEnc] }
+            let encoded = models.map { model in
+                ModelEnc(name: model.name, label: model.label, columns: model.columns.map {
+                    ColumnEnc(name: $0.name, typeName: $0.typeName, isPrimaryKey: $0.isPrimaryKey, isOptional: $0.isOptional)
+                })
+            }
+            return try JSONOutput(ModelsEnc(models: encoded))
+        }
+
         // ── Phase 2: mutating routes ──────────────────────────────────────────
 
         // GET /api/actions — list built-in + delegate actions
@@ -401,7 +420,8 @@ public actor AdminConsole {
         return try root().dir(uiRoute, statusRoute, tlsRoute, acmeRoute, logsRoute, routesRoute,
                               datasourcesRoute, datasourceTestRoute, datasourceSwitchRoute,
                               metricsRoute, tlsReloadRoute, tlsRemoveRoute,
-                              actionsGetRoute, actionsPostRoute, clearLogsRoute)
+                              actionsGetRoute, actionsPostRoute, clearLogsRoute,
+                              modelsRoute)
     }
 }
 

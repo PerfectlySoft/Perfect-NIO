@@ -937,3 +937,102 @@ final class AdminWebUIPhase5Tests: XCTestCase {
         XCTAssertTrue(html.contains("X-Admin-CSRF"), "switchDS must include X-Admin-CSRF header")
     }
 }
+
+// MARK: - Phase 6: ModelColumnInfo / ModelInfo (ADR-0001 Phase 5)
+
+final class ModelColumnInfoTests: XCTestCase {
+
+    func testInit_storesAllFields() {
+        let c = ModelColumnInfo(name: "id", typeName: "Int", isPrimaryKey: true, isOptional: false)
+        XCTAssertEqual(c.name, "id")
+        XCTAssertEqual(c.typeName, "Int")
+        XCTAssertTrue(c.isPrimaryKey)
+        XCTAssertFalse(c.isOptional)
+    }
+
+    func testInit_defaultsToNotPrimaryKeyNotOptional() {
+        let c = ModelColumnInfo(name: "name", typeName: "String")
+        XCTAssertFalse(c.isPrimaryKey)
+        XCTAssertFalse(c.isOptional)
+    }
+
+    func testSendable_usableAcrossActors() async {
+        let c = ModelColumnInfo(name: "email", typeName: "String", isOptional: true)
+        let name = await Task.detached { c.name }.value
+        XCTAssertEqual(name, "email")
+    }
+}
+
+final class ModelInfoTests: XCTestCase {
+
+    func testInit_labelDefaultsToName() {
+        let m = ModelInfo(name: "posts", columns: [])
+        XCTAssertEqual(m.label, "posts")
+    }
+
+    func testInit_labelOverridesWhenProvided() {
+        let m = ModelInfo(name: "posts", label: "Blog Posts", columns: [])
+        XCTAssertEqual(m.label, "Blog Posts")
+    }
+
+    func testInit_storesColumns() {
+        let columns = [
+            ModelColumnInfo(name: "id", typeName: "Int", isPrimaryKey: true),
+            ModelColumnInfo(name: "title", typeName: "String"),
+        ]
+        let m = ModelInfo(name: "posts", columns: columns)
+        XCTAssertEqual(m.columns.count, 2)
+        XCTAssertEqual(m.columns[0].name, "id")
+    }
+
+    func testSendable_usableAcrossActors() async {
+        let m = ModelInfo(name: "posts", columns: [ModelColumnInfo(name: "id", typeName: "Int")])
+        let name = await Task.detached { m.name }.value
+        XCTAssertEqual(name, "posts")
+    }
+}
+
+// MARK: - Phase 6: AdminConsoleDelegate defaults
+
+private final class MinimalDelegate6: AdminConsoleDelegate {}
+
+final class AdminConsoleDelegatePhase6Tests: XCTestCase {
+
+    func testDefaultRegisteredModels_isEmpty() async {
+        let d = MinimalDelegate6()
+        let models = await d.registeredModels()
+        XCTAssertTrue(models.isEmpty)
+    }
+}
+
+// MARK: - Phase 6: AdminWebUI models section
+
+final class AdminWebUIModelsTests: XCTestCase {
+
+    private func loadHTML() async throws -> String {
+        let output = AdminWebUI.response(tokenFilePath: "/tmp/tok.token")
+        var body: [UInt8] = []
+        let alloc = ByteBufferAllocator()
+        var chunk = try await output.nextChunk(allocator: alloc)
+        while let buf = chunk {
+            body.append(contentsOf: buf.readableBytesView)
+            chunk = try await output.nextChunk(allocator: alloc)
+        }
+        return String(decoding: body, as: UTF8.self)
+    }
+
+    func testResponse_containsModelsCard() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("id=\"models-card\""), "models-card missing from HTML")
+    }
+
+    func testResponse_containsModelsEndpointInRefresh() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("/api/models"), "/api/models fetch missing from refresh()")
+    }
+
+    func testResponse_containsRenderModelsFunction() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("function renderModels"), "renderModels JS function missing from HTML")
+    }
+}
