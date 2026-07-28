@@ -637,6 +637,38 @@ Typical `id` values by framework:
 - **MySQL pool** — a named profile key (e.g. `"staging"`) that triggers a pool reconnect
 - **Custom API** — an env profile name (`"dev"`, `"staging"`, `"prod"`) or any stable key
 
+### Phase 6 — model schema browser
+
+A read-only panel listing the ORM models/tables your host application knows about — schema (table/column shape) only, never row data. `PerfectAdminConsole` has no dependency on any ORM (including Perfect-CRUD): your delegate converts its own reflected schema into the framework-agnostic `ModelInfo`/`ModelColumnInfo` types.
+
+| Endpoint | Response |
+|---|---|
+| `GET /api/models` | `{models: [{name, label, columns: [{name, typeName, isPrimaryKey, isOptional}]}]}` |
+
+```swift
+func registeredModels() async -> [ModelInfo] {
+    [
+        ModelInfo(name: "User", columns: [
+            ModelColumnInfo(name: "id", typeName: "Int", isPrimaryKey: true),
+            ModelColumnInfo(name: "email", typeName: "String"),
+            ModelColumnInfo(name: "nickname", typeName: "String", isOptional: true),
+        ]),
+    ]
+}
+```
+
+If your models are Perfect-CRUD `Codable` types, `Decodable.CRUDTableStructure()` (Perfect-CRUD, public as of its `f01b8c0` and later commits) reflects a type's actual table/column shape for you, rather than hand-describing it:
+
+```swift
+func registeredModels() async -> [ModelInfo] {
+    guard let structure = try? User.CRUDTableStructure() else { return [] }
+    return [ModelInfo(name: structure.tableName, columns: structure.columns.map {
+        ModelColumnInfo(name: $0.name, typeName: String(describing: $0.type),
+                         isPrimaryKey: $0.properties.contains(.primaryKey), isOptional: $0.optional)
+    })]
+}
+```
+
 ### AdminConsoleDelegate
 
 Implement this protocol (all methods have default implementations) to expose host-specific data and actions:
@@ -713,6 +745,15 @@ actor MyServer: AdminConsoleDelegate {
             return .failed(error.localizedDescription)
         }
     }
+
+    // Phase 6 — model schema browser
+    func registeredModels() async -> [ModelInfo] {
+        guard let structure = try? User.CRUDTableStructure() else { return [] }
+        return [ModelInfo(name: structure.tableName, columns: structure.columns.map {
+            ModelColumnInfo(name: $0.name, typeName: String(describing: $0.type),
+                             isPrimaryKey: $0.properties.contains(.primaryKey), isOptional: $0.optional)
+        })]
+    }
 }
 ```
 
@@ -778,6 +819,27 @@ let routes2 = root().users.table(makeDatabase(), User.self) { _, table in
     try table.select()
 }.json()
 ```
+
+### Pooled routes
+
+`.db(pool:_:)`/`.table(pool:_:_:)` are pool-based counterparts to the `@autoclosure`-based overloads above, distinguished by the `pool:` label so existing call sites keep resolving unchanged. Build one `DatabaseConnectionPool` at server startup (see Perfect-CRUD's own README for `DatabaseConnectionPool` itself) and switch call sites to it instead of constructing a fresh `Database` per request:
+
+```swift
+let pool = try DatabaseConnectionPool(
+    configuration: .init(minConnections: 1, maxConnections: 10),
+    makeConnection: { try MySQLDatabaseConfiguration(database: "mydb", host: "localhost") }
+)
+
+let routes = root().users.db(pool: pool) { _, db in
+    try db.table(User.self).select()
+}.json()
+
+let routes2 = root().users.table(pool: pool, User.self) { _, table in
+    try table.select()
+}.json()
+```
+
+Both internally acquire a connection, run your closure, and release it back to the pool afterward — even on throw. They use the pool's manual `acquire()`/`release(_:)` pairing rather than `withConnection(_:)`, since `OutType` at this point in a route chain is commonly `HTTPRequest`, a non-`Sendable` protocol existential that can't cross `withConnection`'s `Sendable`-body boundary.
 
 ---
 
