@@ -35,10 +35,15 @@ public struct RouteInfo: Sendable {
 public struct AdminStatusSection: Sendable {
     public let title: String
     public let items: [(key: String, value: String)]
+    /// Keys (matching an entry in `items`) to render as an alert-styled tag instead of
+    /// plain text — e.g. an "ARMED" operating mode. Empty by default, so every existing
+    /// section renders exactly as before.
+    public let alertKeys: Set<String>
 
-    public init(title: String, items: [(key: String, value: String)]) {
+    public init(title: String, items: [(key: String, value: String)], alertKeys: Set<String> = []) {
         self.title = title
         self.items = items
+        self.alertKeys = alertKeys
     }
 }
 
@@ -55,6 +60,68 @@ public struct AdminRunningJob: Sendable {
         self.name = name
         self.completed = completed
         self.total = total
+    }
+}
+
+/// A completed background job, for the admin console's Activity history. Mirrors
+/// `AdminRunningJob`'s "the console has no notion of what a job is beyond this shape" stance —
+/// any host-specific concept (a finished crawl, a migration) maps onto it the same way.
+public struct AdminJobRun: Sendable {
+    public let name: String
+    public let startedAt: Date
+    public let finishedAt: Date
+    public let succeeded: Bool
+    public let summary: String
+
+    public init(name: String, startedAt: Date, finishedAt: Date, succeeded: Bool, summary: String) {
+        self.name = name
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+        self.succeeded = succeeded
+        self.summary = summary
+    }
+}
+
+/// One row of a structured action report — e.g. one crawled page.
+public struct AdminActionReportRow: Sendable {
+    public let label: String
+    public let status: String
+    public let detail: String?
+    public let elapsedMS: Int?
+
+    public init(label: String, status: String, detail: String? = nil, elapsedMS: Int? = nil) {
+        self.label = label
+        self.status = status
+        self.detail = detail
+        self.elapsedMS = elapsedMS
+    }
+}
+
+/// Structured, drill-down detail for an action's most recent run — e.g. a crawl report's
+/// per-page results grouped by failure cause. Generic: any action can supply one via
+/// `AdminConsoleDelegate.actionReport(for:)`, not just a crawl.
+public struct AdminActionReport: Sendable {
+    public let actionName: String
+    public let generatedAt: Date
+    public let summary: String
+    /// Small headline numbers, e.g. ("Failing", "46", true) — `isAlert` renders it in the
+    /// alert color.
+    public let stats: [(label: String, value: String, isAlert: Bool)]
+    /// Rows grouped under a heading, e.g. one group per distinct failure cause.
+    public let groups: [(heading: String, rows: [AdminActionReportRow])]
+
+    public init(
+        actionName: String,
+        generatedAt: Date,
+        summary: String,
+        stats: [(label: String, value: String, isAlert: Bool)],
+        groups: [(heading: String, rows: [AdminActionReportRow])]
+    ) {
+        self.actionName = actionName
+        self.generatedAt = generatedAt
+        self.summary = summary
+        self.stats = stats
+        self.groups = groups
     }
 }
 
@@ -149,6 +216,17 @@ public protocol AdminConsoleDelegate: AnyObject, Sendable {
     /// The job currently in flight, if any — shown in the state strip's running-job chip on
     /// every tab. Return `nil` (default) when nothing is running; the chip is simply absent.
     func currentJob() async -> AdminRunningJob?
+
+    // MARK: Phase 12 — job history and structured action reports
+
+    /// Recently completed jobs, most recent first, for the Overview Activity card. Return an
+    /// empty array (default) to show only `currentJob()` (or nothing, if that's also nil).
+    func recentJobRuns() async -> [AdminJobRun]
+
+    /// Structured drill-down detail for the named action's most recent run, if any — e.g. a
+    /// crawl report's per-page results. Return `nil` (default) when there's nothing to show;
+    /// the UI simply omits the link to it.
+    func actionReport(for name: String) async -> AdminActionReport?
 }
 
 public extension AdminConsoleDelegate {
@@ -172,4 +250,6 @@ public extension AdminConsoleDelegate {
     }
     func registeredModels() async -> [ModelInfo] { [] }
     func currentJob() async -> AdminRunningJob? { nil }
+    func recentJobRuns() async -> [AdminJobRun] { [] }
+    func actionReport(for name: String) async -> AdminActionReport? { nil }
 }

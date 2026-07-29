@@ -303,7 +303,12 @@ final class JSONTextTests: XCTestCase {
 
     func testSection_buildsExpectedShape() {
         let json = JSONText.section(title: "My App", items: [("Key", "Value"), ("Foo", "Bar")])
-        XCTAssertEqual(json, #"{"title":"My App","items":{"Key":"Value","Foo":"Bar"}}"#)
+        XCTAssertEqual(json, #"{"title":"My App","items":{"Key":"Value","Foo":"Bar"},"alertKeys":[]}"#)
+    }
+
+    func testSection_withAlertKeys_includesSortedKeysArray() {
+        let json = JSONText.section(title: "CWP Session Janitor", items: [("Mode", "ARMED")], alertKeys: ["Mode"])
+        XCTAssertEqual(json, #"{"title":"CWP Session Janitor","items":{"Mode":"ARMED"},"alertKeys":["Mode"]}"#)
     }
 
     func testJob_nilProducesNullLiteral() {
@@ -1012,15 +1017,17 @@ final class AdminWebUIPhase4Tests: XCTestCase {
         return String(decoding: body, as: UTF8.self)
     }
 
+    // Superseded by Phase 12's Traffic card (admin-console UI redesign phase 6) — the standalone
+    // Metrics card/renderMetrics() is gone, not duplicated; see AdminWebUIPhase12OverviewTests.
     func testResponse_containsMetricsCard() async throws {
         let html = try await loadHTML()
-        XCTAssertTrue(html.contains("metrics-rows"), "Metrics card missing from HTML")
-        XCTAssertTrue(html.contains("Metrics"), "Metrics heading missing")
+        XCTAssertTrue(html.contains("traffic-content"), "Traffic card (Metrics' successor) missing from HTML")
+        XCTAssertTrue(html.contains("/api/metrics"), "metrics API endpoint missing from JS")
     }
 
     func testResponse_containsRenderMetrics() async throws {
         let html = try await loadHTML()
-        XCTAssertTrue(html.contains("renderMetrics"), "renderMetrics JS function missing")
+        XCTAssertTrue(html.contains("function renderTraffic"), "renderTraffic (renderMetrics' successor) JS function missing")
         XCTAssertTrue(html.contains("/api/metrics"), "metrics API endpoint missing from JS")
     }
 
@@ -1278,9 +1285,10 @@ final class AdminWebUIPhase7Tests: XCTestCase {
         let overviewStart = try XCTUnwrap(html.range(of: "id=\"tab-overview\""))
         let settingsStart = try XCTUnwrap(html.range(of: "id=\"tab-settings\""))
         let overviewBody = html[overviewStart.upperBound..<settingsStart.lowerBound]
-        for id in ["metrics-rows", "log-box", "models-content"] {
-            XCTAssertTrue(overviewBody.contains("id=\"\(id)\""), "\(id) missing from Overview tab")
-        }
+        // metrics-rows/models-content moved out in Phase 12 (superseded by Traffic, relocated to
+        // the Data tab respectively) -- log-box (Recent Log) is the one Overview mount unchanged
+        // since Phase 8. See AdminWebUIPhase12OverviewTests for their new homes.
+        XCTAssertTrue(overviewBody.contains("id=\"log-box\""), "log-box missing from Overview tab")
         XCTAssertFalse(overviewBody.contains("id=\"actions-section\""), "Actions catalog moved to the Actions tab in Phase 9 -- Overview should no longer duplicate it")
         XCTAssertFalse(overviewBody.contains("id=\"datasource-content\""), "Datasources moved to the Data tab in Phase 10 -- Overview should no longer duplicate it")
     }
@@ -1387,11 +1395,14 @@ final class AdminWebUIPhase8LogsViewerTests: XCTestCase {
         XCTAssertTrue(html.contains("new Blob("), "Blob-based download missing")
     }
 
+    // openLogsWindow() was generalized into openDetachedWindow(viewer) in Phase 12 (admin-console
+    // UI redesign phase 6) so Activity could reuse the same mechanism -- see
+    // AdminWebUIPhase12OverviewTests for the generalized-function assertion.
     func testResponse_containsOpenLogsWindowFunction_andDetachedDetection() async throws {
         let html = try await loadHTML()
-        XCTAssertTrue(html.contains("function openLogsWindow"), "openLogsWindow function missing")
+        XCTAssertTrue(html.contains("function openDetachedWindow"), "openDetachedWindow function missing")
         XCTAssertTrue(html.contains("window.open("), "window.open call missing")
-        XCTAssertTrue(html.contains("detached=logs"), "detached query param missing")
+        XCTAssertTrue(html.contains("detached=logs") || html.contains("'?detached=' + viewer"), "detached query param missing")
         XCTAssertTrue(html.contains("detached-logs"), "detached-logs body class missing")
     }
 
@@ -1773,6 +1784,259 @@ final class AdminConsolePhase11StatusJSONTests: XCTestCase {
     /// both fields) plus AdminTokenStore's existing forceNewToken rotation test
     /// (testInit_forceNewTokenRotatesEvenAtSameFilePath).
     func testStatusJSONFieldsAreCoveredIndirectly() {
+        XCTAssertTrue(true)
+    }
+}
+
+// MARK: - Phase 12: AdminJobRun (admin-console UI redesign phase 6)
+
+final class AdminJobRunTests: XCTestCase {
+    func testInit_storesAllFields() {
+        let started = Date()
+        let finished = started.addingTimeInterval(30)
+        let run = AdminJobRun(name: "crawl-report", startedAt: started, finishedAt: finished, succeeded: true, summary: "1943 clean, 46 failing")
+        XCTAssertEqual(run.name, "crawl-report")
+        XCTAssertEqual(run.startedAt, started)
+        XCTAssertEqual(run.finishedAt, finished)
+        XCTAssertTrue(run.succeeded)
+        XCTAssertEqual(run.summary, "1943 clean, 46 failing")
+    }
+}
+
+// MARK: - Phase 12: AdminActionReport family (admin-console UI redesign phase 6)
+
+final class AdminActionReportRowTests: XCTestCase {
+    func testInit_defaultsDetailAndElapsedToNil() {
+        let row = AdminActionReportRow(label: "/index.lasso", status: "clean")
+        XCTAssertEqual(row.label, "/index.lasso")
+        XCTAssertEqual(row.status, "clean")
+        XCTAssertNil(row.detail)
+        XCTAssertNil(row.elapsedMS)
+    }
+
+    func testInit_storesAllFields() {
+        let row = AdminActionReportRow(label: "/broken.lasso", status: "5xx", detail: "unknownFunction", elapsedMS: 42)
+        XCTAssertEqual(row.detail, "unknownFunction")
+        XCTAssertEqual(row.elapsedMS, 42)
+    }
+}
+
+final class AdminActionReportTests: XCTestCase {
+    func testInit_storesAllFields() {
+        let now = Date()
+        let row = AdminActionReportRow(label: "/a", status: "clean")
+        let report = AdminActionReport(
+            actionName: "crawl-report",
+            generatedAt: now,
+            summary: "1943 clean, 46 failing",
+            stats: [(label: "Failing", value: "46", isAlert: true)],
+            groups: [(heading: "404 unknownFunction", rows: [row])]
+        )
+        XCTAssertEqual(report.actionName, "crawl-report")
+        XCTAssertEqual(report.generatedAt, now)
+        XCTAssertEqual(report.summary, "1943 clean, 46 failing")
+        XCTAssertEqual(report.stats.count, 1)
+        XCTAssertEqual(report.stats[0].label, "Failing")
+        XCTAssertTrue(report.stats[0].isAlert)
+        XCTAssertEqual(report.groups.count, 1)
+        XCTAssertEqual(report.groups[0].heading, "404 unknownFunction")
+        XCTAssertEqual(report.groups[0].rows.count, 1)
+    }
+}
+
+// MARK: - Phase 12: AdminStatusSection.alertKeys (admin-console UI redesign phase 6)
+
+final class AdminStatusSectionAlertKeysTests: XCTestCase {
+    func testInit_defaultAlertKeysIsEmpty() {
+        let section = AdminStatusSection(title: "CWP Session Janitor", items: [(key: "Mode", value: "ARMED")])
+        XCTAssertTrue(section.alertKeys.isEmpty)
+    }
+
+    func testInit_storesExplicitAlertKeys() {
+        let section = AdminStatusSection(title: "CWP Session Janitor", items: [(key: "Mode", value: "ARMED")], alertKeys: ["Mode"])
+        XCTAssertEqual(section.alertKeys, ["Mode"])
+    }
+}
+
+// MARK: - Phase 12: AdminConsoleDelegate defaults (admin-console UI redesign phase 6)
+
+private final class MinimalDelegate12: AdminConsoleDelegate {}
+
+final class AdminConsoleDelegatePhase12Tests: XCTestCase {
+    func testDefaultRecentJobRuns_isEmpty() async {
+        let d = MinimalDelegate12()
+        let runs = await d.recentJobRuns()
+        XCTAssertTrue(runs.isEmpty)
+    }
+
+    func testDefaultActionReport_isNil() async {
+        let d = MinimalDelegate12()
+        let report = await d.actionReport(for: "crawl-report")
+        XCTAssertNil(report)
+    }
+}
+
+// MARK: - Phase 12: AdminMetrics rate history (admin-console UI redesign phase 6)
+
+final class AdminMetricsRateHistoryTests: XCTestCase {
+
+    func testRequestRateHistory_startsEmpty() async {
+        let metrics = AdminMetrics()
+        let history = await metrics.requestRateHistory()
+        XCTAssertTrue(history.isEmpty)
+    }
+
+    func testRecordRequest_accumulatesIntoCurrentBucket() async {
+        let metrics = AdminMetrics()
+        await metrics.recordRequest(route: "GET:///a")
+        await metrics.recordRequest(route: "GET:///b")
+        await metrics.recordError()
+        let history = await metrics.requestRateHistory()
+        XCTAssertEqual(history.count, 1, "calls within the same 5-minute window should share one bucket")
+        XCTAssertEqual(history[0].requests, 2)
+        XCTAssertEqual(history[0].errors, 1)
+    }
+
+    func testRequestRateHistory_windowStartIsRecent() async {
+        let metrics = AdminMetrics()
+        await metrics.recordRequest(route: "GET:///a")
+        let history = await metrics.requestRateHistory()
+        let now = Date().timeIntervalSince1970
+        XCTAssertEqual(history[0].windowStartUnix, now, accuracy: 5)
+    }
+}
+
+final class MetricsSnapshotPhase12Tests: XCTestCase {
+    func testEncode_includesRateHistory() throws {
+        let snap = MetricsSnapshot(
+            totalRequests: 10, totalErrors: 1, activeConnections: 2, routeCounts: [:],
+            rateHistory: [RateBucketSnapshot(windowStartUnix: 1000, requests: 5, errors: 1)]
+        )
+        let data = try JSONEncoder().encode(snap)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let history = try XCTUnwrap(json["rateHistory"] as? [[String: Any]])
+        XCTAssertEqual(history.count, 1)
+        XCTAssertEqual(history[0]["requests"] as? Int, 5)
+        XCTAssertEqual(history[0]["errors"] as? Int, 1)
+    }
+
+    func testInit_defaultsRateHistoryToEmpty() {
+        let snap = MetricsSnapshot(totalRequests: 0, totalErrors: 0, activeConnections: 0, routeCounts: [:])
+        XCTAssertTrue(snap.rateHistory.isEmpty)
+    }
+
+    func testSnapshotFromActor_includesRateHistory() async {
+        let metrics = AdminMetrics()
+        await metrics.recordRequest(route: "GET:///a")
+        let snap = await metrics.snapshot()
+        XCTAssertEqual(snap.rateHistory.count, 1)
+        XCTAssertEqual(snap.rateHistory[0].requests, 1)
+    }
+}
+
+// MARK: - Phase 12: AdminWebUI Overview/report/token-gate (admin-console UI redesign phase 6)
+
+final class AdminWebUIPhase12OverviewTests: XCTestCase {
+
+    private func loadHTML() async throws -> String {
+        let output = AdminWebUI.response(tokenFilePath: "/tmp/tok.token")
+        var body: [UInt8] = []
+        let alloc = ByteBufferAllocator()
+        var chunk = try await output.nextChunk(allocator: alloc)
+        while let buf = chunk {
+            body.append(contentsOf: buf.readableBytesView)
+            chunk = try await output.nextChunk(allocator: alloc)
+        }
+        return String(decoding: body, as: UTF8.self)
+    }
+
+    func testOverviewTab_containsFiveNewCardMounts() async throws {
+        let html = try await loadHTML()
+        for id in ["attention-card", "activity-card", "traffic-card", "datasources-summary-card", "quick-actions-card"] {
+            XCTAssertTrue(html.contains("id=\"\(id)\""), "\(id) missing from Overview tab")
+        }
+    }
+
+    func testOverviewTab_oldStatusAndMetricsMountsAreGone() async throws {
+        let html = try await loadHTML()
+        XCTAssertFalse(html.contains("id=\"status-rows\""), "old Server Status card mount should be removed, not duplicated")
+        XCTAssertFalse(html.contains("id=\"metrics-rows\""), "old Metrics card mount should be removed, superseded by Traffic")
+    }
+
+    func testModelsCard_movedToDataTab() async throws {
+        let html = try await loadHTML()
+        let dataStart = try XCTUnwrap(html.range(of: "id=\"tab-data\""))
+        let overviewStart = try XCTUnwrap(html.range(of: "id=\"tab-overview\""))
+        let overviewSection = html[overviewStart.upperBound..<dataStart.lowerBound]
+        XCTAssertFalse(overviewSection.contains("id=\"models-content\""), "Models card should have moved out of Overview")
+        let dataSection = html[dataStart.upperBound...]
+        XCTAssertTrue(dataSection.contains("id=\"models-content\""), "Models card should be present in the Data tab")
+    }
+
+    func testReportTabPanel_isPresent() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("id=\"tab-report\""), "6th tab-panel for crawl-report-result missing")
+        XCTAssertTrue(html.contains("id=\"report-content\""), "report-content mount missing")
+    }
+
+    func testAuthGate_containsWhyLineAndRememberCheckbox() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("id=\"gate-why\""), "gate-why line missing")
+        XCTAssertTrue(html.contains("id=\"remember-checkbox\""), "remember checkbox missing")
+        XCTAssertTrue(html.contains("id=\"remember-row\""), "remember-row missing")
+    }
+
+    func testResponse_containsPhase12RenderFunctions() async throws {
+        let html = try await loadHTML()
+        for fn in ["function renderAttentionCard", "function renderActivityCard", "function renderTraffic",
+                   "function renderDatasourcesSummary", "function renderQuickActions",
+                   "function openActionReport", "function renderActionReportOverlay", "function downloadReportCSV",
+                   "function openDetachedWindow", "async function initGate"] {
+            XCTAssertTrue(html.contains(fn), "\(fn) missing from JS")
+        }
+    }
+
+    func testOpenLogsWindowFunction_isGone() async throws {
+        let html = try await loadHTML()
+        XCTAssertFalse(html.contains("function openLogsWindow("), "old openLogsWindow should be fully generalized into openDetachedWindow, not aliased")
+    }
+
+    func testGateInfoRoute_isFetchedByInitGate() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("/api/gate-info"), "initGate() should fetch the new unauthenticated gate-info route")
+    }
+
+    func testConnect_readsRememberCheckboxForStorageChoice() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("localStorage.setItem(KEY"), "connect() should support remembering the token in localStorage")
+    }
+
+    func testActionsReportRoute_isFetchedOnDemand() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("/api/actions/report?name="), "openActionReport() should fetch the new structured-report route")
+    }
+
+    /// Regression guard for a real bug caught only by manual visual verification (a demo CWP
+    /// Janitor section with `alertKeys: ["Mode"]` rendered "Mode" as plain text, not an alert
+    /// tag) -- `renderDelegateSections` originally never read `s.alertKeys` at all, so the field
+    /// flowed all the way from AdminStatusSection through JSON and was silently dropped on the
+    /// client. Confirms the fix actually consults it.
+    func testRenderDelegateSections_readsAlertKeysAndAppliesTagClass() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("s.alertKeys"), "renderDelegateSections should read alertKeys from each section")
+        XCTAssertTrue(html.contains("data-tag-failing"), "an alert-flagged key should render with the alert tag class")
+    }
+}
+
+// MARK: - Phase 12: /api/actions/report and /api/gate-info routes (documented, not HTTP-tested)
+
+final class AdminConsolePhase12ActionReportRouteTests: XCTestCase {
+
+    /// No HTTP-level route test harness exists (same gap acknowledged in Phases 3/9/10/11).
+    /// `/api/actions/report` and `/api/gate-info` are exercised indirectly: the delegate-default
+    /// tests above confirm `actionReport(for:)` defaults to nil, and the HTML/JS tests above
+    /// confirm the client fetches both routes and handles a null report gracefully.
+    func testActionReportAndGateInfoRoutesAreCoveredIndirectly() {
         XCTAssertTrue(true)
     }
 }

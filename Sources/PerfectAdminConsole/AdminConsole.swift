@@ -91,9 +91,10 @@ enum JSONText {
         "{" + pairs.map { "\(string($0.key)):\(string($0.value))" }.joined(separator: ",") + "}"
     }
 
-    /// A `{"title":"...","items":{...}}` object for one `AdminStatusSection`.
-    static func section(title: String, items: [(key: String, value: String)]) -> String {
-        "{\"title\":\(string(title)),\"items\":\(object(items))}"
+    /// A `{"title":"...","items":{...},"alertKeys":[...]}` object for one `AdminStatusSection`.
+    static func section(title: String, items: [(key: String, value: String)], alertKeys: Set<String> = []) -> String {
+        let keysJSON = alertKeys.sorted().map(string).joined(separator: ",")
+        return "{\"title\":\(string(title)),\"items\":\(object(items)),\"alertKeys\":[\(keysJSON)]}"
     }
 
     /// A `{"name":"...","completed":N,"total":N}` object for one `AdminRunningJob`, or the bare
@@ -101,6 +102,14 @@ enum JSONText {
     static func job(_ job: AdminRunningJob?) -> String {
         guard let job else { return "null" }
         return "{\"name\":\(string(job.name)),\"completed\":\(job.completed),\"total\":\(job.total)}"
+    }
+
+    /// A `[{"name":...,"startedAt":N,"finishedAt":N,"succeeded":bool,"summary":"..."},...]`
+    /// array for `AdminConsoleDelegate.recentJobRuns()`.
+    static func jobRuns(_ runs: [AdminJobRun]) -> String {
+        "[" + runs.map {
+            "{\"name\":\(string($0.name)),\"startedAt\":\($0.startedAt.timeIntervalSince1970),\"finishedAt\":\($0.finishedAt.timeIntervalSince1970),\"succeeded\":\($0.succeeded),\"summary\":\(string($0.summary))}"
+        }.joined(separator: ",") + "]"
     }
 }
 
@@ -179,6 +188,14 @@ public actor AdminConsole {
             AdminWebUI.response(tokenFilePath: tokenStore.filePath)
         }
 
+        // GET /api/gate-info — no auth (called by the token-entry page before a token exists).
+        // Just enough for the gate to decide whether offering "remember on this machine" is
+        // sensible, given whether this instance's token survives a restart.
+        let gateInfoRoute = root().GET.path("api").path("gate-info").map { (_: any HTTPRequest) async throws -> HTTPOutput in
+            struct GateInfoEnc: Encodable { let tokenRotatesOnRestart: Bool }
+            return try JSONOutput(GateInfoEnc(tokenRotatesOnRestart: tokenRotatesOnRestart))
+        }
+
         // GET /api/status — server summary card
         let statusRoute = root().GET.path("api").path("status").map { (req: any HTTPRequest) async throws -> HTTPOutput in
             try tokenStore.requireAuth(from: req.headers)
@@ -195,16 +212,17 @@ public actor AdminConsole {
             }
             let extraSections = await delegate?.additionalStatusSections() ?? []
             let job = await delegate?.currentJob()
+            let jobRuns = await delegate?.recentJobRuns() ?? []
             let effectiveServerPort = (serverPort ?? 0) != 0 ? serverPort : nil
 
             // Hand-built, not `Encodable`/`JSONEncoder` — see `JSONText`'s
             // doc comment for why: this is the only way to guarantee
             // `additionalSections[].items` keeps its original order.
             let sectionsJSON = extraSections
-                .map { JSONText.section(title: $0.title, items: $0.items) }
+                .map { JSONText.section(title: $0.title, items: $0.items, alertKeys: $0.alertKeys) }
                 .joined(separator: ",")
             let body = """
-            {"adminPort":\(adminPort),"serverPort":\(effectiveServerPort.map(String.init) ?? "null"),"uptimeSeconds":\(uptimeSecs.map { String($0) } ?? "null"),"tlsDomainCount":\(domains.count),"tlsHasDefault":\(hasDefault),"acmePendingChallenges":\(pendingACME),"acmeConfigured":\(acmeConfigured),"tokenRotatesOnRestart":\(tokenRotatesOnRestart),"additionalSections":[\(sectionsJSON)],"currentJob":\(JSONText.job(job))}
+            {"adminPort":\(adminPort),"serverPort":\(effectiveServerPort.map(String.init) ?? "null"),"uptimeSeconds":\(uptimeSecs.map { String($0) } ?? "null"),"tlsDomainCount":\(domains.count),"tlsHasDefault":\(hasDefault),"acmePendingChallenges":\(pendingACME),"acmeConfigured":\(acmeConfigured),"tokenRotatesOnRestart":\(tokenRotatesOnRestart),"additionalSections":[\(sectionsJSON)],"currentJob":\(JSONText.job(job)),"recentJobRuns":\(JSONText.jobRuns(jobRuns))}
             """
             return BytesOutput(
                 head: HTTPHead(headers: HTTPHeaders([("content-type", "application/json")])),
@@ -430,6 +448,39 @@ public actor AdminConsole {
             return try JSONOutput(ResultEnc(success: result.success, message: result.message))
         }
 
+        // GET /api/actions/report?name= — structured drill-down for an action's most recent
+        // run (e.g. a crawl report's per-page results grouped by failure cause). `report` is
+        // `null` when the delegate has nothing to show for that action.
+        let actionReportRoute = root().GET.path("api").path("actions").path("report").map { (req: any HTTPRequest) async throws -> HTTPOutput in
+            try tokenStore.requireAuth(from: req.headers)
+            guard let name = req.searchArgs?["name"].first else {
+                throw ErrorOutput(status: .badRequest, description: "Missing required query parameter: name")
+            }
+            let report = await delegate?.actionReport(for: name)
+            struct RowEnc: Encodable { let label, status: String; let detail: String?; let elapsedMS: Int? }
+            struct StatEnc: Encodable { let label, value: String; let isAlert: Bool }
+            struct GroupEnc: Encodable { let heading: String; let rows: [RowEnc] }
+            struct ReportEnc: Encodable {
+                let actionName: String; let generatedAt: Double; let summary: String
+                let stats: [StatEnc]; let groups: [GroupEnc]
+            }
+            struct ResponseEnc: Encodable { let report: ReportEnc? }
+            let encoded = report.map { r in
+                ReportEnc(
+                    actionName: r.actionName,
+                    generatedAt: r.generatedAt.timeIntervalSince1970,
+                    summary: r.summary,
+                    stats: r.stats.map { StatEnc(label: $0.label, value: $0.value, isAlert: $0.isAlert) },
+                    groups: r.groups.map { group in
+                        GroupEnc(heading: group.heading, rows: group.rows.map {
+                            RowEnc(label: $0.label, status: $0.status, detail: $0.detail, elapsedMS: $0.elapsedMS)
+                        })
+                    }
+                )
+            }
+            return try JSONOutput(ResponseEnc(report: encoded))
+        }
+
         // DELETE /api/logs — clear the log ring buffer immediately
         let clearLogsRoute = root().DELETE.path("api").path("logs").map { (req: any HTTPRequest) async throws -> HTTPOutput in
             try tokenStore.requireAuth(from: req.headers)
@@ -485,10 +536,10 @@ public actor AdminConsole {
             return try JSONOutput(ResultEnc(success: true, message: "TLS configuration removed for \(body.hostname)"))
         }
 
-        return try root().dir(uiRoute, statusRoute, tlsRoute, acmeRoute, logsRoute, routesRoute,
+        return try root().dir(uiRoute, gateInfoRoute, statusRoute, tlsRoute, acmeRoute, logsRoute, routesRoute,
                               datasourcesRoute, datasourceTestRoute, datasourceSwitchRoute,
                               metricsRoute, tlsReloadRoute, tlsRemoveRoute,
-                              actionsGetRoute, actionsPostRoute, clearLogsRoute,
+                              actionsGetRoute, actionsPostRoute, actionReportRoute, clearLogsRoute,
                               modelsRoute)
     }
 }

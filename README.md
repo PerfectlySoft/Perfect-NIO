@@ -507,10 +507,14 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8990/api/status | jq
 `GET /` (no auth) serves a self-contained HTML/CSS/JS dashboard — no
 external resources, dark/light mode via `prefers-color-scheme`. Open
 `http://127.0.0.1:<port>` in a browser, paste the token from the file
-above into the field, and click **Connect**. The token is kept in
-`sessionStorage` for the tab's lifetime (cleared on tab close or on a 401
-— e.g. after a restart rotates the token), so you re-paste it after every
-process restart.
+above into the field, and click **Connect**. By default the token
+**persists across restarts** (reused from disk unless `forceNewToken: true`
+was passed to `init`) — the gate's why-line and the "Remember on this
+machine" checkbox reflect this instance's actual `tokenRotatesOnRestart`
+value rather than assuming a restart always invalidates it. Checking
+"Remember" keeps the token in `localStorage` (survives closing the
+browser); leaving it unchecked keeps the old `sessionStorage` behavior
+(cleared on tab close or on a 401).
 
 Once connected, the dashboard polls every endpoint on a 5-second cycle
 (visible as "refresh in Ns" under the log card) and renders one card per

@@ -243,6 +243,30 @@ body.detached-logs .tab-panel{padding:16px}
 .settings-header p{color:var(--color-neutral-700);font-size:13px;max-width:640px}
 .dashed-strip{border:1px dashed var(--color-neutral-400);padding:16px;margin-top:14px}
 .settings-inert-heading{font-family:var(--font-heading);font-weight:600;font-size:17px}
+/* ---- Phase 12: Overview redesign, crawl-report screen, token gate (admin-console UI redesign phase 6) ---- */
+.overview-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:14px;align-items:start}
+@media (max-width:900px){.overview-grid{grid-template-columns:1fr}}
+.overview-col{display:flex;flex-direction:column;gap:14px}
+.attention-item{border-left:3px solid var(--color-alert);padding:8px 10px;margin-bottom:8px}
+.attention-item.advisory{border-left-color:var(--color-neutral-400)}
+.attention-item-title{font-weight:500;font-size:14px}
+.attention-item-time{font-family:var(--font-mono);font-size:11px;color:var(--color-neutral-600)}
+.attention-item-note{font-size:12px;color:var(--color-neutral-700);margin-top:2px}
+.attention-item-actions{display:flex;gap:10px;align-items:center;margin-top:6px}
+.activity-row{display:grid;grid-template-columns:1.4fr .8fr 1fr auto;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--color-divider);font-size:12px}
+.activity-row:last-child{border-bottom:none}
+.traffic-numbers{display:flex;gap:24px;margin-bottom:10px}
+.traffic-number-label{font-size:11px;color:var(--color-neutral-600);text-transform:uppercase;letter-spacing:.04em}
+.traffic-number-value{font-family:var(--font-heading);font-weight:600;font-size:30px}
+.traffic-spark{display:block;margin:6px 0 12px}
+.gate-why{border-left:3px solid var(--color-accent);padding:6px 12px;text-align:left;font-size:12px;color:var(--color-neutral-700);max-width:340px}
+.report-stats{display:flex;gap:24px;margin-bottom:14px}
+.report-stat-label{font-size:11px;color:var(--color-neutral-600);text-transform:uppercase;letter-spacing:.04em}
+.report-stat-value{font-family:var(--font-heading);font-weight:600;font-size:26px}
+body.detached-activity .titlebar,body.detached-activity .tab-bar,body.detached-activity .state-strip{display:none}
+body.detached-activity main{max-width:none;padding:0}
+body.detached-activity .tab-panel{padding:16px}
+body.detached-activity #attention-card,body.detached-activity #log-card,body.detached-activity .overview-col:last-child{display:none}
 /* ---- placeholder tab panels ---- */
 .placeholder{color:var(--color-neutral-700);font-size:14px;padding:40px 0;text-align:center}
 /* ---- toasts ---- */
@@ -261,8 +285,12 @@ body.detached-logs .tab-panel{padding:16px}
 <!-- ==================== AUTH GATE ==================== -->
 <div id="auth-gate">
   <h1>Perfect Admin Console</h1>
+  <p class="gate-why" id="gate-why">This bearer token authenticates every admin API request.</p>
   <p>Enter the bearer token from<br><code id="path-hint"></code></p>
   <input id="token-input" type="password" placeholder="paste token here" autocomplete="off" spellcheck="false">
+  <label class="log-follow" id="remember-row" style="display:none;justify-content:center">
+    <input type="checkbox" id="remember-checkbox" checked> Remember on this machine
+  </label>
   <button id="connect-btn" class="btn btn-primary" onclick="connect()">Connect</button>
   <span id="auth-err">Invalid token — check the file and try again.</span>
 </div>
@@ -299,24 +327,46 @@ body.detached-logs .tab-panel{padding:16px}
   </div>
   <main>
     <div class="tab-panel active" id="tab-overview">
-      <div class="grid">
-        <div class="card"><h2>Server Status</h2><div id="status-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
-        <div class="card"><h2>Metrics</h2><div id="metrics-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
-      </div>
-      <div class="card" id="models-card"><h2>Models</h2><div id="models-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
-      <div class="card" id="log-card">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-          <h2 style="margin-bottom:0">Recent Log</h2>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span id="log-next-refresh" style="font-size:11px;color:var(--color-neutral-600)"></span>
-            <button class="mini-btn" onclick="showTab('logs')">Open full view</button>
-            <button class="icon-btn" onclick="openLogsWindow()" title="Open in new window" aria-label="Open in new window">⧉</button>
+      <div class="overview-grid">
+        <div class="overview-col">
+          <div class="card" id="attention-card"><h2>Needs attention</h2><div id="attention-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
+          <div class="card" id="activity-card">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+              <h2 style="margin-bottom:0">Activity</h2>
+              <div style="display:flex;align-items:center;gap:8px">
+                <button class="mini-btn" onclick="expandActivity()" id="activity-expand-btn">Expand</button>
+                <button class="icon-btn" onclick="openDetachedWindow('activity')" title="Open in new window" aria-label="Open in new window">⧉</button>
+              </div>
+            </div>
+            <div id="activity-rows"><div class="row"><span class="rl">Loading…</span></div></div>
+          </div>
+          <div class="card" id="log-card">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+              <h2 style="margin-bottom:0">Recent Log</h2>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span id="log-next-refresh" style="font-size:11px;color:var(--color-neutral-600)"></span>
+                <button class="mini-btn" onclick="showTab('logs')">Open full view</button>
+                <button class="icon-btn" onclick="openDetachedWindow('logs')" title="Open in new window" aria-label="Open in new window">⧉</button>
+              </div>
+            </div>
+            <div class="log-surface-base log-surface-mini" id="log-box">Loading…</div>
           </div>
         </div>
-        <div class="log-surface-base log-surface-mini" id="log-box">Loading…</div>
+        <div class="overview-col">
+          <div class="card" id="traffic-card"><h2>Traffic</h2><div id="traffic-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
+          <div class="card" id="datasources-summary-card">
+            <h2>Datasources</h2>
+            <div id="datasources-summary-rows"></div>
+            <button class="action-ghost" onclick="showTab('data')" style="margin-top:8px">Open Data tab</button>
+          </div>
+          <div class="card" id="quick-actions-card"><h2>Quick actions</h2><div id="quick-actions-rows"></div>
+            <p style="font-size:11px;color:var(--color-neutral-600);margin-top:8px">Destructive actions live in the Actions tab only.</p>
+          </div>
+        </div>
       </div>
     </div>
     <div class="tab-panel" id="tab-data">
+      <div class="card" id="models-card"><h2>Models</h2><div id="models-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
       <div class="data-layout">
         <div class="data-rail">
           <div class="data-rail-head">
@@ -342,7 +392,7 @@ body.detached-logs .tab-panel{padding:16px}
           <button class="mini-btn" onclick="copyLogs()">Copy</button>
           <button class="mini-btn" onclick="downloadLogs()">Download .log</button>
           <button class="mini-btn" style="border-color:var(--color-alert);color:var(--color-alert)" onclick="clearLogBuffer()">Clear buffer</button>
-          <button class="icon-btn" onclick="openLogsWindow()" title="Open in new window" aria-label="Open in new window">⧉</button>
+          <button class="icon-btn" onclick="openDetachedWindow('logs')" title="Open in new window" aria-label="Open in new window">⧉</button>
         </div>
       </div>
       <div class="log-surface-base log-surface-full" id="logs-surface">Loading…</div>
@@ -371,6 +421,9 @@ body.detached-logs .tab-panel{padding:16px}
         <div class="card" id="acme-challenges-card"><h2>ACME Challenges</h2><div id="acme-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
       </div>
     </div>
+    <div class="tab-panel" id="tab-report">
+      <div id="report-content"><div class="placeholder">No report loaded</div></div>
+    </div>
   </main>
 </div>
 <div id="toast-container"></div>
@@ -381,21 +434,25 @@ body.detached-logs .tab-panel{padding:16px}
 <script>
 'use strict';
 const KEY = 'perfectAdminToken';
-let token = sessionStorage.getItem(KEY) || '';
+let token = localStorage.getItem(KEY) || sessionStorage.getItem(KEY) || '';
 let refreshIntervalId = null;
 let countdown = 5;
 let logFilter = { query: '', subsystem: 'all', follow: true };
 let lastLogEntries = [];
 let lastLogTotal = 0;
 let lastLogCapacity = 0;
-let logsWindowRef = null;
-const isDetached = new URLSearchParams(location.search).get('detached') === 'logs';
+let detachedWindowRefs = {};
+const detachedViewer = new URLSearchParams(location.search).get('detached');
 
 // Inject server-side token path hint
 const tokenFilePath = {{TOKEN_PATH_JSON}};
 document.getElementById('path-hint').textContent = tokenFilePath;
 let lastStatus = null;
+let lastActions = [];
 let settingsInertExpanded = false;
+let activityExpanded = false;
+let currentReport = null;
+let reportFilter = 'all';
 
 function hdr() { return { 'Authorization': 'Bearer ' + token }; }
 
@@ -418,6 +475,9 @@ function fmtUptime(s) {
 function showTab(name) {
   document.querySelectorAll('.tab-panel').forEach(el => el.classList.toggle('active', el.id === 'tab-' + name));
   document.querySelectorAll('.tab-item').forEach(el => el.classList.toggle('active', el.dataset.tab === name));
+  // 'report' is a drill-down reached from Activity/Actions, not a persistent tab-bar
+  // entry — its content isn't regenerated on reconnect, so it's never restored.
+  if (name !== 'report') sessionStorage.setItem('perfectAdminActiveTab', name);
 }
 
 // ---- State strip ----
@@ -450,7 +510,7 @@ function setServing(isServing) {
 
 async function api(path) {
   const r = await fetch(path, { headers: hdr() });
-  if (r.status === 401) { logout(); throw new Error('401'); }
+  if (r.status === 401) { logout('expired'); throw new Error('401'); }
   if (!r.ok) throw new Error(r.statusText);
   return r.json();
 }
@@ -464,7 +524,7 @@ async function refresh() {
     ]);
     setServing(true);
     lastStatus = status;
-    renderStatus(status);
+    lastActions = actions.actions || [];
     renderStateStrip(status, metrics);
     renderTLS(tls);
     renderACME(acme);
@@ -474,12 +534,16 @@ async function refresh() {
     renderDelegateSections(status.additionalSections || []);
     renderSettingsInertStrip(status);
     renderDataTab(datasources);
-    renderMetrics(metrics);
     renderModels(models);
+    renderTraffic(metrics);
+    renderAttentionCard(datasources.datasources || [], status.recentJobRuns || [], lastActions);
+    renderActivityCard(status.currentJob, status.recentJobRuns || []);
+    renderDatasourcesSummary(datasources.datasources || []);
+    renderQuickActions(lastActions);
     // Re-rendered every cycle (not just on first load) so an action whose
     // description reflects live state — e.g. a crawl-report delegate
     // showing "Running now — 340/1,989 pages" — updates without a reload.
-    renderActionsCatalog(actions.actions || []);
+    renderActionsCatalog(lastActions);
     document.getElementById('refresh-badge').textContent =
       'live · updated ' + new Date().toLocaleTimeString();
   } catch(e) {
@@ -487,19 +551,6 @@ async function refresh() {
     setServing(false);
     document.getElementById('refresh-badge').textContent = 'error: ' + e.message;
   }
-}
-
-function renderStatus(s) {
-  let h = '';
-  h += row('Admin port', s.adminPort);
-  if (s.serverPort) h += row('Server port', s.serverPort);
-  if (s.uptimeSeconds != null) h += row('Uptime', fmtUptime(s.uptimeSeconds));
-  const tlsLabel = s.tlsDomainCount > 0
-    ? s.tlsDomainCount + ' domain' + (s.tlsDomainCount !== 1 ? 's' : '') + (s.tlsHasDefault ? ' + default' : '')
-    : (s.tlsHasDefault ? 'Default only' : 'Disabled');
-  h += row('TLS', tlsLabel);
-  h += row('ACME pending', s.acmePendingChallenges === 0 ? '✓ none' : String(s.acmePendingChallenges));
-  document.getElementById('status-rows').innerHTML = h;
 }
 
 function renderTLS(t) {
@@ -531,7 +582,7 @@ function renderACME(a) {
 // log" card (#log-box, always last 6 lines, no toolbar) and the full surface
 // (#logs-surface) used identically by the Logs tab and a detached popup
 // window (the popup is just this same page reloaded with ?detached=logs --
-// see isDetached above and showDashboard() below).
+// see detachedViewer above and showDashboard() below).
 
 function parseLogEntry(e) {
   const m = /^\[([^\]]+)\]\s*(.*)$/s.exec(e.message);
@@ -675,7 +726,7 @@ async function clearLogBuffer() {
   if (!confirm('Clear the log buffer? This cannot be undone.')) return;
   try {
     const r = await fetch('/api/logs', { method: 'DELETE', headers: { ...hdr(), 'X-Admin-CSRF': '1' } });
-    if (r.status === 401) { logout(); return; }
+    if (r.status === 401) { logout('expired'); return; }
     if (!r.ok) throw new Error(r.statusText);
     showToast('Log buffer cleared', 'ok');
     const logs = await api('/api/logs?count=500');
@@ -702,12 +753,16 @@ function saveWinRect(viewer) {
   }));
 }
 
-function openLogsWindow() {
-  if (logsWindowRef && !logsWindowRef.closed) { logsWindowRef.focus(); return; }
-  const rect = loadWinRect('logs', { w: 900, h: 620, x: window.screenX + 40, y: window.screenY + 40 });
-  logsWindowRef = window.open(
-    location.pathname + '?detached=logs',
-    'perfect-admin-logs',
+// Generalized so any card can pop out to its own remembered-size/position
+// window — "logs" was the only viewer through Phase 8; "activity" reuses
+// the exact same mechanism, not a new one.
+function openDetachedWindow(viewer) {
+  const ref = detachedWindowRefs[viewer];
+  if (ref && !ref.closed) { ref.focus(); return; }
+  const rect = loadWinRect(viewer, { w: 900, h: 620, x: window.screenX + 40, y: window.screenY + 40 });
+  detachedWindowRefs[viewer] = window.open(
+    location.pathname + '?detached=' + viewer,
+    'perfect-admin-' + viewer,
     'width=' + rect.w + ',height=' + rect.h + ',left=' + rect.x + ',top=' + rect.y
   );
 }
@@ -724,25 +779,162 @@ function renderRoutes(r) {
   tagsEl.innerHTML = r.routes.map(u => '<span class="tag">' + esc(u) + '</span>').join('');
 }
 
-// ---- Phase 4: metrics + TLS operations ----
+// ---- Phase 12: Traffic card (admin-console UI redesign phase 6) ----
+// "Recent" numbers, not all-time totals — summed across the trailing
+// rate-bucket history (an hour, at AdminMetrics' current 5-min/12-bucket
+// sizing), which is what a Traffic card should show. All-time totals/error
+// rate/connections already live in the state-strip on every tab.
 
-function renderMetrics(m) {
-  let h = '';
-  h += row('Total requests', m.totalRequests.toLocaleString());
-  h += row('Total errors', m.totalErrors.toLocaleString());
-  h += row('Active connections', m.activeConnections.toLocaleString());
-  const rate = m.totalRequests > 0
-    ? (m.errorRate * 100).toFixed(1) + '%'
-    : '—';
-  h += row('Error rate', rate);
-  const topRoutes = Object.entries(m.routeCounts || {})
-    .sort((a, b) => b[1] - a[1]).slice(0, 5);
+function renderTrafficSparkline(history) {
+  const w = 240, h = 40, barW = history.length ? w / history.length : w;
+  const max = Math.max(1, ...history.map(b => b.requests));
+  const bars = history.map((b, i) => {
+    const barH = Math.max(1, Math.round((b.requests / max) * (h - 2)));
+    const x = Math.round(i * barW);
+    const fill = b.errors > 0 ? 'var(--color-alert)' : 'var(--color-accent-300)';
+    return '<rect x="' + x + '" y="' + (h - barH) + '" width="' + Math.max(1, barW - 2) + '" height="' + barH + '" fill="' + fill + '"></rect>';
+  }).join('');
+  return '<svg class="traffic-spark" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' + bars + '</svg>';
+}
+
+function renderTraffic(m) {
+  const history = m.rateHistory || [];
+  const requests = history.reduce((sum, b) => sum + b.requests, 0);
+  const errors = history.reduce((sum, b) => sum + b.errors, 0);
+  let h = '<div class="traffic-numbers">' +
+    '<div><div class="traffic-number-label">Requests</div><div class="traffic-number-value">' + requests.toLocaleString() + '</div></div>' +
+    '<div><div class="traffic-number-label">Errors</div><div class="traffic-number-value" style="' + (errors > 0 ? 'color:var(--color-alert-text)' : '') + '">' + errors.toLocaleString() + '</div></div>' +
+    '</div>';
+  h += renderTrafficSparkline(history);
+  const topRoutes = Object.entries(m.routeCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 3);
   if (topRoutes.length) {
-    h += '<div style="margin-top:8px;font-size:11px;color:var(--color-neutral-600);font-weight:600;letter-spacing:.04em">TOP ROUTES</div>';
-    for (const [route, count] of topRoutes)
-      h += row(route, count.toLocaleString());
+    h += '<div style="margin-top:4px;font-size:11px;color:var(--color-neutral-600);font-weight:600;letter-spacing:.04em">TOP ROUTES</div>';
+    for (const [route, count] of topRoutes) h += row(route, count.toLocaleString());
   }
-  document.getElementById('metrics-rows').innerHTML = h;
+  document.getElementById('traffic-content').innerHTML = h;
+}
+
+// ---- Phase 12: Needs attention card ----
+// Built entirely from data already fetched by refresh()'s Promise.all — no
+// extra request. Failing datasources (typed `status` field) and failed
+// recent job runs (typed `succeeded` boolean) are the two honest, already-
+// typed "something's wrong" signals; nothing here is inferred from
+// free-text messages.
+
+function renderAttentionCard(datasources, jobRuns, actions) {
+  const items = [];
+  for (const ds of datasources) {
+    if (ds.status !== 'failing') continue;
+    const safeName = esc(ds.name).replace(/'/g, "\\'");
+    items.push({
+      title: "Datasource '" + (ds.alias || ds.name) + "' failing",
+      time: ds.lastAttempt ? fmtClock(ds.lastAttempt.ts) : '',
+      note: ds.correlationNote || (ds.lastAttempt ? ds.lastAttempt.message : ''),
+      actionsHtml: '<button class="mini-btn" onclick="testDS(\'' + safeName + '\')">Test now</button>' +
+        '<button class="action-ghost" onclick="followInLogs(\'' + safeName + '\')">See in Logs</button>',
+    });
+  }
+  for (const run of jobRuns) {
+    if (run.succeeded) continue;
+    const safeName = esc(run.name).replace(/'/g, "\\'");
+    items.push({
+      title: "'" + run.name + "' failed",
+      time: fmtClock(run.finishedAt),
+      note: run.summary,
+      actionsHtml: '<button class="action-ghost" onclick="openActionReport(\'' + safeName + '\')">See report</button>' +
+        '<button class="action-ghost" onclick="followInLogs(\'' + safeName + '\')">See in Logs</button>',
+    });
+  }
+  const el = document.getElementById('attention-rows');
+  const heading = document.querySelector('#attention-card h2');
+  if (heading) heading.textContent = items.length ? 'Needs attention · ' + items.length + ' failing' : 'Needs attention';
+  if (!items.length) {
+    el.innerHTML = '<div class="row"><span class="rl" style="color:var(--color-neutral-600)">Nothing else outstanding.</span></div>';
+    return;
+  }
+  el.innerHTML = items.map(it =>
+    '<div class="attention-item"><div class="attention-item-title">' + esc(it.title) + '</div>' +
+    (it.time ? '<div class="attention-item-time">' + esc(it.time) + '</div>' : '') +
+    (it.note ? '<div class="attention-item-note">' + esc(it.note) + '</div>' : '') +
+    '<div class="attention-item-actions">' + it.actionsHtml + '</div></div>'
+  ).join('');
+}
+
+// ---- Phase 12: Activity card ----
+// currentJob() (in-flight) + recentJobRuns() (finished), most recent first.
+// `activityExpanded` toggles compact (3 rows) vs full list, re-rendered from
+// the last-fetched data rather than a re-fetch, matching the Settings tab's
+// inert-strip toggle precedent.
+
+let lastJobRuns = [];
+let lastCurrentJob = null;
+
+function renderActivityCard(currentJob, jobRuns) {
+  lastCurrentJob = currentJob;
+  lastJobRuns = jobRuns;
+  renderActivityRows();
+}
+
+function activityRowHTML(name, stateHtml, startedLabel, actionHtml) {
+  return '<div class="activity-row"><span>' + esc(name) + '</span>' + stateHtml +
+    '<span style="font-family:var(--font-mono);color:var(--color-neutral-600)">' + esc(startedLabel) + '</span>' +
+    '<span>' + actionHtml + '</span></div>';
+}
+
+function renderActivityRows() {
+  const el = document.getElementById('activity-rows');
+  const rows = [];
+  if (lastCurrentJob) {
+    const pct = lastCurrentJob.total > 0 ? Math.min(100, Math.round(lastCurrentJob.completed / lastCurrentJob.total * 100)) : 0;
+    const safeName = esc(lastCurrentJob.name).replace(/'/g, "\\'");
+    rows.push(activityRowHTML(
+      lastCurrentJob.name,
+      '<span class="job-bar"><span class="job-bar-fill" style="width:' + pct + '%"></span></span>',
+      'running now',
+      '<button class="action-ghost" onclick="followInLogs(\'' + safeName + '\')">Follow</button>'
+    ));
+  }
+  const shown = activityExpanded ? lastJobRuns : lastJobRuns.slice(0, 3);
+  for (const run of shown) {
+    const safeName = esc(run.name).replace(/'/g, "\\'");
+    const tag = run.succeeded
+      ? '<span class="action-tag" style="border:1px solid var(--color-accent);color:var(--color-accent-700)">done</span>'
+      : '<span class="action-tag action-tag-destructive">failed</span>';
+    rows.push(activityRowHTML(run.name, tag, fmtClock(run.finishedAt), '<button class="action-ghost" onclick="openActionReport(\'' + safeName + '\')">Log</button>'));
+  }
+  if (!rows.length) { el.innerHTML = '<div class="row"><span class="rl" style="color:var(--color-neutral-600)">No jobs have run yet.</span></div>'; return; }
+  el.innerHTML = rows.join('');
+  const btn = document.getElementById('activity-expand-btn');
+  if (btn) btn.textContent = activityExpanded ? 'Collapse' : 'Expand';
+}
+
+function expandActivity() {
+  activityExpanded = !activityExpanded;
+  renderActivityRows();
+}
+
+// ---- Phase 12: Datasources summary + Quick actions cards ----
+// Both are filtered subsets of data the Data/Actions tabs already render in
+// full — no new fetch, no new tracking.
+
+function renderDatasourcesSummary(datasources) {
+  const el = document.getElementById('datasources-summary-rows');
+  if (!datasources.length) { el.innerHTML = '<div class="row"><span class="rl" style="color:var(--color-neutral-600)">No datasources registered</span></div>'; return; }
+  el.innerHTML = datasources.map(ds => {
+    const sqClass = ds.status === 'failing' ? 'failing' : ds.status === 'not-tested' ? 'not-tested' : '';
+    return '<div class="row"><span class="rl" style="display:flex;align-items:center;gap:6px">' +
+      '<span class="data-status-square ' + sqClass + '"></span>' + esc(ds.alias || ds.name) + '</span>' +
+      '<span class="rv" style="font-size:12px;color:var(--color-neutral-600)">' + esc(dataStatusLabel(ds.status)) + '</span></div>';
+  }).join('');
+}
+
+function renderQuickActions(actions) {
+  const el = document.getElementById('quick-actions-rows');
+  const safe = actions.filter(a => !a.isDestructive);
+  if (!safe.length) { el.innerHTML = '<div class="row"><span class="rl" style="color:var(--color-neutral-600)">No non-destructive actions available</span></div>'; return; }
+  el.innerHTML = safe.map(a =>
+    '<div class="row"><span class="rl">' + esc(a.label) + '</span><span class="rv">' + actionButtonHTML(a) + '</span></div>'
+  ).join('');
 }
 
 async function tlsReload(hostname) {
@@ -752,7 +944,7 @@ async function tlsReload(hostname) {
       headers: { 'Authorization': 'Bearer ' + token, 'X-Admin-CSRF': '1', 'Content-Type': 'application/json' },
       body: JSON.stringify({ hostname })
     });
-    if (r.status === 401) { logout(); return; }
+    if (r.status === 401) { logout('expired'); return; }
     const data = await r.json();
     showToast(data.message, data.success ? 'ok' : 'err');
   } catch(e) { showToast('Reload failed: ' + e.message, 'err'); }
@@ -766,7 +958,7 @@ async function tlsRemove(hostname) {
       headers: { 'Authorization': 'Bearer ' + token, 'X-Admin-CSRF': '1', 'Content-Type': 'application/json' },
       body: JSON.stringify({ hostname })
     });
-    if (r.status === 401) { logout(); return; }
+    if (r.status === 401) { logout('expired'); return; }
     const data = await r.json();
     showToast(data.message, data.success ? 'ok' : 'err');
     if (data.success) refresh();
@@ -902,7 +1094,7 @@ async function switchDS(name, configID) {
       headers: { 'Authorization': 'Bearer ' + token, 'X-Admin-CSRF': '1', 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, config: configID })
     });
-    if (r.status === 401) { logout(); return; }
+    if (r.status === 401) { logout('expired'); return; }
     const data = await r.json();
     const latency = data.latencyMs != null ? ' (' + Math.round(data.latencyMs) + 'ms)' : '';
     showToast(name + ': ' + data.message + latency, data.success ? 'ok' : 'err');
@@ -919,7 +1111,7 @@ async function testDS(name) {
       headers: { 'Authorization': 'Bearer ' + token, 'X-Admin-CSRF': '1', 'Content-Type': 'application/json' },
       body: JSON.stringify({ name })
     });
-    if (r.status === 401) { logout(); return; }
+    if (r.status === 401) { logout('expired'); return; }
     const data = await r.json();
     const latency = data.latencyMs != null ? ' (' + Math.round(data.latencyMs) + 'ms)' : '';
     showToast(name + ': ' + data.message + latency, data.success ? 'ok' : 'err');
@@ -982,7 +1174,12 @@ function renderAdminAccessCard(status) {
 function renderDelegateSections(sections) {
   const el = document.getElementById('settings-delegate-mount');
   el.innerHTML = (sections || []).map(s => {
-    const rows = Object.entries(s.items).map(([k, v]) => row(k, v)).join('');
+    const alertKeys = new Set(s.alertKeys || []);
+    const rows = Object.entries(s.items).map(([k, v]) =>
+      alertKeys.has(k)
+        ? '<div class="row"><span class="rl">' + esc(k) + '</span><span class="rv"><span class="data-tag data-tag-failing">' + esc(v) + '</span></span></div>'
+        : row(k, v)
+    ).join('');
     return '<div class="card"><h2>' + esc(s.title) + '</h2>' + rows + '</div>';
   }).join('');
 }
@@ -1106,6 +1303,120 @@ function followInLogs(name) {
   renderLogsView();
 }
 
+// ---- Phase 12: Crawl-report-result screen (admin-console UI redesign phase 6) ----
+// Ships as a 6th tab-panel rather than a modal -- nothing in this codebase has
+// modal semantics (focus trap, backdrop-click, ESC) to build on, and a
+// tab-panel reuses the exact showTab()/.tab-panel.active plumbing every other
+// tab already uses. Generic: renders whatever AdminActionReport a delegate
+// returns for any action, not just a crawl.
+
+async function openActionReport(name) {
+  try {
+    const data = await api('/api/actions/report?name=' + encodeURIComponent(name));
+    renderActionReportOverlay(data.report, name);
+    showTab('report');
+  } catch (e) {
+    showToast('Could not load report: ' + e.message, 'err');
+  }
+}
+
+function computeReportStatusCounts(report) {
+  const counts = new Map();
+  for (const g of report.groups) {
+    for (const r of g.rows) counts.set(r.status, (counts.get(r.status) || 0) + 1);
+  }
+  return counts;
+}
+
+function renderReportFilterChips(report) {
+  const counts = computeReportStatusCounts(report);
+  const total = Array.from(counts.values()).reduce((a, b) => a + b, 0);
+  let h = '<span class="' + (reportFilter === 'all' ? 'tag-outline' : 'tag-neutral') + '" onclick="setReportFilter(\'all\')">all ' + total + '</span>';
+  for (const [status, count] of counts) {
+    const cls = reportFilter === status ? 'tag-outline' : 'tag-neutral';
+    const safe = esc(status).replace(/'/g, "\\'");
+    h += '<span class="' + cls + '" onclick="setReportFilter(\'' + safe + '\')">' + esc(status) + ' ' + count + '</span>';
+  }
+  return h;
+}
+
+function setReportFilter(status) {
+  reportFilter = status;
+  if (currentReport) renderActionReportOverlay(currentReport, currentReport.actionName);
+}
+
+function renderActionReportOverlay(report, actionName) {
+  currentReport = report;
+  const el = document.getElementById('report-content');
+  if (!report) {
+    el.innerHTML = '<div class="placeholder">No report available for \'' + esc(actionName) + '\'.</div>';
+    return;
+  }
+  const when = new Date(report.generatedAt * 1000).toLocaleString();
+  const safeName = esc(actionName).replace(/'/g, "\\'");
+  let h = '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:14px">';
+  h += '<div><span class="action-ghost" onclick="showTab(\'actions\')">Actions</span> / ' +
+    '<span style="font-family:var(--font-heading);font-weight:600;text-transform:uppercase;letter-spacing:.04em">' +
+    esc(report.actionName) + '</span> · ' + esc(when) + '</div>';
+  h += '<div style="display:flex;gap:8px;flex-shrink:0">' +
+    '<button class="mini-btn" onclick="downloadReportCSV()">Download CSV</button>' +
+    '<button class="mini-btn" onclick="reRunReportedAction(\'' + safeName + '\')">Re-run</button></div>';
+  h += '</div>';
+  if (report.summary) h += '<p style="color:var(--color-neutral-700);font-size:13px;margin-bottom:14px">' + esc(report.summary) + '</p>';
+  h += '<div class="report-stats">' + report.stats.map(s =>
+    '<div><div class="report-stat-label">' + esc(s.label) + '</div><div class="report-stat-value" style="' +
+    (s.isAlert ? 'color:var(--color-alert-text)' : '') + '">' + esc(s.value) + '</div></div>'
+  ).join('') + '</div>';
+  h += '<div class="log-chips" style="margin-bottom:14px">' + renderReportFilterChips(report) + '</div>';
+  for (const group of report.groups) {
+    const rows = reportFilter === 'all' ? group.rows : group.rows.filter(r => r.status === reportFilter);
+    if (!rows.length) continue;
+    h += '<div class="action-group"><div class="action-group-head"><h2>' + esc(group.heading) + '</h2>' +
+      '<span class="action-group-count">×' + rows.length + '</span></div>';
+    h += '<table class="data-history-table"><thead><tr><th>Page</th><th>Status</th><th>Detail</th><th>Elapsed</th></tr></thead><tbody>';
+    h += rows.map(r =>
+      '<tr><td>' + esc(r.label) + '</td><td>' + esc(r.status) + '</td><td>' + esc(r.detail || '') + '</td>' +
+      '<td>' + (r.elapsedMS != null ? r.elapsedMS + 'ms' : '—') + '</td></tr>'
+    ).join('');
+    h += '</tbody></table></div>';
+  }
+  const allRows = report.groups.flatMap(g => g.rows);
+  const failing = allRows.filter(r => r.status !== 'clean' && r.status !== 'excluded');
+  const topGroup = report.groups.slice().sort((a, b) => b.rows.length - a.rows.length)[0];
+  if (topGroup && failing.length && topGroup.rows.length > 1) {
+    h += '<p style="font-size:12px;color:var(--color-neutral-700);margin-top:8px">' +
+      topGroup.rows.length + ' of ' + failing.length + ' failures share one cause: ' + esc(topGroup.heading) + '.</p>';
+  }
+  el.innerHTML = h;
+}
+
+function currentReportRows() {
+  if (!currentReport) return [];
+  return currentReport.groups.flatMap(g => g.rows.map(r => ({ heading: g.heading, ...r })));
+}
+
+function downloadReportCSV() {
+  const rows = currentReportRows();
+  const csvEscape = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const lines = ['Group,Page,Status,Detail,ElapsedMS'];
+  for (const r of rows) lines.push([r.heading, r.label, r.status, r.detail, r.elapsedMS].map(csvEscape).join(','));
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'admin-console-report-' + Date.now() + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function reRunReportedAction(name) {
+  const action = lastActions.find(a => a.name === name);
+  if (!action) { showToast('Action no longer available', 'err'); return; }
+  runAction(action.name, action.isDestructive, action.consequence);
+}
+
 async function runAction(name, isDestructive, consequence) {
   if (isDestructive && !confirm(consequence || 'This action is destructive. Proceed?')) return;
   try {
@@ -1114,7 +1425,7 @@ async function runAction(name, isDestructive, consequence) {
       headers: { 'Authorization': 'Bearer ' + token, 'X-Admin-CSRF': '1', 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: name })
     });
-    if (r.status === 401) { logout(); return; }
+    if (r.status === 401) { logout('expired'); return; }
     const result = await r.json();
     showToast(result.message, result.success ? 'ok' : 'err');
     // Immediately refresh the log view if we just cleared it
@@ -1139,7 +1450,9 @@ async function connect() {
   document.getElementById('auth-err').style.display = 'none';
   try {
     await api('/api/status');
-    sessionStorage.setItem(KEY, token);
+    const remember = document.getElementById('remember-checkbox').checked;
+    if (remember) { localStorage.setItem(KEY, token); sessionStorage.removeItem(KEY); }
+    else { sessionStorage.setItem(KEY, token); localStorage.removeItem(KEY); }
     showDashboard();
   } catch(e) {
     if (e.message === '401') {
@@ -1149,21 +1462,56 @@ async function connect() {
   }
 }
 
-function logout() {
+// `reason === 'expired'` marks this as an auth-driven kick (a 401, not the
+// Disconnect button) so the gate's why-line can tell the two apart on
+// next load — see initGate().
+function logout(reason) {
   sessionStorage.removeItem(KEY);
+  localStorage.removeItem(KEY);
   token = '';
   clearInterval(refreshIntervalId);
   document.getElementById('dashboard').style.display = 'none';
   document.getElementById('auth-gate').style.display = 'flex';
+  if (reason === 'expired') sessionStorage.setItem('perfectAdminKicked', '1');
+}
+
+// Best-effort: populates the gate's why-line and shows/hides the remember
+// checkbox based on whether this instance's token survives a restart
+// (fetched unauthenticated, since there's no token yet at this point).
+// gate-info failing (e.g. an older server without this route) just leaves
+// the static default why-line in place -- the token field still works.
+async function initGate() {
+  try {
+    const info = await fetch('/api/gate-info').then(r => r.json());
+    const wasKicked = sessionStorage.getItem('perfectAdminKicked') === '1';
+    sessionStorage.removeItem('perfectAdminKicked');
+    const why = document.getElementById('gate-why');
+    if (wasKicked) {
+      why.textContent = info.tokenRotatesOnRestart
+        ? 'The server restarted and rotated its token. Paste the new one below.'
+        : 'Your session token was rejected. Paste the current one below.';
+    } else if (!info.tokenRotatesOnRestart) {
+      why.textContent = 'This token persists across restarts — check "Remember" to skip re-pasting it next time.';
+    }
+    const rememberRow = document.getElementById('remember-row');
+    if (rememberRow) rememberRow.style.display = info.tokenRotatesOnRestart ? 'none' : '';
+  } catch (e) { /* best-effort */ }
 }
 
 function showDashboard() {
   document.getElementById('auth-gate').style.display = 'none';
   document.getElementById('dashboard').style.display = 'block';
-  if (isDetached) {
+  if (detachedViewer === 'logs') {
     document.body.classList.add('detached-logs');
     showTab('logs');
     window.addEventListener('beforeunload', () => saveWinRect('logs'));
+  } else if (detachedViewer === 'activity') {
+    document.body.classList.add('detached-activity');
+    showTab('overview');
+    window.addEventListener('beforeunload', () => saveWinRect('activity'));
+  } else {
+    const savedTab = sessionStorage.getItem('perfectAdminActiveTab');
+    if (savedTab && savedTab !== 'report') showTab(savedTab);
   }
   refresh();
   clearInterval(refreshIntervalId);
@@ -1195,8 +1543,10 @@ document.getElementById('logs-follow-checkbox').addEventListener('change', e => 
   renderLogsView();
 });
 
-// Auto-connect if a token is already in sessionStorage
+// Auto-connect if a token is already remembered (localStorage) or from this
+// same tab session (sessionStorage); otherwise populate the gate's why-line.
 if (token) showDashboard();
+else initGate();
 </script>
 """#
 }
