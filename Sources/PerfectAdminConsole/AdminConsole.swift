@@ -228,10 +228,17 @@ public actor AdminConsole {
             try tokenStore.requireAuth(from: req.headers)
             let countParam = req.searchArgs?["count"].first.flatMap(Int.init) ?? 100
             let count = max(1, min(countParam, 500))
-            let lines = await logCapture?.recentLines(count: count) ?? []
+            let entries = await logCapture?.recentEntries(count: count) ?? []
             let total = await logCapture?.totalCaptured ?? 0
-            struct LogsEnc: Encodable { let lines: [String]; let totalCaptured: Int }
-            return try JSONOutput(LogsEnc(lines: lines, totalCaptured: total))
+            let capacity = logCapture?.capacity ?? 0
+            struct LogEntryEnc: Encodable { let ts: Double; let message: String; let isError: Bool }
+            struct LogsEnc: Encodable { let lines: [String]; let totalCaptured: Int; let capacity: Int; let entries: [LogEntryEnc] }
+            return try JSONOutput(LogsEnc(
+                lines: entries.map(\.message),
+                totalCaptured: total,
+                capacity: capacity,
+                entries: entries.map { LogEntryEnc(ts: $0.timestamp.timeIntervalSince1970, message: $0.message, isError: $0.isError) }
+            ))
         }
 
         // GET /api/routes — route list from delegate

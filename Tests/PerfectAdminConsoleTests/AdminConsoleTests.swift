@@ -170,6 +170,78 @@ final class LogCaptureTests: XCTestCase {
     }
 }
 
+// MARK: - LogCapture.Entry (Phase 8: log viewer component)
+
+final class LogCaptureEntryTests: XCTestCase {
+
+    func testCapture_defaultIsErrorFalse() async {
+        let cap = LogCapture()
+        await cap.capture("[admin] all fine")
+        let entries = await cap.recentEntries(count: 10)
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertFalse(entries[0].isError)
+    }
+
+    func testCapture_isErrorTrueWhenPassed() async {
+        let cap = LogCapture()
+        await cap.capture("[render-error] boom", isError: true)
+        let entries = await cap.recentEntries(count: 10)
+        XCTAssertTrue(entries[0].isError)
+    }
+
+    func testRecentEntries_oldestDroppedWhenFull() async {
+        let cap = LogCapture(capacity: 3)
+        await cap.capture("a")
+        await cap.capture("b")
+        await cap.capture("c")
+        await cap.capture("d")
+        let entries = await cap.recentEntries(count: 10)
+        XCTAssertEqual(entries.map(\.message), ["b", "c", "d"])
+    }
+
+    func testRecentEntries_respectsCount() async {
+        let cap = LogCapture()
+        for i in 0..<20 { await cap.capture("line \(i)") }
+        let entries = await cap.recentEntries(count: 5)
+        XCTAssertEqual(entries.count, 5)
+        XCTAssertEqual(entries.last?.message, "line 19")
+    }
+
+    func testRecentLines_derivedFromEntries_matchesMessages() async {
+        let cap = LogCapture()
+        await cap.capture("[admin] one")
+        await cap.capture("[datasource] two", isError: true)
+        let lines = await cap.recentLines(count: 10)
+        let entries = await cap.recentEntries(count: 10)
+        XCTAssertEqual(lines, entries.map(\.message))
+    }
+
+    func testCapacity_isPubliclyReadable() async {
+        let cap = LogCapture(capacity: 7)
+        let capacity = cap.capacity
+        XCTAssertEqual(capacity, 7)
+    }
+
+    func testEntry_timestampDefaultsToNow_isRecent() async {
+        let cap = LogCapture()
+        let before = Date()
+        await cap.capture("[admin] timed")
+        let entries = await cap.recentEntries(count: 1)
+        XCTAssertGreaterThanOrEqual(entries[0].timestamp, before)
+        XCTAssertLessThan(entries[0].timestamp.timeIntervalSinceNow, 1)
+    }
+
+    func testClear_clearsEntriesToo() async {
+        let cap = LogCapture()
+        await cap.capture("a")
+        await cap.capture("b")
+        let dropped = await cap.clear()
+        XCTAssertEqual(dropped, 2)
+        let entries = await cap.recentEntries(count: 10)
+        XCTAssertTrue(entries.isEmpty)
+    }
+}
+
 // MARK: - AdminConsole delegate / RouteInfo
 
 final class AdminConsoleDelegateTests: XCTestCase {
@@ -1128,5 +1200,98 @@ final class AdminWebUIPhase7Tests: XCTestCase {
         let html = try await loadHTML()
         XCTAssertFalse(html.contains("fonts.googleapis.com"), "no CDN font import should ship in the product")
         XCTAssertFalse(html.contains("prefers-color-scheme"), "no dark-mode variant is specified by the design")
+    }
+}
+
+// MARK: - Phase 8: log viewer component (admin-console UI redesign phase 2)
+
+final class AdminWebUIPhase8LogsViewerTests: XCTestCase {
+
+    private func loadHTML() async throws -> String {
+        let output = AdminWebUI.response(tokenFilePath: "/tmp/tok.token")
+        var body: [UInt8] = []
+        let alloc = ByteBufferAllocator()
+        var chunk = try await output.nextChunk(allocator: alloc)
+        while let buf = chunk {
+            body.append(contentsOf: buf.readableBytesView)
+            chunk = try await output.nextChunk(allocator: alloc)
+        }
+        return String(decoding: body, as: UTF8.self)
+    }
+
+    func testLogsTab_isNoLongerPlaceholder() async throws {
+        let html = try await loadHTML()
+        let logsStart = try XCTUnwrap(html.range(of: "id=\"tab-logs\""))
+        let actionsStart = try XCTUnwrap(html.range(of: "id=\"tab-actions\""))
+        let logsBody = html[logsStart.upperBound..<actionsStart.lowerBound]
+        XCTAssertFalse(logsBody.contains("being redesigned"), "Logs tab should no longer be a placeholder")
+    }
+
+    func testLogsTab_containsToolbarElementIDs() async throws {
+        let html = try await loadHTML()
+        for id in ["logs-search-input", "logs-chips", "logs-follow-checkbox", "logs-match-count"] {
+            XCTAssertTrue(html.contains("id=\"\(id)\""), "\(id) missing from Logs tab toolbar")
+        }
+    }
+
+    func testLogsTab_containsLogSurfaceAndFooter() async throws {
+        let html = try await loadHTML()
+        for id in ["logs-surface", "logs-footer-count", "logs-next-refresh"] {
+            XCTAssertTrue(html.contains("id=\"\(id)\""), "\(id) missing from Logs tab surface/footer")
+        }
+    }
+
+    func testResponse_containsNewChipCSSClasses() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains(".tag-outline"), "tag-outline chip class missing")
+        XCTAssertTrue(html.contains(".tag-neutral"), "tag-neutral chip class missing")
+    }
+
+    func testResponse_containsSharedLogRenderingFunctions() async throws {
+        let html = try await loadHTML()
+        for fn in ["function renderLogSurface", "function computeSubsystemCounts", "function renderLogsView", "function renderMiniLog", "function handleLogsData"] {
+            XCTAssertTrue(html.contains(fn), "\(fn) missing from JS")
+        }
+    }
+
+    func testResponse_containsClearLogBufferFunction_usesDeleteAndCSRF() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("function clearLogBuffer"), "clearLogBuffer function missing")
+        XCTAssertTrue(html.contains("method: 'DELETE'") || html.contains("method: \"DELETE\""), "clear buffer should DELETE /api/logs")
+        XCTAssertTrue(html.contains("X-Admin-CSRF"), "clear buffer should send the CSRF header")
+    }
+
+    func testResponse_containsCopyAndDownloadFunctions() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("function copyLogs"), "copyLogs function missing")
+        XCTAssertTrue(html.contains("navigator.clipboard"), "Clipboard API usage missing")
+        XCTAssertTrue(html.contains("function downloadLogs"), "downloadLogs function missing")
+        XCTAssertTrue(html.contains("new Blob("), "Blob-based download missing")
+    }
+
+    func testResponse_containsOpenLogsWindowFunction_andDetachedDetection() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("function openLogsWindow"), "openLogsWindow function missing")
+        XCTAssertTrue(html.contains("window.open("), "window.open call missing")
+        XCTAssertTrue(html.contains("detached=logs"), "detached query param missing")
+        XCTAssertTrue(html.contains("detached-logs"), "detached-logs body class missing")
+    }
+
+    func testRefresh_requestsFullLogBuffer() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("/api/logs?count=500"), "refresh() should request the full 500-line buffer")
+        XCTAssertFalse(html.contains("/api/logs?count=100"), "refresh() should no longer request only 100 lines")
+    }
+
+    func testOverviewMiniLog_stillPresent() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("id=\"log-box\""), "mini log card regression: log-box missing")
+        XCTAssertTrue(html.contains("log-surface-mini"), "mini log surface class missing")
+    }
+
+    func testResponse_footerCopyMatchesDesignWording() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("buffer holds "), "footer should use the design's verbatim wording")
+        XCTAssertTrue(html.contains("oldest dropped"), "footer should use the design's verbatim wording")
     }
 }

@@ -149,6 +149,29 @@ main{max-width:1240px;margin:0 auto}
 #log-card{margin-top:0}
 .log-box{background:var(--color-accent-900);color:var(--color-accent-200);font-family:var(--font-mono);font-size:12px;line-height:1.6;padding:12px;height:220px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
 .log-footer{display:flex;justify-content:space-between;font-size:12px;color:var(--color-neutral-600);margin-top:8px}
+/* ---- Phase 8: log viewer component (admin-console UI redesign phase 2) ---- */
+.log-surface-base{background:var(--color-accent-900);color:var(--color-accent-200);font-family:var(--font-mono);font-size:13px;line-height:1.8;padding:16px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.log-surface-mini{font-size:12px;line-height:1.6;padding:12px;height:120px}
+.log-surface-full{height:330px}
+body.detached-logs .log-surface-full{height:calc(100vh - 150px)}
+.log-time{color:var(--color-accent-200)}
+.log-sub{color:var(--color-accent-400)}
+.log-error{color:#e39c92}
+.log-hit{background:color-mix(in srgb, #e3c992 35%, transparent)}
+.log-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}
+.log-search{display:flex;align-items:center;gap:6px;border:1px solid var(--color-divider);background:var(--color-surface);padding:4px 8px;flex:1 1 220px}
+.log-search input{border:none;outline:none;background:transparent;color:var(--color-text);font-family:var(--font-mono);font-size:12px;flex:1;min-width:0}
+.log-match-count{font-family:var(--font-mono);font-size:11px;color:var(--color-neutral-600);white-space:nowrap}
+.log-chips{display:flex;flex-wrap:wrap;gap:4px}
+.tag-outline{display:inline-block;padding:2px 8px;border:1px solid var(--color-accent);color:var(--color-accent-700);font-family:var(--font-mono);font-size:11px;cursor:pointer;background:transparent}
+.tag-neutral{display:inline-block;padding:2px 8px;border:1px solid var(--color-divider);color:var(--color-neutral-700);font-family:var(--font-mono);font-size:11px;cursor:pointer;background:transparent}
+.log-toolbar-actions{display:flex;align-items:center;gap:10px;margin-left:auto}
+.log-follow{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--color-neutral-700);white-space:nowrap}
+.icon-btn{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--color-divider);background:transparent;color:var(--color-neutral-700);cursor:pointer;padding:0}
+.icon-btn:hover{background:color-mix(in srgb, var(--color-text) 7%, transparent)}
+body.detached-logs .titlebar,body.detached-logs .tab-bar,body.detached-logs .state-strip{display:none}
+body.detached-logs main{max-width:none;padding:0}
+body.detached-logs .tab-panel{padding:16px}
 /* ---- delegate sections ---- */
 #delegate-cards{margin-top:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
 /* ---- mini buttons (datasource test, tls ops) ---- */
@@ -236,18 +259,42 @@ main{max-width:1240px;margin:0 auto}
       <div class="card" id="datasource-card"><h2>Datasources</h2><div id="datasource-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
       <div class="card" id="models-card"><h2>Models</h2><div id="models-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
       <div class="card" id="log-card">
-        <h2>Log Tail <span id="log-meta" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--color-neutral-600)"></span></h2>
-        <div class="log-box" id="log-box">Loading…</div>
-        <div class="log-footer">
-          <span id="log-count-label"></span>
-          <span id="next-refresh">…</span>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <h2 style="margin-bottom:0">Recent Log</h2>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="log-next-refresh" style="font-size:11px;color:var(--color-neutral-600)"></span>
+            <button class="mini-btn" onclick="showTab('logs')">Open full view</button>
+            <button class="icon-btn" onclick="openLogsWindow()" title="Open in new window" aria-label="Open in new window">⧉</button>
+          </div>
         </div>
+        <div class="log-surface-base log-surface-mini" id="log-box">Loading…</div>
       </div>
       <div id="delegate-cards"></div>
       <div id="actions-section"></div>
     </div>
     <div class="tab-panel" id="tab-data"><div class="placeholder">This tab is being redesigned — see Overview for now.</div></div>
-    <div class="tab-panel" id="tab-logs"><div class="placeholder">This tab is being redesigned — see Overview for now.</div></div>
+    <div class="tab-panel" id="tab-logs">
+      <div class="log-toolbar">
+        <div class="log-search">
+          <span style="font-size:13px;color:var(--color-neutral-600)">⌕</span>
+          <input type="text" id="logs-search-input" placeholder="search logs…" autocomplete="off" spellcheck="false">
+          <span class="log-match-count" id="logs-match-count"></span>
+        </div>
+        <div class="log-chips" id="logs-chips"></div>
+        <div class="log-toolbar-actions">
+          <label class="log-follow"><input type="checkbox" id="logs-follow-checkbox" checked> Follow</label>
+          <button class="mini-btn" onclick="copyLogs()">Copy</button>
+          <button class="mini-btn" onclick="downloadLogs()">Download .log</button>
+          <button class="mini-btn" style="border-color:var(--color-alert);color:var(--color-alert)" onclick="clearLogBuffer()">Clear buffer</button>
+          <button class="icon-btn" onclick="openLogsWindow()" title="Open in new window" aria-label="Open in new window">⧉</button>
+        </div>
+      </div>
+      <div class="log-surface-base log-surface-full" id="logs-surface">Loading…</div>
+      <div class="log-footer">
+        <span id="logs-footer-count"></span>
+        <span id="logs-next-refresh">…</span>
+      </div>
+    </div>
     <div class="tab-panel" id="tab-actions"><div class="placeholder">This tab is being redesigned — see Overview for now.</div></div>
     <div class="tab-panel" id="tab-settings">
       <div class="grid">
@@ -269,6 +316,12 @@ const KEY = 'perfectAdminToken';
 let token = sessionStorage.getItem(KEY) || '';
 let refreshIntervalId = null;
 let countdown = 5;
+let logFilter = { query: '', subsystem: 'all', follow: true };
+let lastLogEntries = [];
+let lastLogTotal = 0;
+let lastLogCapacity = 0;
+let logsWindowRef = null;
+const isDetached = new URLSearchParams(location.search).get('detached') === 'logs';
 
 // Inject server-side token path hint
 document.getElementById('path-hint').textContent = {{TOKEN_PATH_JSON}};
@@ -335,7 +388,7 @@ async function refresh() {
   try {
     const [status, tls, acme, logs, routes, datasources, metrics, actions, models] = await Promise.all([
       api('/api/status'), api('/api/tls'), api('/api/acme'),
-      api('/api/logs?count=100'), api('/api/routes'), api('/api/datasources'),
+      api('/api/logs?count=500'), api('/api/routes'), api('/api/datasources'),
       api('/api/metrics'), api('/api/actions'), api('/api/models'),
     ]);
     setServing(true);
@@ -343,7 +396,7 @@ async function refresh() {
     renderStateStrip(status, metrics);
     renderTLS(tls);
     renderACME(acme);
-    renderLogs(logs);
+    handleLogsData(logs);
     renderRoutes(routes);
     renderDatasources(datasources);
     renderMetrics(metrics);
@@ -400,13 +453,172 @@ function renderACME(a) {
     row('Pending challenges', a.pendingChallenges === 0 ? '✓ none' : String(a.pendingChallenges));
 }
 
-function renderLogs(l) {
+// ---- Phase 8: log viewer component (admin-console UI redesign phase 2) ----
+// One shared rendering path feeds two DOM mounts: the small Overview "Recent
+// log" card (#log-box, always last 6 lines, no toolbar) and the full surface
+// (#logs-surface) used identically by the Logs tab and a detached popup
+// window (the popup is just this same page reloaded with ?detached=logs --
+// see isDetached above and showDashboard() below).
+
+function parseLogEntry(e) {
+  const m = /^\[([^\]]+)\]\s*(.*)$/s.exec(e.message);
+  return {
+    ts: e.ts,
+    subsystem: m ? m[1] : null,
+    body: m ? m[2] : e.message,
+    isError: !!e.isError,
+    raw: e.message,
+  };
+}
+
+function fmtClock(ts) {
+  const d = new Date(ts * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+function escRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Wraps matches of `query` inside already-HTML-escaped `escapedText`. Never
+// call this on raw/unescaped text -- the query itself is escaped for regex
+// purposes only, not for HTML, so it must be matched against text that has
+// already had esc() applied.
+function highlightText(escapedText, query) {
+  if (!query) return escapedText;
+  const re = new RegExp(escRe(esc(query)), 'ig');
+  return escapedText.replace(re, m => '<mark class="log-hit">' + m + '</mark>');
+}
+
+function logLineHTML(entry, query) {
+  const time = '<span class="log-time">' + fmtClock(entry.ts) + '</span>';
+  const sub = entry.subsystem ? '<span class="log-sub">[' + esc(entry.subsystem) + ']</span> ' : '';
+  const body = highlightText(esc(entry.body), query);
+  const line = time + ' ' + sub + body;
+  return entry.isError ? '<span class="log-error">' + line + '</span>' : line;
+}
+
+function matchesQuery(entry, query) {
+  if (!query) return false;
+  const q = query.toLowerCase();
+  return entry.raw.toLowerCase().includes(q);
+}
+
+function computeSubsystemCounts(entries) {
+  const counts = new Map();
+  for (const e of entries) {
+    const key = e.subsystem || 'general';
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return counts;
+}
+
+function renderFilterChips(el, counts, active, total) {
+  let h = '<span class="' + (active === 'all' ? 'tag-outline' : 'tag-neutral') + '" onclick="setLogSubsystem(\'all\')">all ' + total + '</span>';
+  for (const [name, count] of counts) {
+    const cls = active === name ? 'tag-outline' : 'tag-neutral';
+    const safe = esc(name).replace(/'/g, "\\'");
+    h += '<span class="' + cls + '" onclick="setLogSubsystem(\'' + safe + '\')">' + esc(name) + ' ' + count + '</span>';
+  }
+  el.innerHTML = h;
+}
+
+function setLogSubsystem(name) {
+  logFilter.subsystem = name;
+  renderLogsView();
+}
+
+// Shared surface renderer -- `opts.follow` forces scroll-to-bottom
+// unconditionally (the design's explicit Follow control), replacing the old
+// near-bottom scroll heuristic entirely.
+function renderLogSurface(el, entries, opts) {
+  const query = opts.query || '';
+  const filtered = opts.subsystem && opts.subsystem !== 'all'
+    ? entries.filter(e => (e.subsystem || 'general') === opts.subsystem)
+    : entries;
+  el.innerHTML = filtered.length
+    ? filtered.map(e => logLineHTML(e, query)).join('\n')
+    : '(no log lines captured yet)';
+  if (opts.follow) el.scrollTop = el.scrollHeight;
+  return filtered;
+}
+
+function handleLogsData(logs) {
+  lastLogEntries = (logs.entries || []).map(parseLogEntry);
+  lastLogTotal = logs.totalCaptured;
+  lastLogCapacity = logs.capacity || 0;
+  renderMiniLog();
+  renderLogsView();
+}
+
+function renderMiniLog() {
   const box = document.getElementById('log-box');
-  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
-  box.textContent = l.lines.length ? l.lines.join('\n') : '(no log lines captured yet)';
-  if (atBottom) box.scrollTop = box.scrollHeight;
-  document.getElementById('log-count-label').textContent =
-    'showing ' + l.lines.length + ' of ' + l.totalCaptured + ' captured';
+  if (!box) return;
+  renderLogSurface(box, lastLogEntries.slice(-6), { follow: true, query: '', subsystem: 'all' });
+}
+
+function renderLogsView() {
+  const surface = document.getElementById('logs-surface');
+  if (!surface) return;
+  const counts = computeSubsystemCounts(lastLogEntries);
+  renderFilterChips(document.getElementById('logs-chips'), counts, logFilter.subsystem, lastLogEntries.length);
+  const shown = renderLogSurface(surface, lastLogEntries, logFilter);
+  const matchCount = logFilter.query ? shown.filter(e => matchesQuery(e, logFilter.query)).length : 0;
+  document.getElementById('logs-match-count').textContent = logFilter.query ? matchCount + ' matches' : '';
+  document.getElementById('logs-footer-count').textContent =
+    'showing ' + lastLogTotal + ' captured · buffer holds ' + lastLogCapacity + ', oldest dropped';
+}
+
+function currentLogsText() {
+  const filtered = logFilter.subsystem && logFilter.subsystem !== 'all'
+    ? lastLogEntries.filter(e => (e.subsystem || 'general') === logFilter.subsystem)
+    : lastLogEntries;
+  return filtered.map(e => fmtClock(e.ts) + ' ' + e.raw).join('\n');
+}
+
+async function copyLogs() {
+  try {
+    await navigator.clipboard.writeText(currentLogsText());
+    showToast('Logs copied to clipboard', 'ok');
+  } catch (e) {
+    showToast('Copy failed: ' + e.message, 'err');
+  }
+}
+
+function downloadLogs() {
+  const blob = new Blob([currentLogsText()], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'admin-console-logs-' + Date.now() + '.log';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function clearLogBuffer() {
+  if (!confirm('Clear the log buffer? This cannot be undone.')) return;
+  try {
+    const r = await fetch('/api/logs', { method: 'DELETE', headers: { ...hdr(), 'X-Admin-CSRF': '1' } });
+    if (r.status === 401) { logout(); return; }
+    if (!r.ok) throw new Error(r.statusText);
+    showToast('Log buffer cleared', 'ok');
+    const logs = await api('/api/logs?count=500');
+    handleLogsData(logs);
+  } catch (e) {
+    showToast('Clear failed: ' + e.message, 'err');
+  }
+}
+
+function openLogsWindow() {
+  if (logsWindowRef && !logsWindowRef.closed) { logsWindowRef.focus(); return; }
+  logsWindowRef = window.open(
+    location.pathname + '?detached=logs',
+    'perfect-admin-logs',
+    'width=900,height=620,left=' + (window.screenX + 40) + ',top=' + (window.screenY + 40)
+  );
 }
 
 function renderRoutes(r) {
@@ -621,7 +833,7 @@ async function runAction(name, isDestructive) {
     const result = await r.json();
     showToast(result.message, result.success ? 'ok' : 'err');
     // Immediately refresh the log view if we just cleared it
-    if (name === 'clear-logs') api('/api/logs?count=100').then(renderLogs).catch(() => {});
+    if (name === 'clear-logs') api('/api/logs?count=500').then(handleLogsData).catch(() => {});
   } catch(e) {
     showToast('Action failed: ' + e.message, 'err');
   }
@@ -663,12 +875,20 @@ function logout() {
 function showDashboard() {
   document.getElementById('auth-gate').style.display = 'none';
   document.getElementById('dashboard').style.display = 'block';
+  if (isDetached) {
+    document.body.classList.add('detached-logs');
+    showTab('logs');
+  }
   refresh();
   clearInterval(refreshIntervalId);
   countdown = 5;
   refreshIntervalId = setInterval(() => {
     countdown--;
-    document.getElementById('next-refresh').textContent = 'refresh in ' + countdown + 's';
+    const label = 'refresh in ' + countdown + 's';
+    const logNext = document.getElementById('log-next-refresh');
+    const logsNext = document.getElementById('logs-next-refresh');
+    if (logNext) logNext.textContent = label;
+    if (logsNext) logsNext.textContent = label;
     if (countdown <= 0) { countdown = 5; refresh(); }
   }, 1000);
 }
@@ -676,6 +896,17 @@ function showDashboard() {
 // Enter key in token field
 document.getElementById('token-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') connect();
+});
+
+// Logs viewer toolbar listeners (present in every document — the detached
+// window is this same page, just with chrome hidden via body.detached-logs).
+document.getElementById('logs-search-input').addEventListener('input', e => {
+  logFilter.query = e.target.value;
+  renderLogsView();
+});
+document.getElementById('logs-follow-checkbox').addEventListener('change', e => {
+  logFilter.follow = e.target.checked;
+  renderLogsView();
 });
 
 // Auto-connect if a token is already in sessionStorage
