@@ -612,12 +612,30 @@ async function clearLogBuffer() {
   }
 }
 
+// Remembers each detached viewer's last size/position across opens, keyed by
+// viewer name (only "logs" exists today; future viewers get their own key).
+function loadWinRect(viewer, fallback) {
+  try {
+    const saved = JSON.parse(localStorage.getItem('perfectAdminWinRect:' + viewer) || 'null');
+    return saved || fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function saveWinRect(viewer) {
+  localStorage.setItem('perfectAdminWinRect:' + viewer, JSON.stringify({
+    w: window.outerWidth, h: window.outerHeight, x: window.screenX, y: window.screenY,
+  }));
+}
+
 function openLogsWindow() {
   if (logsWindowRef && !logsWindowRef.closed) { logsWindowRef.focus(); return; }
+  const rect = loadWinRect('logs', { w: 900, h: 620, x: window.screenX + 40, y: window.screenY + 40 });
   logsWindowRef = window.open(
     location.pathname + '?detached=logs',
     'perfect-admin-logs',
-    'width=900,height=620,left=' + (window.screenX + 40) + ',top=' + (window.screenY + 40)
+    'width=' + rect.w + ',height=' + rect.h + ',left=' + rect.x + ',top=' + rect.y
   );
 }
 
@@ -878,6 +896,7 @@ function showDashboard() {
   if (isDetached) {
     document.body.classList.add('detached-logs');
     showTab('logs');
+    window.addEventListener('beforeunload', () => saveWinRect('logs'));
   }
   refresh();
   clearInterval(refreshIntervalId);
