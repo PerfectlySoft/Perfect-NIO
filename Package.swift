@@ -1,6 +1,28 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
+// Local system library wrapping libz — replaces PerfectCZlib.
+//
+// No `pkgConfig` on macOS: recent CommandLineTools/Xcode SDKs bundle
+// zlib's headers directly, and Clang finds them via its default system
+// search path with zero extra flags. If a Homebrew zlib is *also* on
+// PKG_CONFIG_PATH, asking pkg-config here can resolve to Homebrew's copy
+// instead, mixing its headers with the SDK's in the same module build
+// (the same "conflicting types" class of failure documented for libxml2
+// in Perfect-XML/Perfect-Lasso's Documentation/libxml2-pkgconfig-collision.md).
+// Linux has no bundled system copy, so pkg-config + apt stays required there.
+#if os(macOS)
+let czlibTarget: Target = .systemLibrary(name: "CZlib")
+#else
+let czlibTarget: Target = .systemLibrary(
+    name: "CZlib",
+    pkgConfig: "zlib",
+    providers: [
+        .apt(["zlib1g-dev"]),
+    ]
+)
+#endif
+
 let package = Package(
     name: "PerfectNIO",
     platforms: [
@@ -25,15 +47,7 @@ let package = Package(
         .package(url: "https://github.com/taplin/Perfect-MySQL.git", branch: "main"),
     ],
     targets: [
-        // Local system library wrapping libz — replaces PerfectCZlib
-        .systemLibrary(
-            name: "CZlib",
-            pkgConfig: "zlib",
-            providers: [
-                .brew(["zlib"]),
-                .apt(["zlib1g-dev"]),
-            ]
-        ),
+        czlibTarget,
         .executableTarget(
             name: "PerfectNIOExe",
             dependencies: ["PerfectNIO"]
