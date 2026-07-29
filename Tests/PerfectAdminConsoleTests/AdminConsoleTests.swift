@@ -784,6 +784,29 @@ final class MetricsSnapshotTests: XCTestCase {
         XCTAssertNotNil(obj?["totalErrors"])
         XCTAssertNotNil(obj?["activeConnections"])
         XCTAssertNotNil(obj?["routeCounts"])
+        XCTAssertNotNil(obj?["errorRate"])
+    }
+
+    // `errorRate` is a computed property; synthesized Encodable silently drops
+    // computed properties, which previously left this key out of the JSON
+    // response entirely (rendered as "NaN%" client-side). Verify the real
+    // percentage round-trips through JSON, not just that the key exists.
+    func testEncodable_errorRateRoundTripsRealPercentage() throws {
+        let snap = MetricsSnapshot(totalRequests: 4, totalErrors: 1,
+                                   activeConnections: 0, routeCounts: [:])
+        let data = try JSONEncoder().encode(snap)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let rate = try XCTUnwrap(obj?["errorRate"] as? Double)
+        XCTAssertEqual(rate, 0.25, accuracy: 0.001)
+    }
+
+    func testEncodable_errorRateZeroRequests() throws {
+        let snap = MetricsSnapshot(totalRequests: 0, totalErrors: 0,
+                                   activeConnections: 0, routeCounts: [:])
+        let data = try JSONEncoder().encode(snap)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let rate = try XCTUnwrap(obj?["errorRate"] as? Double)
+        XCTAssertEqual(rate, 0.0, accuracy: 0.001)
     }
 }
 
