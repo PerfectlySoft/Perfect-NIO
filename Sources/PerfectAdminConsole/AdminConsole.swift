@@ -114,6 +114,7 @@ public actor AdminConsole {
     private let metrics: AdminMetrics?
     private let delegate: (any AdminConsoleDelegate)?
     private let attemptTracker = DatasourceAttemptTracker()
+    private let forceNewToken: Bool
 
     /// - Parameters:
     ///   - port: Port for the admin server. Default 8990.
@@ -146,6 +147,7 @@ public actor AdminConsole {
         self.logCapture = logCapture
         self.metrics = metrics
         self.delegate = delegate
+        self.forceNewToken = forceNewToken
     }
 
     /// Bind and serve until the surrounding task is cancelled.
@@ -169,6 +171,7 @@ public actor AdminConsole {
         let metrics = self.metrics
         let delegate = self.delegate
         let attemptTracker = self.attemptTracker
+        let tokenRotatesOnRestart = self.forceNewToken
         let adminPort = self.port
 
         // GET / — HTML shell, no auth (the page has its own token-entry form)
@@ -182,6 +185,7 @@ public actor AdminConsole {
             let domains = await tlsManager?.registeredHostnames() ?? []
             let hasDefault = await tlsManager?.hasDefaultContext ?? false
             let pendingACME = await acmeResponder?.pendingCount ?? 0
+            let acmeConfigured = acmeResponder != nil
             let serverPort = delegate?.serverPort
             let uptimeSecs: Double?
             if let start = delegate?.serverStartTime, start < Date() {
@@ -200,7 +204,7 @@ public actor AdminConsole {
                 .map { JSONText.section(title: $0.title, items: $0.items) }
                 .joined(separator: ",")
             let body = """
-            {"adminPort":\(adminPort),"serverPort":\(effectiveServerPort.map(String.init) ?? "null"),"uptimeSeconds":\(uptimeSecs.map { String($0) } ?? "null"),"tlsDomainCount":\(domains.count),"tlsHasDefault":\(hasDefault),"acmePendingChallenges":\(pendingACME),"additionalSections":[\(sectionsJSON)],"currentJob":\(JSONText.job(job))}
+            {"adminPort":\(adminPort),"serverPort":\(effectiveServerPort.map(String.init) ?? "null"),"uptimeSeconds":\(uptimeSecs.map { String($0) } ?? "null"),"tlsDomainCount":\(domains.count),"tlsHasDefault":\(hasDefault),"acmePendingChallenges":\(pendingACME),"acmeConfigured":\(acmeConfigured),"tokenRotatesOnRestart":\(tokenRotatesOnRestart),"additionalSections":[\(sectionsJSON)],"currentJob":\(JSONText.job(job))}
             """
             return BytesOutput(
                 head: HTTPHead(headers: HTTPHeaders([("content-type", "application/json")])),

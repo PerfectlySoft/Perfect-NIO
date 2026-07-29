@@ -172,8 +172,6 @@ body.detached-logs .log-surface-full{height:calc(100vh - 150px)}
 body.detached-logs .titlebar,body.detached-logs .tab-bar,body.detached-logs .state-strip{display:none}
 body.detached-logs main{max-width:none;padding:0}
 body.detached-logs .tab-panel{padding:16px}
-/* ---- delegate sections ---- */
-#delegate-cards{margin-top:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
 /* ---- mini buttons (datasource test, tls ops) ---- */
 .mini-btn{padding:3px 9px;border:1px solid var(--color-accent);background:transparent;color:var(--color-accent);cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap;font-family:var(--font-heading)}
 .mini-btn:hover{background:var(--color-accent);color:var(--color-bg)}
@@ -240,6 +238,11 @@ body.detached-logs .tab-panel{padding:16px}
 .action-controls{flex:0 0 150px;display:flex;flex-direction:column;align-items:flex-end;gap:6px;text-align:right}
 .action-ghost{background:none;border:none;padding:0;color:var(--color-accent-700);font-family:var(--font-heading);font-weight:600;font-size:12px;cursor:pointer;text-decoration:underline}
 .action-ghost:hover{color:var(--color-accent)}
+/* ---- Phase 11: Settings tab (admin-console UI redesign phase 5) ---- */
+.settings-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:14px}
+.settings-header p{color:var(--color-neutral-700);font-size:13px;max-width:640px}
+.dashed-strip{border:1px dashed var(--color-neutral-400);padding:16px;margin-top:14px}
+.settings-inert-heading{font-family:var(--font-heading);font-weight:600;font-size:17px}
 /* ---- placeholder tab panels ---- */
 .placeholder{color:var(--color-neutral-700);font-size:14px;padding:40px 0;text-align:center}
 /* ---- toasts ---- */
@@ -312,7 +315,6 @@ body.detached-logs .tab-panel{padding:16px}
         </div>
         <div class="log-surface-base log-surface-mini" id="log-box">Loading…</div>
       </div>
-      <div id="delegate-cards"></div>
     </div>
     <div class="tab-panel" id="tab-data">
       <div class="data-layout">
@@ -351,10 +353,22 @@ body.detached-logs .tab-panel{padding:16px}
     </div>
     <div class="tab-panel" id="tab-actions"><div id="actions-catalog"></div></div>
     <div class="tab-panel" id="tab-settings">
-      <div class="grid">
-        <div class="card"><h2>TLS Domains</h2><div id="tls-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
-        <div class="card"><h2>ACME Challenges</h2><div id="acme-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
-        <div class="card"><h2>Routes</h2><div id="routes-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
+      <div class="settings-header">
+        <p>Values come from the environment and the datasources file at startup; changing one means editing config and restarting.</p>
+        <button class="action-ghost" onclick="copySettingsText()">Copy all as text</button>
+      </div>
+      <div class="grid" id="settings-grid">
+        <div id="admin-access-mount" style="display:contents"></div>
+        <div id="settings-delegate-mount" style="display:contents"></div>
+      </div>
+      <div class="dashed-strip" id="settings-inert-strip" style="display:none">
+        <div class="settings-inert-heading">NOT IN USE ON THIS SERVER</div>
+        <p id="settings-inert-sentence"></p>
+        <button class="action-ghost" id="settings-inert-toggle" onclick="toggleInertPanels()">Show anyway (0)</button>
+      </div>
+      <div class="grid" id="settings-inert-grid" style="margin-top:14px">
+        <div class="card" id="tls-domains-card"><h2>TLS Domains</h2><div id="tls-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
+        <div class="card" id="acme-challenges-card"><h2>ACME Challenges</h2><div id="acme-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
       </div>
     </div>
   </main>
@@ -378,7 +392,10 @@ let logsWindowRef = null;
 const isDetached = new URLSearchParams(location.search).get('detached') === 'logs';
 
 // Inject server-side token path hint
-document.getElementById('path-hint').textContent = {{TOKEN_PATH_JSON}};
+const tokenFilePath = {{TOKEN_PATH_JSON}};
+document.getElementById('path-hint').textContent = tokenFilePath;
+let lastStatus = null;
+let settingsInertExpanded = false;
 
 function hdr() { return { 'Authorization': 'Bearer ' + token }; }
 
@@ -446,12 +463,16 @@ async function refresh() {
       api('/api/metrics'), api('/api/actions'), api('/api/models'),
     ]);
     setServing(true);
+    lastStatus = status;
     renderStatus(status);
     renderStateStrip(status, metrics);
     renderTLS(tls);
     renderACME(acme);
     handleLogsData(logs);
+    renderAdminAccessCard(status);
     renderRoutes(routes);
+    renderDelegateSections(status.additionalSections || []);
+    renderSettingsInertStrip(status);
     renderDataTab(datasources);
     renderMetrics(metrics);
     renderModels(models);
@@ -459,8 +480,6 @@ async function refresh() {
     // description reflects live state — e.g. a crawl-report delegate
     // showing "Running now — 340/1,989 pages" — updates without a reload.
     renderActionsCatalog(actions.actions || []);
-    if (status.additionalSections && status.additionalSections.length)
-      renderDelegate(status.additionalSections);
     document.getElementById('refresh-badge').textContent =
       'live · updated ' + new Date().toLocaleTimeString();
   } catch(e) {
@@ -694,13 +713,15 @@ function openLogsWindow() {
 }
 
 function renderRoutes(r) {
+  const label = document.getElementById('admin-routes-count-label');
+  if (label) label.textContent = 'Registered routes · ' + r.routes.length;
+  const tagsEl = document.getElementById('admin-routes-tags');
+  if (!tagsEl) return;
   if (!r.routes.length) {
-    document.getElementById('routes-content').innerHTML =
-      '<div class="row"><span class="rl" style="color:var(--color-neutral-600)">No routes from delegate</span></div>';
+    tagsEl.innerHTML = '<span style="color:var(--color-neutral-600);font-size:12px">No routes from delegate</span>';
     return;
   }
-  document.getElementById('routes-content').innerHTML =
-    r.routes.map(u => '<span class="tag">' + esc(u) + '</span>').join('');
+  tagsEl.innerHTML = r.routes.map(u => '<span class="tag">' + esc(u) + '</span>').join('');
 }
 
 // ---- Phase 4: metrics + TLS operations ----
@@ -930,12 +951,76 @@ function renderModels(m) {
   }).join('<div class="ds-divider"></div>');
 }
 
-function renderDelegate(sections) {
-  const el = document.getElementById('delegate-cards');
-  el.innerHTML = sections.map(s => {
-    const rows = Object.entries(s.items).map(([k,v]) => row(k, v)).join('');
+// ---- Phase 11: Settings tab (admin-console UI redesign phase 5) ----
+// additionalStatusSections() moves its mount point here from Overview's old
+// #delegate-cards (removed, not duplicated). Admin access is fully generic:
+// bind/auth are protocol-level constants, token file reuses the value
+// already injected for the auth-gate hint, "Rotates" reports this
+// instance's real tokenRotatesOnRestart value rather than assuming restart
+// always rotates. Sessions/ARMED-tag styling/live session counts are
+// explicitly out of scope here -- Phase 6, Lasso-specific wiring.
+
+function adminAccessCardHTML(status) {
+  const bind = '127.0.0.1:' + status.adminPort;
+  const rotates = status.tokenRotatesOnRestart
+    ? 'on every restart'
+    : 'persists across restarts (reused from disk)';
+  return '<div class="card"><h2>Admin access</h2>' +
+    row('Bind', bind) +
+    row('Auth', 'Bearer token') +
+    row('Token file', tokenFilePath) +
+    row('Rotates', rotates) +
+    '<div style="margin-top:10px;font-size:11px;font-weight:600;letter-spacing:.04em;color:var(--color-neutral-700)" id="admin-routes-count-label">Registered routes · 0</div>' +
+    '<div style="margin-top:4px" id="admin-routes-tags"></div>' +
+    '</div>';
+}
+
+function renderAdminAccessCard(status) {
+  document.getElementById('admin-access-mount').innerHTML = adminAccessCardHTML(status);
+}
+
+function renderDelegateSections(sections) {
+  const el = document.getElementById('settings-delegate-mount');
+  el.innerHTML = (sections || []).map(s => {
+    const rows = Object.entries(s.items).map(([k, v]) => row(k, v)).join('');
     return '<div class="card"><h2>' + esc(s.title) + '</h2>' + rows + '</div>';
   }).join('');
+}
+
+function renderSettingsInertStrip(status) {
+  const hasTLS = status.tlsDomainCount > 0 || status.tlsHasDefault;
+  const acmeConfigured = !!status.acmeConfigured;
+  const inert = [];
+  if (!hasTLS) inert.push('TLS Domains');
+  if (!acmeConfigured) inert.push('ACME Challenges');
+
+  const tlsCard = document.getElementById('tls-domains-card');
+  const acmeCard = document.getElementById('acme-challenges-card');
+  if (tlsCard) tlsCard.style.display = (!hasTLS && !settingsInertExpanded) ? 'none' : '';
+  if (acmeCard) acmeCard.style.display = (!acmeConfigured && !settingsInertExpanded) ? 'none' : '';
+
+  const strip = document.getElementById('settings-inert-strip');
+  if (!strip) return;
+  if (!inert.length) { strip.style.display = 'none'; return; }
+  strip.style.display = '';
+  document.getElementById('settings-inert-sentence').textContent =
+    inert.join(' and ') + (inert.length > 1 ? ' are' : ' is') + ' not in use on this server.';
+  document.getElementById('settings-inert-toggle').textContent =
+    (settingsInertExpanded ? 'Hide' : 'Show anyway') + ' (' + inert.length + ')';
+}
+
+function toggleInertPanels() {
+  settingsInertExpanded = !settingsInertExpanded;
+  if (lastStatus) renderSettingsInertStrip(lastStatus);
+}
+
+async function copySettingsText() {
+  try {
+    await navigator.clipboard.writeText(document.getElementById('tab-settings').innerText);
+    showToast('Settings copied to clipboard', 'ok');
+  } catch (e) {
+    showToast('Copy failed: ' + e.message, 'err');
+  }
 }
 
 // ---- Phase 9: Actions catalog (admin-console UI redesign phase 3) ----
