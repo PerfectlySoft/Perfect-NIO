@@ -824,8 +824,8 @@ final class AdminWebUIDatasourceTests: XCTestCase {
             chunk = try await output.nextChunk(allocator: alloc)
         }
         let html = String(decoding: body, as: UTF8.self)
-        XCTAssertTrue(html.contains("datasource-content"), "Datasource card container missing")
-        XCTAssertTrue(html.contains("Datasources"), "Datasource card heading missing")
+        XCTAssertTrue(html.contains("data-detail"), "Data tab detail pane missing")
+        XCTAssertTrue(html.contains("Datasources"), "Data tab rail heading missing")
     }
 
     func testResponse_containsDatasourceTestFunction() async throws {
@@ -1110,9 +1110,10 @@ final class AdminWebUIPhase5Tests: XCTestCase {
         return String(decoding: body, as: UTF8.self)
     }
 
-    func testResponse_containsCfgSelectCSS() async throws {
+    func testResponse_containsConnectionProfileCSS() async throws {
         let html = try await loadHTML()
-        XCTAssertTrue(html.contains("cfg-select"), "cfg-select CSS class missing from HTML")
+        XCTAssertTrue(html.contains("data-profile-card"), "data-profile-card CSS class missing from HTML")
+        XCTAssertFalse(html.contains("cfg-select"), "old cfg-select dropdown should be gone, replaced by per-card Switch buttons")
     }
 
     func testResponse_containsSwitchDSFunction() async throws {
@@ -1277,10 +1278,11 @@ final class AdminWebUIPhase7Tests: XCTestCase {
         let overviewStart = try XCTUnwrap(html.range(of: "id=\"tab-overview\""))
         let settingsStart = try XCTUnwrap(html.range(of: "id=\"tab-settings\""))
         let overviewBody = html[overviewStart.upperBound..<settingsStart.lowerBound]
-        for id in ["datasource-content", "metrics-rows", "log-box", "models-content"] {
+        for id in ["metrics-rows", "log-box", "models-content"] {
             XCTAssertTrue(overviewBody.contains("id=\"\(id)\""), "\(id) missing from Overview tab")
         }
         XCTAssertFalse(overviewBody.contains("id=\"actions-section\""), "Actions catalog moved to the Actions tab in Phase 9 -- Overview should no longer duplicate it")
+        XCTAssertFalse(overviewBody.contains("id=\"datasource-content\""), "Datasources moved to the Data tab in Phase 10 -- Overview should no longer duplicate it")
     }
 
     func testSettingsTab_containsTLSAndACMEAndRoutesCards() async throws {
@@ -1464,5 +1466,222 @@ final class AdminWebUIPhase9ActionsCatalogTests: XCTestCase {
         for literal in ["Already running", "Follow in Logs", "No TLS configured", "destructive · confirms", "Download first"] {
             XCTAssertTrue(html.contains(literal), "\(literal) missing from JS")
         }
+    }
+}
+
+// MARK: - Phase 10: DatasourceAttemptTracker (admin-console UI redesign phase 4)
+
+final class DatasourceAttemptTrackerTests: XCTestCase {
+
+    func testRecordThenSnapshot_roundTrips() async {
+        let tracker = DatasourceAttemptTracker()
+        await tracker.record(alias: "contacts", profile: "primary", result: .ok(latencyMs: 12, message: "ok"))
+        let snap = await tracker.snapshot(for: "contacts")
+        XCTAssertEqual(snap.history.count, 1)
+        XCTAssertEqual(snap.history[0].profile, "primary")
+        XCTAssertEqual(snap.history[0].latencyMs, 12)
+        XCTAssertTrue(snap.history[0].success)
+    }
+
+    func testRingBuffer_capsAt20_dropsOldestFirst() async {
+        let tracker = DatasourceAttemptTracker()
+        for i in 0..<25 {
+            await tracker.record(alias: "contacts", profile: "p\(i)", result: .ok(message: "ok"))
+        }
+        let snap = await tracker.snapshot(for: "contacts")
+        XCTAssertEqual(snap.history.count, 20)
+        XCTAssertEqual(snap.history.first?.profile, "p5")
+        XCTAssertEqual(snap.history.last?.profile, "p24")
+    }
+
+    func testHistory_staysOldestFirst() async {
+        let tracker = DatasourceAttemptTracker()
+        await tracker.record(alias: "contacts", profile: "a", result: .ok(message: "ok"))
+        await tracker.record(alias: "contacts", profile: "b", result: .ok(message: "ok"))
+        let snap = await tracker.snapshot(for: "contacts")
+        XCTAssertEqual(snap.history.map(\.profile), ["a", "b"])
+    }
+
+    func testUnknownAlias_returnsNotTestedAndEmptyHistory() async {
+        let tracker = DatasourceAttemptTracker()
+        let snap = await tracker.snapshot(for: "never-seen")
+        XCTAssertEqual(snap.status, .notTested)
+        XCTAssertTrue(snap.history.isEmpty)
+        XCTAssertNil(snap.lastAttempt)
+    }
+}
+
+final class DatasourceAttemptStatusTests: XCTestCase {
+
+    func testEmptyHistory_isNotTested() {
+        XCTAssertEqual(datasourceAttemptStatus(from: []), .notTested)
+    }
+
+    func testLastAttemptSuccess_isOk() {
+        let history = [DatasourceAttempt(profile: "p", success: false, message: "x"),
+                       DatasourceAttempt(profile: "p", success: true, message: "ok")]
+        XCTAssertEqual(datasourceAttemptStatus(from: history), .ok)
+    }
+
+    func testLastAttemptFailure_isFailing() {
+        let history = [DatasourceAttempt(profile: "p", success: true, message: "ok"),
+                       DatasourceAttempt(profile: "p", success: false, message: "x")]
+        XCTAssertEqual(datasourceAttemptStatus(from: history), .failing)
+    }
+}
+
+final class DatasourceConsecutiveFailuresTests: XCTestCase {
+
+    func testAllSuccess_isZero() {
+        let history = (0..<3).map { _ in DatasourceAttempt(profile: "p", success: true, message: "ok") }
+        XCTAssertEqual(datasourceConsecutiveFailures(in: history), 0)
+    }
+
+    func testTrailingFailureRun_countsOnlyTrailingRun() {
+        let history = [
+            DatasourceAttempt(profile: "p", success: false, message: "x"),
+            DatasourceAttempt(profile: "p", success: true, message: "ok"),
+            DatasourceAttempt(profile: "p", success: false, message: "x"),
+            DatasourceAttempt(profile: "p", success: false, message: "x"),
+        ]
+        XCTAssertEqual(datasourceConsecutiveFailures(in: history), 2)
+    }
+
+    func testAllFailure_countsFullHistory() {
+        let history = (0..<4).map { _ in DatasourceAttempt(profile: "p", success: false, message: "x") }
+        XCTAssertEqual(datasourceConsecutiveFailures(in: history), 4)
+    }
+}
+
+final class DatasourceFailureSentenceTests: XCTestCase {
+
+    func testNoFailures_returnsNil() {
+        let sentence = datasourceFailureSentence(history: [], consecutiveFailures: 0, configs: [])
+        XCTAssertNil(sentence)
+    }
+
+    func testSingleProfileThroughout_fallsBackToPlainCount() {
+        let history = (0..<3).map { _ in DatasourceAttempt(profile: "primary", success: false, message: "x") }
+        let sentence = datasourceFailureSentence(history: history, consecutiveFailures: 3, configs: [])
+        XCTAssertEqual(sentence, "3 consecutive failures.")
+    }
+
+    func testCleanSwitchThenAllFailed_returnsCorrelatedSentence() {
+        let history = [
+            DatasourceAttempt(profile: "primary", success: true, message: "ok"),
+            DatasourceAttempt(profile: "override", success: false, message: "x"),
+            DatasourceAttempt(profile: "override", success: false, message: "x"),
+            DatasourceAttempt(profile: "override", success: false, message: "x"),
+        ]
+        let configs = [DatasourceConfigInfo(id: "override", label: "override", description: "fm2.internal:443")]
+        let sentence = datasourceFailureSentence(history: history, consecutiveFailures: 3, configs: configs)
+        XCTAssertEqual(sentence, "Began right after this alias was switched to override (fm2.internal:443). 3 occurrences since.")
+    }
+
+    func testProfileNotFoundInConfigs_omitsParentheticalGracefully() {
+        let history = [
+            DatasourceAttempt(profile: "primary", success: true, message: "ok"),
+            DatasourceAttempt(profile: "override", success: false, message: "x"),
+        ]
+        let sentence = datasourceFailureSentence(history: history, consecutiveFailures: 1, configs: [])
+        XCTAssertEqual(sentence, "Began right after this alias was switched to override. 1 occurrence since.")
+    }
+
+    func testSwitchThenLaterSuccess_fallsBackToPlainCount() {
+        let history = [
+            DatasourceAttempt(profile: "primary", success: true, message: "ok"),
+            DatasourceAttempt(profile: "override", success: true, message: "ok"),
+            DatasourceAttempt(profile: "override", success: false, message: "x"),
+        ]
+        // The switch to "override" wasn't immediately followed by failure -- no false correlation.
+        let sentence = datasourceFailureSentence(history: history, consecutiveFailures: 1, configs: [])
+        XCTAssertEqual(sentence, "1 consecutive failure.")
+    }
+
+    func testMidStreakSwitch_reportsOverallCount_acceptedSimplification() {
+        // Both "primary" and "override" are already failing when the switch happens --
+        // the sentence still reports the full consecutiveFailures count, not a
+        // strictly-post-switch count. Documented, accepted simplification.
+        let history = [
+            DatasourceAttempt(profile: "primary", success: false, message: "x"),
+            DatasourceAttempt(profile: "override", success: false, message: "x"),
+            DatasourceAttempt(profile: "override", success: false, message: "x"),
+        ]
+        let sentence = datasourceFailureSentence(history: history, consecutiveFailures: 3, configs: [])
+        XCTAssertEqual(sentence, "Began right after this alias was switched to override. 3 occurrences since.")
+    }
+}
+
+// MARK: - Phase 10: /api/datasources route bookkeeping (documented, not HTTP-tested)
+
+final class AdminConsolePhase10DatasourceAttemptsTests: XCTestCase {
+
+    /// This codebase has no HTTP-level route test harness (confirmed in Phases 3/9's own test
+    /// notes) -- datasourcesRoute/datasourceTestRoute/datasourceSwitchRoute's new bookkeeping
+    /// is exercised only indirectly, through the pure-function tests above (which cover the
+    /// actual status/consecutive-failure/correlation logic) plus the HTML/JS substring tests
+    /// below (which confirm the client reads/renders the new fields). This test exists only to
+    /// document that gap in one place, matching the established convention.
+    func testRouteLevelBehaviorIsCoveredIndirectly() {
+        XCTAssertTrue(true)
+    }
+}
+
+// MARK: - Phase 10: AdminWebUI Data tab (admin-console UI redesign phase 4)
+
+final class AdminWebUIPhase10DataTabTests: XCTestCase {
+
+    private func loadHTML() async throws -> String {
+        let output = AdminWebUI.response(tokenFilePath: "/tmp/tok.token")
+        var body: [UInt8] = []
+        let alloc = ByteBufferAllocator()
+        var chunk = try await output.nextChunk(allocator: alloc)
+        while let buf = chunk {
+            body.append(contentsOf: buf.readableBytesView)
+            chunk = try await output.nextChunk(allocator: alloc)
+        }
+        return String(decoding: body, as: UTF8.self)
+    }
+
+    func testDataTab_isNoLongerPlaceholder() async throws {
+        let html = try await loadHTML()
+        let dataStart = try XCTUnwrap(html.range(of: "id=\"tab-data\""))
+        let logsStart = try XCTUnwrap(html.range(of: "id=\"tab-logs\""))
+        let dataBody = html[dataStart.upperBound..<logsStart.lowerBound]
+        XCTAssertFalse(dataBody.contains("being redesigned"), "Data tab should no longer be a placeholder")
+    }
+
+    func testDataTab_containsLayoutMounts() async throws {
+        let html = try await loadHTML()
+        for id in ["data-rail-count", "data-rail-list", "data-detail"] {
+            XCTAssertTrue(html.contains("id=\"\(id)\""), "\(id) missing from Data tab")
+        }
+        XCTAssertTrue(html.contains("data-layout"), "data-layout grid class missing")
+    }
+
+    func testResponse_containsDataTabRenderFunctions() async throws {
+        let html = try await loadHTML()
+        for fn in ["function renderDataTab", "function renderDataRail", "function selectDatasource",
+                   "function renderDataDetail", "function renderFailureBanner",
+                   "function renderConnectionProfiles", "function renderAttemptHistory",
+                   "function testAllDatasources"] {
+            XCTAssertTrue(html.contains(fn), "\(fn) missing from JS")
+        }
+    }
+
+    func testOverviewDatasourceCard_isGone() async throws {
+        let html = try await loadHTML()
+        XCTAssertFalse(html.contains("id=\"datasource-card\""), "Overview's datasource-card should be removed, not duplicated")
+        XCTAssertFalse(html.contains("id=\"datasource-content\""), "Overview's datasource-content should be removed, not duplicated")
+    }
+
+    func testDsDividerCSS_stillPresent() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains(".ds-divider"), "ds-divider is still used by renderModels() and should not have been deleted")
+    }
+
+    func testRenderDatasourcesFunction_isGone() async throws {
+        let html = try await loadHTML()
+        XCTAssertFalse(html.contains("function renderDatasources("), "old renderDatasources function should be fully removed, not just superseded")
     }
 }

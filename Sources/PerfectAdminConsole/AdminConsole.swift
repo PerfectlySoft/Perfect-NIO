@@ -113,6 +113,7 @@ public actor AdminConsole {
     private let logCapture: LogCapture?
     private let metrics: AdminMetrics?
     private let delegate: (any AdminConsoleDelegate)?
+    private let attemptTracker = DatasourceAttemptTracker()
 
     /// - Parameters:
     ///   - port: Port for the admin server. Default 8990.
@@ -167,6 +168,7 @@ public actor AdminConsole {
         let logCapture = self.logCapture
         let metrics = self.metrics
         let delegate = self.delegate
+        let attemptTracker = self.attemptTracker
         let adminPort = self.port
 
         // GET / — HTML shell, no auth (the page has its own token-entry form)
@@ -254,18 +256,42 @@ public actor AdminConsole {
         // GET /api/datasources — list all registered datasources with available configs
         // Each entry includes configs[] so the UI can show a switcher without a second request.
         // Configs are empty for datasources that don't implement availableConfigs(for:).
+        // Phase 10 (admin-console UI redesign phase 4): also includes each alias's attempt
+        // history/status, computed by attemptTracker from every real test/switch this
+        // console has already handled -- no host-side changes needed for this data.
         let datasourcesRoute = root().GET.path("api").path("datasources").map { (req: any HTTPRequest) async throws -> HTTPOutput in
             try tokenStore.requireAuth(from: req.headers)
             let sources = await delegate?.registeredDatasources() ?? []
             struct ConfigEnc: Encodable { let id, label, description: String; let isActive: Bool }
-            struct DSEnc: Encodable { let name, alias, schema, driver: String; let configs: [ConfigEnc] }
+            struct AttemptEnc: Encodable { let ts: Double; let profile: String; let latencyMs: Double?; let success: Bool; let message: String }
+            struct DSEnc: Encodable {
+                let name, alias, schema, driver: String
+                let configs: [ConfigEnc]
+                let status: String
+                let consecutiveFailures: Int
+                let lastAttempt: AttemptEnc?
+                let history: [AttemptEnc]
+                let correlationNote: String?
+            }
             struct DSListEnc: Encodable { let datasources: [DSEnc] }
+            func encode(_ a: DatasourceAttempt) -> AttemptEnc {
+                AttemptEnc(ts: a.timestamp.timeIntervalSince1970, profile: a.profile, latencyMs: a.latencyMs, success: a.success, message: a.message)
+            }
             var encoded: [DSEnc] = []
             for source in sources {
                 let configs = await delegate?.availableConfigs(for: source.name) ?? []
+                let snap = await attemptTracker.snapshot(for: source.name)
+                let note = snap.status == .failing
+                    ? datasourceFailureSentence(history: snap.history, consecutiveFailures: snap.consecutiveFailures, configs: configs)
+                    : nil
                 encoded.append(DSEnc(
                     name: source.name, alias: source.alias, schema: source.schema, driver: source.driver,
-                    configs: configs.map { ConfigEnc(id: $0.id, label: $0.label, description: $0.description, isActive: $0.isActive) }
+                    configs: configs.map { ConfigEnc(id: $0.id, label: $0.label, description: $0.description, isActive: $0.isActive) },
+                    status: snap.status.rawValue,
+                    consecutiveFailures: snap.consecutiveFailures,
+                    lastAttempt: snap.lastAttempt.map(encode),
+                    history: snap.history.map(encode),
+                    correlationNote: note
                 ))
             }
             return try JSONOutput(DSListEnc(datasources: encoded))
@@ -285,6 +311,9 @@ public actor AdminConsole {
                 result = .failed("No delegate configured")
             }
             await logCapture?.capture("[admin] datasource-test name=\(body.name) success=\(result.success): \(result.message)")
+            let configs = await delegate?.availableConfigs(for: body.name) ?? []
+            let profile = configs.first(where: \.isActive)?.label ?? "default"
+            await attemptTracker.record(alias: body.name, profile: profile, result: result)
             struct ResultEnc: Encodable { let success: Bool; let message: String; let latencyMs: Double? }
             return try JSONOutput(ResultEnc(success: result.success, message: result.message, latencyMs: result.latencyMs))
         }
@@ -304,6 +333,9 @@ public actor AdminConsole {
                 result = .failed("No delegate configured")
             }
             await logCapture?.capture("[admin] datasource-switch name=\(body.name) config=\(body.config) success=\(result.success): \(result.message)")
+            let configs = await delegate?.availableConfigs(for: body.name) ?? []
+            let profile = configs.first(where: { $0.id == body.config })?.label ?? body.config
+            await attemptTracker.record(alias: body.name, profile: profile, result: result)
             struct ResultEnc: Encodable { let success: Bool; let message: String; let latencyMs: Double? }
             return try JSONOutput(ResultEnc(success: result.success, message: result.message, latencyMs: result.latencyMs))
         }

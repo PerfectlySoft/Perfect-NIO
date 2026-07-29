@@ -177,19 +177,46 @@ body.detached-logs .tab-panel{padding:16px}
 /* ---- mini buttons (datasource test, tls ops) ---- */
 .mini-btn{padding:3px 9px;border:1px solid var(--color-accent);background:transparent;color:var(--color-accent);cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap;font-family:var(--font-heading)}
 .mini-btn:hover{background:var(--color-accent);color:var(--color-bg)}
-/* ---- config switcher ---- */
-.cfg-select{padding:3px 6px;border:1px solid var(--color-divider);background:var(--color-surface);color:var(--color-text);font-size:11px;cursor:pointer;max-width:220px;border-radius:0}
-/* ---- datasource table (full-width, 3-column, nothing clipped) ---- */
-#datasource-card{margin-bottom:14px}
-.ds-table{display:grid;grid-template-columns:minmax(180px,1.3fr) minmax(220px,1.6fr) minmax(170px,auto);gap:8px 20px;align-items:start}
-.ds-head{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--color-neutral-700)}
+/* ---- shared divider (also used by renderModels()) ---- */
 .ds-divider{grid-column:1/-1;height:1px;background:var(--color-divider)}
-.ds-cell{min-width:0;padding:2px 0}
-.ds-controls{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
-.ds-name{font-weight:600}
-.ds-sub{color:var(--color-neutral-700);font-size:12px;margin-top:2px}
-.ds-active{color:var(--color-accent-700);font-size:12px}
-@media(max-width:680px){.ds-table{grid-template-columns:1fr}.ds-head{display:none}}
+/* ---- Data tab: master-detail (Phase 10: admin-console UI redesign phase 4) ---- */
+.data-layout{display:grid;grid-template-columns:300px 1fr;min-height:520px;border:1px solid var(--color-divider)}
+.data-rail{border-right:1px solid var(--color-divider);display:flex;flex-direction:column}
+.data-rail-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--color-divider)}
+.data-rail-head h2{font-family:var(--font-heading);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--color-neutral-700)}
+.data-rail-list{flex:1;overflow-y:auto}
+.data-row{display:flex;align-items:flex-start;gap:8px;padding:8px 14px;border-left:3px solid transparent;cursor:pointer;font-family:var(--font-mono);font-size:13px}
+.data-row:hover{background:color-mix(in srgb, var(--color-text) 4%, transparent)}
+.data-row.selected{border-left-color:var(--color-accent);background:var(--color-neutral-100)}
+.data-status-square{width:7px;height:7px;margin-top:4px;flex-shrink:0;background:var(--color-accent)}
+.data-status-square.failing{background:var(--color-alert)}
+.data-status-square.not-tested{background:transparent;border:1px solid var(--color-neutral-400)}
+.data-row-name{font-weight:600}
+.data-row-sub{font-size:11px;color:var(--color-neutral-700);font-family:var(--font-body)}
+.data-rail-footnote{padding:10px 14px;font-size:11px;color:var(--color-neutral-600);border-top:1px solid var(--color-divider)}
+.data-detail{padding:16px}
+.data-detail-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.data-alias-name{font-family:var(--font-heading);font-weight:600;font-size:28px}
+.data-tag{display:inline-block;padding:2px 8px;font-family:var(--font-mono);font-size:11px;margin-left:8px;border:1px solid}
+.data-tag-ok{border-color:var(--color-accent);color:var(--color-accent-700)}
+.data-tag-failing{border-color:var(--color-alert);color:var(--color-alert-text)}
+.data-tag-not-tested{border-color:var(--color-neutral-400);color:var(--color-neutral-700)}
+.data-subtitle{color:var(--color-neutral-700);font-size:13px;margin-top:4px}
+.data-detail-actions{display:flex;gap:8px;flex-shrink:0}
+.data-failure-banner{border:1px solid var(--color-alert);padding:12px 14px;margin-top:14px;font-size:13px}
+.data-failure-time{color:var(--color-neutral-600);font-size:12px;margin-top:4px}
+.data-failure-note{margin-top:8px;font-size:12px;color:var(--color-alert-text)}
+.data-profiles{margin-top:20px}
+.data-profile-card{border:1px solid var(--color-divider);padding:10px 12px;margin-top:8px}
+.data-profile-card.active{border-color:var(--color-accent)}
+.data-profile-head{display:flex;justify-content:space-between;align-items:center}
+.data-profile-host{font-family:var(--font-mono);font-size:12px;margin-top:4px}
+.data-profile-status{font-size:12px;color:var(--color-neutral-700);margin-top:2px}
+.data-switch-rule{font-size:12px;color:var(--color-neutral-700);margin-top:8px;max-width:640px}
+.data-history{margin-top:20px}
+.data-history-table{width:100%;border-collapse:collapse;font-size:12px}
+.data-history-table th{text-align:left;font-weight:600;color:var(--color-neutral-700);text-transform:uppercase;letter-spacing:.04em;font-size:11px;padding:4px 8px;border-bottom:1px solid var(--color-divider)}
+.data-history-table td{padding:4px 8px;border-bottom:1px solid var(--color-divider);font-family:var(--font-mono)}
 /* ---- actions catalog (Phase 9: admin-console UI redesign phase 3) ---- */
 .action-btn{padding:5px 12px;border:1px solid var(--color-accent);background:transparent;color:var(--color-accent);cursor:pointer;font-size:12px;font-weight:600;font-family:var(--font-heading);transition:background .15s,color .15s}
 .action-btn:hover{background:var(--color-accent);color:var(--color-bg)}
@@ -273,7 +300,6 @@ body.detached-logs .tab-panel{padding:16px}
         <div class="card"><h2>Server Status</h2><div id="status-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
         <div class="card"><h2>Metrics</h2><div id="metrics-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
       </div>
-      <div class="card" id="datasource-card"><h2>Datasources</h2><div id="datasource-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
       <div class="card" id="models-card"><h2>Models</h2><div id="models-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
       <div class="card" id="log-card">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
@@ -288,7 +314,19 @@ body.detached-logs .tab-panel{padding:16px}
       </div>
       <div id="delegate-cards"></div>
     </div>
-    <div class="tab-panel" id="tab-data"><div class="placeholder">This tab is being redesigned — see Overview for now.</div></div>
+    <div class="tab-panel" id="tab-data">
+      <div class="data-layout">
+        <div class="data-rail">
+          <div class="data-rail-head">
+            <h2 id="data-rail-count">Datasources · 0</h2>
+            <button class="action-ghost" onclick="testAllDatasources()">Test all</button>
+          </div>
+          <div class="data-rail-list" id="data-rail-list"></div>
+          <div class="data-rail-footnote">Aliases are read from the datasources file at startup; editing it needs a restart.</div>
+        </div>
+        <div class="data-detail" id="data-detail"><div class="placeholder">No datasources registered</div></div>
+      </div>
+    </div>
     <div class="tab-panel" id="tab-logs">
       <div class="log-toolbar">
         <div class="log-search">
@@ -414,7 +452,7 @@ async function refresh() {
     renderACME(acme);
     handleLogsData(logs);
     renderRoutes(routes);
-    renderDatasources(datasources);
+    renderDataTab(datasources);
     renderMetrics(metrics);
     renderModels(models);
     // Re-rendered every cycle (not just on first load) so an action whose
@@ -716,42 +754,123 @@ async function tlsRemove(hostname) {
 
 // ---- Phase 3: datasources ----
 
-function renderDatasources(d) {
-  const el = document.getElementById('datasource-content');
-  if (!d.datasources || !d.datasources.length) {
-    el.innerHTML = '<div class="row"><span class="rl" style="color:var(--color-neutral-600)">No datasources registered</span></div>';
-    return;
+// ---- Phase 10: Data tab master-detail (admin-console UI redesign phase 4) ----
+
+let dataState = { selected: null, datasources: [] };
+
+function renderDataTab(d) {
+  dataState.datasources = d.datasources || [];
+  document.getElementById('data-rail-count').textContent = 'Datasources · ' + dataState.datasources.length;
+  if (!dataState.selected || !dataState.datasources.some(ds => ds.name === dataState.selected)) {
+    dataState.selected = dataState.datasources.length ? dataState.datasources[0].name : null;
   }
-  let h = '<div class="ds-table">';
-  h += '<div class="ds-head">Datasource</div><div class="ds-head">Active Connection</div><div class="ds-head">Actions</div>';
-  h += '<div class="ds-divider"></div>';
-  h += d.datasources.map(ds => {
+  renderDataRail();
+  renderDataDetail();
+}
+
+function dataStatusLabel(status) {
+  if (status === 'failing') return 'failing';
+  if (status === 'not-tested') return 'not tested';
+  return 'ok';
+}
+
+function renderDataRail() {
+  const el = document.getElementById('data-rail-list');
+  if (!dataState.datasources.length) { el.innerHTML = ''; return; }
+  el.innerHTML = dataState.datasources.map(ds => {
     const safeName = esc(ds.name).replace(/'/g, "\\'");
-    const active = (ds.configs || []).find(c => c.isActive);
-    const activeHTML = active
-      ? '<div class="ds-active">● ' + esc(active.label) + '</div>' +
-        (active.description ? '<div class="ds-sub">' + esc(active.description) + '</div>' : '')
-      : '<div class="ds-sub">—</div>';
-    // Config switcher: only shown when >1 config is available
-    const configs = ds.configs || [];
-    let controls = '';
-    if (configs.length > 1) {
-      const selId = 'cfg-' + ds.name.replace(/[^a-z0-9]/gi, '-');
-      const opts = configs.map(c =>
-        '<option value="' + esc(c.id) + '"' + (c.isActive ? ' selected' : '') + '>' + esc(c.label) + '</option>'
-      ).join('');
-      controls += '<select id="' + selId + '" class="cfg-select">' + opts + '</select>';
-      controls += '<button class="mini-btn" onclick="switchDS(\'' + safeName + '\',document.getElementById(\'' + selId + '\').value)">Switch</button>';
-    }
-    controls += '<button class="mini-btn" onclick="testDS(\'' + safeName + '\')">Test</button>';
-    return '<div class="ds-cell"><div class="ds-name">' + esc(ds.alias || ds.name) + '</div>' +
-      '<div class="ds-sub">' + esc(ds.driver) + ' · ' + esc(ds.schema) + '</div></div>' +
-      '<div class="ds-cell">' + activeHTML + '</div>' +
-      '<div class="ds-cell ds-controls">' + controls + '</div>' +
-      '<div class="ds-divider"></div>';
+    const selected = ds.name === dataState.selected ? ' selected' : '';
+    const sqClass = ds.status === 'failing' ? 'failing' : ds.status === 'not-tested' ? 'not-tested' : '';
+    let sub = esc(ds.driver) + ' · ' + esc(ds.schema);
+    if (ds.status === 'failing') sub += ' · failing ' + ds.consecutiveFailures + '×';
+    return '<div class="data-row' + selected + '" onclick="selectDatasource(\'' + safeName + '\')">' +
+      '<span class="data-status-square ' + sqClass + '"></span>' +
+      '<span><div class="data-row-name">' + esc(ds.alias || ds.name) + '</div>' +
+      '<div class="data-row-sub">' + sub + '</div></span></div>';
   }).join('');
+}
+
+function selectDatasource(name) {
+  dataState.selected = name;
+  renderDataRail();
+  renderDataDetail();
+}
+
+function renderDataDetail() {
+  const el = document.getElementById('data-detail');
+  const ds = dataState.datasources.find(d => d.name === dataState.selected);
+  if (!ds) { el.innerHTML = '<div class="placeholder">No datasources registered</div>'; return; }
+  const safeName = esc(ds.name).replace(/'/g, "\\'");
+  const tagClass = ds.status === 'failing' ? 'data-tag-failing' : ds.status === 'not-tested' ? 'data-tag-not-tested' : 'data-tag-ok';
+  let h = '<div class="data-detail-head">';
+  h += '<div><span class="data-alias-name">' + esc(ds.alias || ds.name) + '</span>' +
+    '<span class="data-tag ' + tagClass + '">' + esc(dataStatusLabel(ds.status)) + '</span>' +
+    '<div class="data-subtitle">' + esc(ds.driver) + ' · ' + esc(ds.schema) + '</div></div>';
+  h += '<div class="data-detail-actions">' +
+    '<button class="mini-btn" onclick="testDS(\'' + safeName + '\')">Test connection</button>' +
+    '<button class="action-ghost" onclick="followInLogs(\'' + safeName + '\')">See in Logs</button></div>';
   h += '</div>';
+  h += renderFailureBanner(ds);
+  h += renderConnectionProfiles(ds);
+  h += renderAttemptHistory(ds);
   el.innerHTML = h;
+}
+
+function renderFailureBanner(ds) {
+  if (ds.status !== 'failing' || !ds.lastAttempt) return '';
+  let h = '<div class="data-failure-banner">' + esc(ds.lastAttempt.message);
+  h += '<div class="data-failure-time">Last attempt ' + fmtClock(ds.lastAttempt.ts) + '</div>';
+  if (ds.correlationNote) h += '<div class="data-failure-note">' + esc(ds.correlationNote) + '</div>';
+  h += '</div>';
+  return h;
+}
+
+function renderConnectionProfiles(ds) {
+  const configs = ds.configs || [];
+  if (!configs.length) return '';
+  const safeName = esc(ds.name).replace(/'/g, "\\'");
+  const history = ds.history || [];
+  let h = '<div class="data-profiles"><h6>Connection profile</h6>';
+  h += configs.map(c => {
+    const activeCls = c.isActive ? ' active' : '';
+    const lastForProfile = history.slice().reverse().find(a => a.profile === c.label);
+    const statusLine = lastForProfile
+      ? (lastForProfile.success ? 'ok' : 'failing') + (lastForProfile.latencyMs != null ? ' · ' + Math.round(lastForProfile.latencyMs) + 'ms' : '')
+      : 'not tested';
+    const safeId = esc(c.id).replace(/'/g, "\\'");
+    const switchBtn = c.isActive ? '' :
+      '<button class="mini-btn" onclick="switchDS(\'' + safeName + '\',\'' + safeId + '\')">Switch</button>';
+    return '<div class="data-profile-card' + activeCls + '">' +
+      '<div class="data-profile-head"><strong>' + esc(c.label) + '</strong>' +
+      (c.isActive ? '<span class="data-tag data-tag-ok">active</span>' : switchBtn) + '</div>' +
+      '<div class="data-profile-host">' + esc(c.description) + '</div>' +
+      '<div class="data-profile-status">' + statusLine + '</div></div>';
+  }).join('');
+  h += '<div class="data-switch-rule">Applies immediately for new queries, tested on switch; in-flight queries finish on the old profile.</div>';
+  h += '</div>';
+  return h;
+}
+
+function renderAttemptHistory(ds) {
+  const history = (ds.history || []).slice().reverse();
+  let h = '<div class="data-history"><h6>Attempt history</h6>';
+  if (!history.length) {
+    return h + '<div class="placeholder">No attempts recorded yet.</div></div>';
+  }
+  h += '<table class="data-history-table"><thead><tr><th>Time</th><th>Profile</th><th>Latency</th><th>Result</th></tr></thead><tbody>';
+  h += history.map(a => {
+    const latency = a.latencyMs != null ? Math.round(a.latencyMs) + 'ms' : '—';
+    const result = a.success ? 'ok' : esc(a.message);
+    return '<tr><td>' + fmtClock(a.ts) + '</td><td>' + esc(a.profile) + '</td><td>' + latency + '</td><td>' + result + '</td></tr>';
+  }).join('');
+  h += '</tbody></table></div>';
+  return h;
+}
+
+async function testAllDatasources() {
+  for (const ds of dataState.datasources) {
+    await testDS(ds.name);
+  }
 }
 
 async function switchDS(name, configID) {
@@ -766,8 +885,7 @@ async function switchDS(name, configID) {
     const data = await r.json();
     const latency = data.latencyMs != null ? ' (' + Math.round(data.latencyMs) + 'ms)' : '';
     showToast(name + ': ' + data.message + latency, data.success ? 'ok' : 'err');
-    // Refresh datasource card so the active config label updates
-    if (data.success) api('/api/datasources').then(renderDatasources).catch(() => {});
+    api('/api/datasources').then(renderDataTab).catch(() => {});
   } catch(e) {
     showToast('Switch failed: ' + e.message, 'err');
   }
@@ -784,6 +902,7 @@ async function testDS(name) {
     const data = await r.json();
     const latency = data.latencyMs != null ? ' (' + Math.round(data.latencyMs) + 'ms)' : '';
     showToast(name + ': ' + data.message + latency, data.success ? 'ok' : 'err');
+    api('/api/datasources').then(renderDataTab).catch(() => {});
   } catch(e) {
     showToast('Test failed: ' + e.message, 'err');
   }
