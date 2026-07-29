@@ -505,7 +505,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8990/api/status | jq
 ### Web dashboard
 
 `GET /` (no auth) serves a self-contained HTML/CSS/JS dashboard — no
-external resources, dark/light mode via `prefers-color-scheme`. Open
+external resources. Open
 `http://127.0.0.1:<port>` in a browser, paste the token from the file
 above into the field, and click **Connect**. By default the token
 **persists across restarts** (reused from disk unless `forceNewToken: true`
@@ -517,20 +517,38 @@ browser); leaving it unchecked keeps the old `sessionStorage` behavior
 (cleared on tab close or on a 401).
 
 Once connected, the dashboard polls every endpoint on a 5-second cycle
-(visible as "refresh in Ns" under the log card) and renders one card per
-concern:
+(visible as "refresh in Ns" under the log cards) and renders a titlebar +
+state strip that are always visible, plus five tabs — **Overview**, **Data**,
+**Logs**, **Actions**, **Settings** — with a sixth, non-tab-bar **report**
+screen reached by drilling into a specific action run.
 
-- **Server Status** — admin port, delegate's `serverPort`/uptime, TLS domain count, ACME pending-challenge count.
-- **TLS Domains** — registered hostnames with per-domain **Reload**/**Remove** buttons (only meaningful if a `tlsManager` was passed to `init`).
-- **ACME Challenges** — pending challenge count.
-- **Routes** — `registeredRoutes` from the delegate, as tags.
-- **Metrics** — total requests/errors, active connections, error rate, and the top 5 busiest routes (only populated if an `AdminMetrics` instance was passed to `init` and the host app calls `recordRequest`/`recordError`).
-- **Datasources** — a full-width, 3-column table (Datasource / Active Connection / Actions) — deliberately pulled out of the summary-card grid rather than squeezed into a narrow auto-fill cell, since a row's controls (a config-switcher `<select>` plus Switch/Test buttons) need real width to avoid clipping. Collapses to a single stacked column below 680px viewport width. Each row shows the delegate-reported `driver`/`schema`, the currently active `DatasourceConfigInfo` (if `availableConfigs(for:)` returns any), a **Test** button (always), and a config `<select>` + **Switch** button (only when more than one config is available for that datasource).
-- **Log Tail** — the most recent `LogCapture` lines, auto-scrolling if you were already scrolled to the bottom; a footer shows "showing N of M captured".
-- **Delegate sections** — one card per `AdminStatusSection` returned by `additionalStatusSections()`, rendered as simple label/value rows.
-- **Actions** — grouped by `category`, one card per category, one row per `AdminAction`. A `description` is plain text but can be **built fresh on every `availableActions()` call** to reflect live delegate state (e.g. "Running now — 340/1,989 items, started 2m ago" for a long-running action) — since the dashboard re-fetches `/api/actions` on every 5-second refresh (not just once at page load), a live-updating description shows up without a manual reload. Destructive actions (`isDestructive: true`) show a confirmation dialog before executing.
+The **state strip**, under the titlebar, is present on every tab: a
+serving/unreachable dot, admin/`serverPort` ports, uptime, error rate,
+active connections, and — while a long-running job is in flight — a
+progress chip with a name, bar, and completed/total count.
 
-If a request fails (network error, or a 500), the header's "updated
+- **Overview** — a two-column summary landing page:
+  - **Needs attention** — datasources with `status == .failing` and recent job runs that didn't succeed, each with a **Test now**/**See report**/**See in Logs** action; the card header itself shows a live failing count, and collapses to "Nothing else outstanding" when clean.
+  - **Activity** — the in-flight job (if any) plus recent job runs, most recent first; **Expand**/**Collapse** toggles between a compact 3-row view and the full list, and the card can pop into its own remembered-size browser window.
+  - **Recent Log** — the last 6 captured `LogCapture` lines; **Open full view** jumps to the Logs tab, or the card can be detached into its own window the same way as Activity.
+  - **Traffic** — requests/errors summed over the trailing rate-bucket history, a bar sparkline (error buckets highlighted), and the top 3 busiest routes.
+  - **Datasources** — one row per datasource with a status square (ok/failing/not-tested) and a link into the Data tab.
+  - **Quick actions** — non-destructive `AdminAction`s only; destructive actions are deliberately excluded here and only run from the Actions tab.
+- **Data** — a **Models** card (schema browser: one entry per registered model, its columns, types, and PK/optional badges) above a master-detail **datasource browser**: a left rail listing every datasource (status square, alias, driver/schema, failure count) with a **Test all** button, and a right detail pane for the selected datasource showing its status tag, a **Test connection** button, a failure banner with the last error and any delegate-supplied correlation note, its connection profiles (with a **Switch** button on any non-active profile), and a full attempt-history table.
+- **Logs** — a toolbar (free-text search with a live match count, per-subsystem filter chips derived from the `[subsystem]` prefix on captured lines, a **Follow** checkbox, **Copy**/**Download .log**/**Clear buffer** buttons, and a detach-to-window button) above the full scrolling log surface; a footer shows "showing N captured · buffer holds M, oldest dropped".
+- **Actions** — the full `AdminAction` catalog grouped by `category` into collapsible groups (each with a count and destructive-count badge). Each row shows the label, a running/destructive tag, a `description` that can be **built fresh on every `availableActions()` call** to reflect live delegate state (e.g. "Running now — 340/1,989 items") and updates every refresh cycle without a reload, the last result if any, and a consequence warning for destructive actions. Destructive actions require a confirm dialog; unavailable ("inert") actions — e.g. reload-TLS with no TLS configured — render disabled with a reason.
+- **Settings** — an **Admin access** card (bind address, auth scheme, token file path, and whether the token rotates on restart), one card per delegate `AdditionalStatusSection` (alert-flagged keys highlighted), and **Copy all as text**. TLS Domains and ACME Challenges live here too, but auto-collapse under a "NOT IN USE ON THIS SERVER" strip with a **Show anyway** toggle when TLS/ACME aren't configured on this instance; when TLS is configured, per-domain **Reload**/**Remove** buttons are shown.
+
+The **report** screen isn't on the tab bar — it's reached via "See report" from
+Needs Attention or Activity, and shows a structured per-run breakdown for any
+`AdminActionReport` a delegate returns (e.g. a crawl grouped by failure
+cause): summary stats, status filter chips, per-group result tables, a
+"N of M failures share one cause" callout when one group dominates, plus
+**Download CSV** and **Re-run** buttons. It isn't restored on reconnect —
+navigating away and back starts you back on Overview (or whichever tab was
+last active).
+
+If a request fails (network error, or a 500), the titlebar's "updated
 HH:MM:SS" text is replaced with "error: ...". A 401 anywhere logs the
 session out and returns to the token-entry screen.
 
