@@ -93,4 +93,19 @@ public struct MetricsSnapshot: Sendable, Encodable {
         self.activeConnections = activeConnections
         self.routeCounts = routeCounts
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case totalRequests, totalErrors, activeConnections, routeCounts, errorRate
+    }
+
+    // `errorRate` is computed, not stored, so synthesized Encodable would silently
+    // drop it from the JSON response. Encode it explicitly instead.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(totalRequests, forKey: .totalRequests)
+        try container.encode(totalErrors, forKey: .totalErrors)
+        try container.encode(activeConnections, forKey: .activeConnections)
+        try container.encode(routeCounts, forKey: .routeCounts)
+        try container.encode(errorRate, forKey: .errorRate)
+    }
 }
