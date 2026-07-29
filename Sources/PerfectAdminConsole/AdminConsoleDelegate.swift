@@ -19,6 +19,8 @@
 // header comment for why the numbering doesn't line up: this file's own
 // Phase N is local to PerfectAdminConsole's build history, unrelated to
 // ADR-0001's PerfectCRUD roadmap phase numbers)
+// Phase 7: the currently-running-job hook, added for the admin-console UI
+// redesign's shared state-strip chip (see AdminWebUI.swift's header comment)
 
 import Foundation
 
@@ -37,6 +39,22 @@ public struct AdminStatusSection: Sendable {
     public init(title: String, items: [(key: String, value: String)]) {
         self.title = title
         self.items = items
+    }
+}
+
+/// A long-running background job, surfaced in the admin console's shared state-strip chip —
+/// visible on every tab, not just the one that started it. `completed`/`total` drive a progress
+/// bar; the console has no notion of what a "job" is beyond this triple, so any host-specific
+/// concept (a crawl report, a migration, a bulk export) maps onto it the same way.
+public struct AdminRunningJob: Sendable {
+    public let name: String
+    public let completed: Int
+    public let total: Int
+
+    public init(name: String, completed: Int, total: Int) {
+        self.name = name
+        self.completed = completed
+        self.total = total
     }
 }
 
@@ -125,6 +143,12 @@ public protocol AdminConsoleDelegate: AnyObject, Sendable {
     /// `ModelInfo` here. Return an empty array (default) to suppress the
     /// panel. Schema only, never row data.
     func registeredModels() async -> [ModelInfo]
+
+    // MARK: Phase 7 — currently-running job
+
+    /// The job currently in flight, if any — shown in the state strip's running-job chip on
+    /// every tab. Return `nil` (default) when nothing is running; the chip is simply absent.
+    func currentJob() async -> AdminRunningJob?
 }
 
 public extension AdminConsoleDelegate {
@@ -147,4 +171,5 @@ public extension AdminConsoleDelegate {
         .failed("Config switching not supported for '\(name)'")
     }
     func registeredModels() async -> [ModelInfo] { [] }
+    func currentJob() async -> AdminRunningJob? { nil }
 }

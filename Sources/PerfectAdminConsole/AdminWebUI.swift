@@ -9,7 +9,15 @@
 //
 // AdminWebUI — self-contained HTML/CSS/JS for the admin console browser UI.
 // No external resources; no CDN; all assets inline.
-// Dark/light mode via prefers-color-scheme.
+//
+// Phase 7 (admin-console UI redesign, direction "1b" -- see the design handoff
+// this was built from): a 5-tab shell (Overview/Data/Logs/Actions/Settings)
+// replacing the single-page card dump, plus a new square-cornered, Barlow-
+// styled (system-ui fallback -- no network, no CDN) visual language. Only
+// Overview and Settings have real content this phase; Data/Logs/Actions are
+// placeholders pending their own redesign phases. Every existing render*()
+// function and its backing element IDs are UNCHANGED -- this phase only
+// restructures the surrounding chrome and where those elements live.
 
 import Foundation
 import PerfectNIO
@@ -38,10 +46,17 @@ enum AdminWebUI {
     }
 
     // MARK: - Page template
-    // Uses #"..."# raw string so JS backslashes and ${} are not interpreted by Swift.
+    // Uses #"..."# raw strings so JS backslashes and ${} are not interpreted by Swift.
     // The sole server-side substitution is {{TOKEN_PATH_JSON}} (replaced above).
+    // Split into named pieces purely for readability/navigability -- concatenated at
+    // Swift-compile-time into one self-contained HTML string, still shipped with no
+    // build step, no bundler, no external resources.
 
-    private static let pageTemplate = #"""
+    private static var pageTemplate: String {
+        htmlHead + authGateBody + dashboardBody + scriptBlock + "</body>\n</html>\n"
+    }
+
+    private static let htmlHead = #"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -50,119 +65,204 @@ enum AdminWebUI {
 <title>Perfect Admin Console</title>
 <style>
 :root {
-  --bg:#f2f2f7;--card:#fff;--text:#1c1c1e;--muted:#6c6c70;
-  --border:#d1d1d6;--accent:#007aff;--ok:#34c759;--err:#ff3b30;
-  --mono:'SF Mono','Menlo','Monaco','Courier New',monospace;
-}
-@media(prefers-color-scheme:dark){
-  :root{--bg:#1c1c1e;--card:#2c2c2e;--text:#f2f2f7;--muted:#98989d;--border:#3a3a3c;--accent:#0a84ff;--ok:#30d158;--err:#ff453a;}
+  --color-bg:#f2f2f3; --color-surface:#e9e9ea; --color-text:#1d1f20;
+  --color-accent:#5980a6; --color-accent-600:#597ea3; --color-accent-700:#416180;
+  --color-divider: color-mix(in srgb, #1d1f20 16%, transparent);
+  --color-neutral-100:#f5f5f8; --color-neutral-200:#e7e7ea; --color-neutral-300:#d4d4d7;
+  --color-neutral-400:#b7b7ba; --color-neutral-500:#98989b; --color-neutral-600:#7a7a7d;
+  --color-neutral-700:#5d5d60; --color-neutral-800:#424244; --color-neutral-900:#2b2b2d;
+  --color-accent-100:#eef6ff; --color-accent-200:#d6ebff; --color-accent-300:#b5d9fd;
+  --color-accent-400:#94bce3; --color-accent-500:#749dc4; --color-accent-800:#2c455d;
+  --color-accent-900:#1d2d3d;
+  /* Functional addition, not in the design system itself: an ops console can't signal
+     failure with the accent alone. */
+  --color-alert:#a63d33; --color-alert-text:#7d2e26;
+  --color-alert-fill: color-mix(in srgb, #a63d33 12%, transparent);
+  /* No network/CDN allowed (localhost tool) -- system-ui stands in for Barlow/Barlow
+     Condensed. Weight/uppercase/letter-spacing rules are still honored; only the
+     specific typeface isn't. */
+  --font-heading: system-ui, sans-serif;
+  --font-body: system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+  --space-1:3.4px; --space-2:6.8px; --space-3:10.2px; --space-4:13.6px; --space-6:20.4px; --space-8:27.2px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;line-height:1.5;min-height:100vh}
-a{color:var(--accent)}
+body{background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);font-size:14px;line-height:1.5;min-height:100vh}
+a{color:var(--color-accent)}
+h6{font-family:var(--font-heading);font-weight:600;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--color-neutral-700)}
+code{font-family:var(--font-mono);font-size:12px;background:var(--color-neutral-200);padding:2px 6px}
+/* ---- buttons (square, per the design system's own "blueprint frame" override) ---- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;text-decoration:none;
+  font-family:var(--font-heading);font-weight:600;font-size:13px;color:var(--color-text);
+  background:transparent;border:1px solid var(--color-divider);padding:6px 12px;border-radius:0}
+.btn:hover{background:color-mix(in srgb, var(--color-text) 7%, transparent)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-primary{background:var(--color-accent);color:var(--color-bg);border-color:var(--color-accent)}
+.btn-primary:hover{background:var(--color-accent-600)}
+.btn-destructive{border-color:var(--color-alert);color:var(--color-alert)}
+.btn-destructive:hover{background:var(--color-alert-fill)}
 /* ---- auth gate ---- */
 #auth-gate{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:14px;padding:24px}
-#auth-gate h1{font-size:22px;font-weight:700}
-#auth-gate p{color:var(--muted);text-align:center;max-width:340px;font-size:13px}
-code{font-family:var(--mono);font-size:12px;background:var(--border);padding:2px 6px;border-radius:4px}
-#token-input{width:320px;max-width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-family:var(--mono);font-size:13px;outline:none}
-#token-input:focus{border-color:var(--accent)}
-#connect-btn{padding:10px 28px;background:var(--accent);color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600}
-#connect-btn:hover{opacity:.88}
-#auth-err{color:var(--err);font-size:13px;display:none}
-/* ---- dashboard ---- */
+#auth-gate h1{font-family:var(--font-heading);font-weight:600;font-size:22px}
+#auth-gate p{color:var(--color-neutral-700);text-align:center;max-width:340px;font-size:13px}
+#token-input{width:320px;max-width:100%;padding:10px 14px;border:1px solid var(--color-divider);background:var(--color-surface);color:var(--color-text);font-family:var(--font-mono);font-size:13px;outline:none;border-radius:0}
+#token-input:focus-visible{outline:2px solid var(--color-accent);outline-offset:2px}
+#connect-btn{padding:10px 28px;font-size:14px}
+#auth-err{color:var(--color-alert);font-size:13px;display:none}
+/* ---- dashboard chrome ---- */
 #dashboard{display:none}
-header{padding:14px 20px;border-bottom:1px solid var(--border);background:var(--card);display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10}
-header h1{font-size:15px;font-weight:600}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);display:inline-block;margin-right:6px}
-#refresh-badge{font-size:12px;color:var(--muted)}
-main{padding:20px;max-width:980px;margin:0 auto}
+.titlebar{padding:12px 20px;border-bottom:1px solid var(--color-divider);display:flex;align-items:center;justify-content:space-between}
+.brand{font-family:var(--font-heading);font-weight:600;font-size:19px;letter-spacing:.02em}
+.host-label{font-size:12px;color:var(--color-neutral-600);margin-left:10px}
+#refresh-badge{font-size:12px;color:var(--color-neutral-600);margin-right:10px}
+.state-strip{display:flex;align-items:stretch;border-bottom:1px solid var(--color-divider);background:var(--color-neutral-100)}
+.state-cell{padding:9px 20px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;justify-content:center}
+.state-cell.state-serving{flex-direction:row;align-items:center;gap:8px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--color-accent);display:inline-block}
+.dot.alert{background:var(--color-alert)}
+.state-key{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-neutral-600)}
+.state-val{font-family:var(--font-mono);font-size:13px}
+.state-serving-label{font-family:var(--font-heading);font-weight:600;font-size:15px;letter-spacing:.04em}
+.state-job{margin-left:auto;flex-direction:row;align-items:center;gap:8px;border-right:none}
+.job-name{display:flex;align-items:center;gap:8px;border:1px solid var(--color-accent);padding:3px 9px}
+.job-name .n{font-family:var(--font-heading);font-size:13px;color:var(--color-accent-700);letter-spacing:.04em}
+.job-bar{width:80px;height:4px;background:var(--color-neutral-300);display:block}
+.job-bar-fill{display:block;height:4px;background:var(--color-accent)}
+.job-count{font-family:var(--font-mono);font-size:11px;color:var(--color-neutral-700)}
+.tab-bar{display:flex;gap:2px;padding:0 20px;border-bottom:1px solid var(--color-divider)}
+.tab-item{background:none;border:none;cursor:pointer;font-family:var(--font-heading);font-weight:600;font-size:15px;letter-spacing:.06em;text-transform:uppercase;padding:10px 16px;border-bottom:2px solid transparent;color:var(--color-neutral-700)}
+.tab-item.active{border-bottom-color:var(--color-accent);color:var(--color-accent-700)}
+.tab-item .problem-dot{width:6px;height:6px;background:var(--color-alert);display:inline-block;margin-left:6px;border-radius:0;vertical-align:middle}
+.tab-panel{display:none;padding:20px}
+.tab-panel.active{display:block}
+main{max-width:1240px;margin:0 auto}
+/* ---- cards (square, transparent per the design system) ---- */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin-bottom:14px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px}
-.card h2{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:12px}
-.row{display:flex;justify-content:space-between;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--border);gap:8px}
+.card{border:1px solid var(--color-divider);padding:14px;background:transparent}
+.card h2{font-family:var(--font-heading);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--color-neutral-700);margin-bottom:12px}
+.row{display:flex;justify-content:space-between;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--color-divider);gap:8px}
 .row:last-child{border-bottom:none}
-.rl{color:var(--muted);flex-shrink:0}
+.rl{color:var(--color-neutral-700);flex-shrink:0}
 .rv{font-weight:500;text-align:right;word-break:break-all}
-.tag{display:inline-block;padding:2px 8px;border-radius:4px;background:var(--border);font-family:var(--mono);font-size:11px;margin:2px}
+.tag{display:inline-block;padding:2px 8px;background:var(--color-neutral-100);color:var(--color-neutral-800);font-family:var(--font-mono);font-size:11px;margin:2px}
 /* ---- log tail ---- */
 #log-card{margin-top:0}
-.log-box{background:#111;color:#0f0;font-family:var(--mono);font-size:12px;line-height:1.6;padding:12px;border-radius:6px;height:220px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
-@media(prefers-color-scheme:dark){.log-box{background:#0a0a0a}}
-.log-footer{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:8px}
+.log-box{background:var(--color-accent-900);color:var(--color-accent-200);font-family:var(--font-mono);font-size:12px;line-height:1.6;padding:12px;height:220px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.log-footer{display:flex;justify-content:space-between;font-size:12px;color:var(--color-neutral-600);margin-top:8px}
 /* ---- delegate sections ---- */
 #delegate-cards{margin-top:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
 /* ---- mini buttons (datasource test, tls ops) ---- */
-.mini-btn{padding:3px 9px;border:1px solid var(--accent);border-radius:5px;background:transparent;color:var(--accent);cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap}
-.mini-btn:hover{background:var(--accent);color:#fff}
+.mini-btn{padding:3px 9px;border:1px solid var(--color-accent);background:transparent;color:var(--color-accent);cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap;font-family:var(--font-heading)}
+.mini-btn:hover{background:var(--color-accent);color:var(--color-bg)}
 /* ---- config switcher ---- */
-.cfg-select{padding:3px 6px;border:1px solid var(--border);border-radius:5px;background:var(--card);color:var(--text);font-size:11px;cursor:pointer;max-width:220px}
+.cfg-select{padding:3px 6px;border:1px solid var(--color-divider);background:var(--color-surface);color:var(--color-text);font-size:11px;cursor:pointer;max-width:220px;border-radius:0}
 /* ---- datasource table (full-width, 3-column, nothing clipped) ---- */
 #datasource-card{margin-bottom:14px}
 .ds-table{display:grid;grid-template-columns:minmax(180px,1.3fr) minmax(220px,1.6fr) minmax(170px,auto);gap:8px 20px;align-items:start}
-.ds-head{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
-.ds-divider{grid-column:1/-1;height:1px;background:var(--border)}
+.ds-head{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--color-neutral-700)}
+.ds-divider{grid-column:1/-1;height:1px;background:var(--color-divider)}
 .ds-cell{min-width:0;padding:2px 0}
 .ds-controls{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .ds-name{font-weight:600}
-.ds-sub{color:var(--muted);font-size:12px;margin-top:2px}
-.ds-active{color:var(--ok);font-size:12px}
+.ds-sub{color:var(--color-neutral-700);font-size:12px;margin-top:2px}
+.ds-active{color:var(--color-accent-700);font-size:12px}
 @media(max-width:680px){.ds-table{grid-template-columns:1fr}.ds-head{display:none}}
 /* ---- actions section ---- */
 #actions-section{margin-top:14px}
-.action-btn{padding:5px 12px;border:1px solid var(--accent);border-radius:6px;background:transparent;color:var(--accent);cursor:pointer;font-size:12px;font-weight:600;transition:background .15s,color .15s}
-.action-btn:hover{background:var(--accent);color:#fff}
-.action-btn.destructive{border-color:var(--err);color:var(--err)}
-.action-btn.destructive:hover{background:var(--err);color:#fff}
+.action-btn{padding:5px 12px;border:1px solid var(--color-accent);background:transparent;color:var(--color-accent);cursor:pointer;font-size:12px;font-weight:600;font-family:var(--font-heading);transition:background .15s,color .15s}
+.action-btn:hover{background:var(--color-accent);color:var(--color-bg)}
+.action-btn.destructive{border-color:var(--color-alert);color:var(--color-alert)}
+.action-btn.destructive:hover{background:var(--color-alert);color:var(--color-bg)}
+/* ---- placeholder tab panels ---- */
+.placeholder{color:var(--color-neutral-700);font-size:14px;padding:40px 0;text-align:center}
 /* ---- toasts ---- */
 #toast-container{position:fixed;bottom:20px;right:20px;display:flex;flex-direction:column;gap:8px;z-index:100;pointer-events:none}
-.toast{padding:10px 16px;border-radius:8px;font-size:13px;background:var(--card);border:1px solid var(--border);box-shadow:0 2px 8px rgba(0,0,0,.18);max-width:320px;transition:opacity .4s;pointer-events:auto}
-.toast-ok{border-left:3px solid var(--ok)}
-.toast-err{border-left:3px solid var(--err)}
+.toast{padding:10px 16px;font-size:13px;background:var(--color-surface);border:1px solid var(--color-divider);box-shadow:0 3px 10px color-mix(in srgb, #2b2b2d 16%, transparent);max-width:320px;transition:opacity .4s;pointer-events:auto}
+.toast-ok{border-left:3px solid var(--color-accent)}
+.toast-err{border-left:3px solid var(--color-alert)}
 .toast-fade{opacity:0}
 </style>
 </head>
 <body>
 
+"""#
+
+    private static let authGateBody = #"""
 <!-- ==================== AUTH GATE ==================== -->
 <div id="auth-gate">
   <h1>Perfect Admin Console</h1>
   <p>Enter the bearer token from<br><code id="path-hint"></code></p>
   <input id="token-input" type="password" placeholder="paste token here" autocomplete="off" spellcheck="false">
-  <button id="connect-btn" onclick="connect()">Connect</button>
+  <button id="connect-btn" class="btn btn-primary" onclick="connect()">Connect</button>
   <span id="auth-err">Invalid token — check the file and try again.</span>
 </div>
 
+"""#
+
+    private static let dashboardBody = #"""
 <!-- ==================== DASHBOARD ==================== -->
 <div id="dashboard">
-  <header>
-    <h1><span class="dot"></span>Perfect Admin Console</h1>
-    <span id="refresh-badge">connecting…</span>
-  </header>
-  <main>
-    <div class="grid">
-      <div class="card"><h2>Server Status</h2><div id="status-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
-      <div class="card"><h2>TLS Domains</h2><div id="tls-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
-      <div class="card"><h2>ACME Challenges</h2><div id="acme-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
-      <div class="card"><h2>Routes</h2><div id="routes-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
-      <div class="card"><h2>Metrics</h2><div id="metrics-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
+  <div class="titlebar">
+    <div><span class="brand">PERFECT ADMIN CONSOLE</span><span class="host-label" id="host-label"></span></div>
+    <div style="display:flex;align-items:center">
+      <span id="refresh-badge">connecting…</span>
+      <button class="btn" onclick="logout()">Disconnect</button>
     </div>
-    <div class="card" id="datasource-card"><h2>Datasources</h2><div id="datasource-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
-    <div class="card" id="models-card"><h2>Models</h2><div id="models-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
-    <div class="card" id="log-card">
-      <h2>Log Tail <span id="log-meta" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)"></span></h2>
-      <div class="log-box" id="log-box">Loading…</div>
-      <div class="log-footer">
-        <span id="log-count-label"></span>
-        <span id="next-refresh">…</span>
+  </div>
+  <div class="state-strip">
+    <div class="state-cell state-serving"><span class="dot" id="serving-dot"></span><span class="state-serving-label" id="serving-label">SERVING</span></div>
+    <div class="state-cell"><span class="state-key">Site / Admin</span><span class="state-val" id="ports-val">—</span></div>
+    <div class="state-cell"><span class="state-key">Uptime</span><span class="state-val" id="uptime-val">—</span></div>
+    <div class="state-cell"><span class="state-key">Error rate</span><span class="state-val" id="errorrate-val">—</span></div>
+    <div class="state-cell"><span class="state-key">Connections</span><span class="state-val" id="connections-val">—</span></div>
+    <div class="state-cell state-job" id="job-chip" style="display:none">
+      <span class="state-key">Running</span>
+      <span class="job-name"><span class="n" id="job-name"></span><span class="job-bar"><span class="job-bar-fill" id="job-bar-fill"></span></span><span class="job-count" id="job-count"></span></span>
+    </div>
+  </div>
+  <div class="tab-bar" id="tab-bar">
+    <button class="tab-item active" data-tab="overview" onclick="showTab('overview')">Overview</button>
+    <button class="tab-item" data-tab="data" onclick="showTab('data')">Data</button>
+    <button class="tab-item" data-tab="logs" onclick="showTab('logs')">Logs</button>
+    <button class="tab-item" data-tab="actions" onclick="showTab('actions')">Actions</button>
+    <button class="tab-item" data-tab="settings" onclick="showTab('settings')">Settings</button>
+  </div>
+  <main>
+    <div class="tab-panel active" id="tab-overview">
+      <div class="grid">
+        <div class="card"><h2>Server Status</h2><div id="status-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
+        <div class="card"><h2>Metrics</h2><div id="metrics-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
+      </div>
+      <div class="card" id="datasource-card"><h2>Datasources</h2><div id="datasource-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
+      <div class="card" id="models-card"><h2>Models</h2><div id="models-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
+      <div class="card" id="log-card">
+        <h2>Log Tail <span id="log-meta" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--color-neutral-600)"></span></h2>
+        <div class="log-box" id="log-box">Loading…</div>
+        <div class="log-footer">
+          <span id="log-count-label"></span>
+          <span id="next-refresh">…</span>
+        </div>
+      </div>
+      <div id="delegate-cards"></div>
+      <div id="actions-section"></div>
+    </div>
+    <div class="tab-panel" id="tab-data"><div class="placeholder">This tab is being redesigned — see Overview for now.</div></div>
+    <div class="tab-panel" id="tab-logs"><div class="placeholder">This tab is being redesigned — see Overview for now.</div></div>
+    <div class="tab-panel" id="tab-actions"><div class="placeholder">This tab is being redesigned — see Overview for now.</div></div>
+    <div class="tab-panel" id="tab-settings">
+      <div class="grid">
+        <div class="card"><h2>TLS Domains</h2><div id="tls-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
+        <div class="card"><h2>ACME Challenges</h2><div id="acme-rows"><div class="row"><span class="rl">Loading…</span></div></div></div>
+        <div class="card"><h2>Routes</h2><div id="routes-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
       </div>
     </div>
-    <div id="delegate-cards"></div>
-    <div id="actions-section"></div>
   </main>
 </div>
 <div id="toast-container"></div>
 
+"""#
+
+    private static let scriptBlock = #"""
 <script>
 'use strict';
 const KEY = 'perfectAdminToken';
@@ -189,6 +289,41 @@ function fmtUptime(s) {
   return (d > 0 ? d + 'd ' : '') + (h > 0 ? h + 'h ' : '') + m + 'm';
 }
 
+// ---- Tab switching ----
+
+function showTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(el => el.classList.toggle('active', el.id === 'tab-' + name));
+  document.querySelectorAll('.tab-item').forEach(el => el.classList.toggle('active', el.dataset.tab === name));
+}
+
+// ---- State strip ----
+
+function renderStateStrip(status, metrics) {
+  const portsVal = (status.serverPort ? ':' + status.serverPort : '—') + ' / :' + status.adminPort;
+  document.getElementById('ports-val').textContent = portsVal;
+  document.getElementById('uptime-val').textContent = fmtUptime(status.uptimeSeconds);
+  const rate = metrics && metrics.totalRequests > 0 ? (metrics.errorRate * 100).toFixed(1) + '%' : '—';
+  document.getElementById('errorrate-val').textContent = rate;
+  document.getElementById('connections-val').textContent = metrics ? String(metrics.activeConnections) : '—';
+
+  const job = status.currentJob;
+  const chip = document.getElementById('job-chip');
+  if (job) {
+    chip.style.display = '';
+    document.getElementById('job-name').textContent = job.name;
+    const pct = job.total > 0 ? Math.min(100, Math.round(job.completed / job.total * 100)) : 0;
+    document.getElementById('job-bar-fill').style.width = pct + '%';
+    document.getElementById('job-count').textContent = job.completed.toLocaleString() + '/' + job.total.toLocaleString();
+  } else {
+    chip.style.display = 'none';
+  }
+}
+
+function setServing(isServing) {
+  document.getElementById('serving-dot').classList.toggle('alert', !isServing);
+  document.getElementById('serving-label').textContent = isServing ? 'SERVING' : 'UNREACHABLE';
+}
+
 async function api(path) {
   const r = await fetch(path, { headers: hdr() });
   if (r.status === 401) { logout(); throw new Error('401'); }
@@ -203,7 +338,9 @@ async function refresh() {
       api('/api/logs?count=100'), api('/api/routes'), api('/api/datasources'),
       api('/api/metrics'), api('/api/actions'), api('/api/models'),
     ]);
+    setServing(true);
     renderStatus(status);
+    renderStateStrip(status, metrics);
     renderTLS(tls);
     renderACME(acme);
     renderLogs(logs);
@@ -218,9 +355,10 @@ async function refresh() {
     if (status.additionalSections && status.additionalSections.length)
       renderDelegate(status.additionalSections);
     document.getElementById('refresh-badge').textContent =
-      'updated ' + new Date().toLocaleTimeString();
+      'live · updated ' + new Date().toLocaleTimeString();
   } catch(e) {
     if (e.message === '401') return;
+    setServing(false);
     document.getElementById('refresh-badge').textContent = 'error: ' + e.message;
   }
 }
@@ -241,20 +379,20 @@ function renderStatus(s) {
 function renderTLS(t) {
   if (!t.domains.length && !t.hasDefault) {
     document.getElementById('tls-content').innerHTML =
-      '<div class="row"><span class="rl" style="color:var(--muted)">No TLS configured</span></div>';
+      '<div class="row"><span class="rl" style="color:var(--color-neutral-600)">No TLS configured</span></div>';
     return;
   }
   let h = t.domains.map(d => {
     const safe = esc(d).replace(/'/g, "\\'");
     return '<div class="row">' +
-      '<span class="rl" style="font-family:var(--mono);font-size:12px">' + esc(d) + '</span>' +
+      '<span class="rl" style="font-family:var(--font-mono);font-size:12px">' + esc(d) + '</span>' +
       '<span class="rv" style="display:flex;gap:4px">' +
       '<button class="mini-btn" onclick="tlsReload(\'' + safe + '\')">Reload</button>' +
-      '<button class="mini-btn" style="border-color:var(--err);color:var(--err)" onclick="tlsRemove(\'' + safe + '\')">Remove</button>' +
+      '<button class="mini-btn" style="border-color:var(--color-alert);color:var(--color-alert)" onclick="tlsRemove(\'' + safe + '\')">Remove</button>' +
       '</span></div>';
   }).join('');
-  if (t.hasDefault) h += '<div class="row"><span class="rl">Default cert</span><span class="rv" style="color:var(--muted);font-size:12px">registered</span></div>';
-  document.getElementById('tls-content').innerHTML = h || '<span style="color:var(--muted);font-size:13px">none</span>';
+  if (t.hasDefault) h += '<div class="row"><span class="rl">Default cert</span><span class="rv" style="color:var(--color-neutral-600);font-size:12px">registered</span></div>';
+  document.getElementById('tls-content').innerHTML = h || '<span style="color:var(--color-neutral-600);font-size:13px">none</span>';
 }
 
 function renderACME(a) {
@@ -274,7 +412,7 @@ function renderLogs(l) {
 function renderRoutes(r) {
   if (!r.routes.length) {
     document.getElementById('routes-content').innerHTML =
-      '<div class="row"><span class="rl" style="color:var(--muted)">No routes from delegate</span></div>';
+      '<div class="row"><span class="rl" style="color:var(--color-neutral-600)">No routes from delegate</span></div>';
     return;
   }
   document.getElementById('routes-content').innerHTML =
@@ -295,7 +433,7 @@ function renderMetrics(m) {
   const topRoutes = Object.entries(m.routeCounts || {})
     .sort((a, b) => b[1] - a[1]).slice(0, 5);
   if (topRoutes.length) {
-    h += '<div style="margin-top:8px;font-size:11px;color:var(--muted);font-weight:600;letter-spacing:.04em">TOP ROUTES</div>';
+    h += '<div style="margin-top:8px;font-size:11px;color:var(--color-neutral-600);font-weight:600;letter-spacing:.04em">TOP ROUTES</div>';
     for (const [route, count] of topRoutes)
       h += row(route, count.toLocaleString());
   }
@@ -335,7 +473,7 @@ async function tlsRemove(hostname) {
 function renderDatasources(d) {
   const el = document.getElementById('datasource-content');
   if (!d.datasources || !d.datasources.length) {
-    el.innerHTML = '<div class="row"><span class="rl" style="color:var(--muted)">No datasources registered</span></div>';
+    el.innerHTML = '<div class="row"><span class="rl" style="color:var(--color-neutral-600)">No datasources registered</span></div>';
     return;
   }
   let h = '<div class="ds-table">';
@@ -411,7 +549,7 @@ async function testDS(name) {
 function renderModels(m) {
   const el = document.getElementById('models-content');
   if (!m.models || !m.models.length) {
-    el.innerHTML = '<div class="row"><span class="rl" style="color:var(--muted)">No models registered</span></div>';
+    el.innerHTML = '<div class="row"><span class="rl" style="color:var(--color-neutral-600)">No models registered</span></div>';
     return;
   }
   el.innerHTML = m.models.map(model => {
@@ -422,7 +560,7 @@ function renderModels(m) {
         '<span class="rv">' + esc(c.typeName) + badges + '</span></div>';
     }).join('');
     return '<div class="row" style="border-bottom:none;padding-bottom:0"><span class="rl" style="font-weight:600">' +
-      esc(model.label) + '</span><span class="rv" style="color:var(--muted)">' +
+      esc(model.label) + '</span><span class="rv" style="color:var(--color-neutral-600)">' +
       model.columns.length + ' column' + (model.columns.length === 1 ? '' : 's') + '</span></div>' + cols;
   }).join('<div class="ds-divider"></div>');
 }
@@ -449,7 +587,7 @@ function renderActions(actions) {
     const c = a.category || 'general';
     (cats[c] = cats[c] || []).push(a);
   }
-  let h = '<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px">Actions</div>';
+  let h = '<h6 style="margin-bottom:8px">Actions</h6>';
   h += '<div class="grid">';
   for (const [cat, acts] of Object.entries(cats)) {
     h += '<div class="card"><h2>' + esc(cat) + '</h2>';
@@ -462,7 +600,7 @@ function renderActions(actions) {
       h += '<button class="' + cls + '" onclick="runAction(\'' + escaped + '\',' + (a.isDestructive ? 'true' : 'false') + ')">';
       h += a.isDestructive ? 'Run (!)' : 'Run';
       h += '</button></div>';
-      if (a.description) h += '<span style="color:var(--muted);font-size:12px">' + esc(a.description) + '</span>';
+      if (a.description) h += '<span style="color:var(--color-neutral-600);font-size:12px">' + esc(a.description) + '</span>';
       h += '</div>';
     }
     h += '</div>';
@@ -543,7 +681,5 @@ document.getElementById('token-input').addEventListener('keydown', e => {
 // Auto-connect if a token is already in sessionStorage
 if (token) showDashboard();
 </script>
-</body>
-</html>
 """#
 }

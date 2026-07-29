@@ -233,6 +233,15 @@ final class JSONTextTests: XCTestCase {
         let json = JSONText.section(title: "My App", items: [("Key", "Value"), ("Foo", "Bar")])
         XCTAssertEqual(json, #"{"title":"My App","items":{"Key":"Value","Foo":"Bar"}}"#)
     }
+
+    func testJob_nilProducesNullLiteral() {
+        XCTAssertEqual(JSONText.job(nil), "null")
+    }
+
+    func testJob_buildsExpectedShape() {
+        let json = JSONText.job(AdminRunningJob(name: "Crawl report", completed: 340, total: 1989))
+        XCTAssertEqual(json, #"{"name":"Crawl report","completed":340,"total":1989}"#)
+    }
 }
 
 // MARK: - TLSContextManager additions
@@ -1034,5 +1043,90 @@ final class AdminWebUIModelsTests: XCTestCase {
     func testResponse_containsRenderModelsFunction() async throws {
         let html = try await loadHTML()
         XCTAssertTrue(html.contains("function renderModels"), "renderModels JS function missing from HTML")
+    }
+}
+
+// MARK: - Phase 7: admin-console UI redesign, currentJob() delegate hook
+
+private final class MinimalDelegate7: AdminConsoleDelegate {}
+
+final class AdminConsoleDelegatePhase7Tests: XCTestCase {
+
+    func testDefaultCurrentJob_isNil() async {
+        let d = MinimalDelegate7()
+        let job = await d.currentJob()
+        XCTAssertNil(job)
+    }
+}
+
+// MARK: - Phase 7: AdminWebUI shell/chrome/design-token redesign
+
+final class AdminWebUIPhase7Tests: XCTestCase {
+
+    private func loadHTML() async throws -> String {
+        let output = AdminWebUI.response(tokenFilePath: "/tmp/tok.token")
+        var body: [UInt8] = []
+        let alloc = ByteBufferAllocator()
+        var chunk = try await output.nextChunk(allocator: alloc)
+        while let buf = chunk {
+            body.append(contentsOf: buf.readableBytesView)
+            chunk = try await output.nextChunk(allocator: alloc)
+        }
+        return String(decoding: body, as: UTF8.self)
+    }
+
+    func testResponse_containsAllFiveTabs() async throws {
+        let html = try await loadHTML()
+        for tab in ["Overview", "Data", "Logs", "Actions", "Settings"] {
+            XCTAssertTrue(html.contains(">\(tab)<"), "\(tab) tab label missing from tab bar")
+        }
+        for id in ["tab-overview", "tab-data", "tab-logs", "tab-actions", "tab-settings"] {
+            XCTAssertTrue(html.contains("id=\"\(id)\""), "\(id) tab panel missing")
+        }
+    }
+
+    func testOverviewTab_containsExistingCards() async throws {
+        let html = try await loadHTML()
+        let overviewStart = try XCTUnwrap(html.range(of: "id=\"tab-overview\""))
+        let settingsStart = try XCTUnwrap(html.range(of: "id=\"tab-settings\""))
+        let overviewBody = html[overviewStart.upperBound..<settingsStart.lowerBound]
+        for id in ["datasource-content", "metrics-rows", "log-box", "actions-section", "models-content"] {
+            XCTAssertTrue(overviewBody.contains("id=\"\(id)\""), "\(id) missing from Overview tab")
+        }
+    }
+
+    func testSettingsTab_containsTLSAndACMEAndRoutesCards() async throws {
+        let html = try await loadHTML()
+        let settingsStart = try XCTUnwrap(html.range(of: "id=\"tab-settings\""))
+        let settingsBody = html[settingsStart.upperBound...]
+        for id in ["tls-content", "acme-rows", "routes-content"] {
+            XCTAssertTrue(settingsBody.contains("id=\"\(id)\""), "\(id) missing from Settings tab")
+        }
+    }
+
+    func testResponse_containsStateStripElements() async throws {
+        let html = try await loadHTML()
+        for id in ["serving-dot", "ports-val", "uptime-val", "errorrate-val", "connections-val", "job-chip"] {
+            XCTAssertTrue(html.contains("id=\"\(id)\""), "\(id) missing from state strip")
+        }
+    }
+
+    func testResponse_containsCurrentJobInStatusFetchHandling() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("status.currentJob"), "currentJob field not read from /api/status response")
+    }
+
+    func testResponse_usesNewDesignTokenNames() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("--color-accent"), "new --color-accent token missing")
+        XCTAssertTrue(html.contains("--color-alert"), "new --color-alert token missing")
+        XCTAssertFalse(html.contains("--accent:"), "old --accent token name should be gone")
+        XCTAssertFalse(html.contains("--err:"), "old --err token name should be gone")
+    }
+
+    func testResponse_doesNotReferenceCDNOrDarkModeMediaQuery() async throws {
+        let html = try await loadHTML()
+        XCTAssertFalse(html.contains("fonts.googleapis.com"), "no CDN font import should ship in the product")
+        XCTAssertFalse(html.contains("prefers-color-scheme"), "no dark-mode variant is specified by the design")
     }
 }

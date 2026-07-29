@@ -95,6 +95,13 @@ enum JSONText {
     static func section(title: String, items: [(key: String, value: String)]) -> String {
         "{\"title\":\(string(title)),\"items\":\(object(items))}"
     }
+
+    /// A `{"name":"...","completed":N,"total":N}` object for one `AdminRunningJob`, or the bare
+    /// `null` literal when nothing is running.
+    static func job(_ job: AdminRunningJob?) -> String {
+        guard let job else { return "null" }
+        return "{\"name\":\(string(job.name)),\"completed\":\(job.completed),\"total\":\(job.total)}"
+    }
 }
 
 public actor AdminConsole {
@@ -181,6 +188,7 @@ public actor AdminConsole {
                 uptimeSecs = nil
             }
             let extraSections = await delegate?.additionalStatusSections() ?? []
+            let job = await delegate?.currentJob()
             let effectiveServerPort = (serverPort ?? 0) != 0 ? serverPort : nil
 
             // Hand-built, not `Encodable`/`JSONEncoder` — see `JSONText`'s
@@ -190,7 +198,7 @@ public actor AdminConsole {
                 .map { JSONText.section(title: $0.title, items: $0.items) }
                 .joined(separator: ",")
             let body = """
-            {"adminPort":\(adminPort),"serverPort":\(effectiveServerPort.map(String.init) ?? "null"),"uptimeSeconds":\(uptimeSecs.map { String($0) } ?? "null"),"tlsDomainCount":\(domains.count),"tlsHasDefault":\(hasDefault),"acmePendingChallenges":\(pendingACME),"additionalSections":[\(sectionsJSON)]}
+            {"adminPort":\(adminPort),"serverPort":\(effectiveServerPort.map(String.init) ?? "null"),"uptimeSeconds":\(uptimeSecs.map { String($0) } ?? "null"),"tlsDomainCount":\(domains.count),"tlsHasDefault":\(hasDefault),"acmePendingChallenges":\(pendingACME),"additionalSections":[\(sectionsJSON)],"currentJob":\(JSONText.job(job))}
             """
             return BytesOutput(
                 head: HTTPHead(headers: HTTPHeaders([("content-type", "application/json")])),
