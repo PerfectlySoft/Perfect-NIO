@@ -424,7 +424,8 @@ final class AdminWebUITests: XCTestCase {
             chunk = try await output.nextChunk(allocator: alloc)
         }
         let html = String(decoding: body, as: UTF8.self)
-        XCTAssertTrue(html.contains("actions-section"), "Phase 2 actions section missing from HTML")
+        XCTAssertTrue(html.contains("actions-catalog"), "Phase 9 actions catalog missing from HTML")
+        XCTAssertFalse(html.contains("id=\"actions-section\""), "Overview's old actions-section should be removed, not duplicated, once the Actions tab owns it")
         XCTAssertTrue(html.contains("toast-container"), "Phase 2 toast container missing from HTML")
     }
 }
@@ -469,6 +470,43 @@ final class AdminActionTests: XCTestCase {
         let r = AdminActionResult(success: true, message: "OK")
         XCTAssertTrue(r.success)
         XCTAssertEqual(r.message, "OK")
+    }
+}
+
+// MARK: - AdminAction (Phase 9: Actions catalog)
+
+final class AdminActionPhase9Tests: XCTestCase {
+
+    func testAdminAction_isRunningDefaultsFalse() {
+        let a = AdminAction(name: "x", label: "X", description: "")
+        XCTAssertFalse(a.isRunning)
+    }
+
+    func testAdminAction_lastResultDefaultsNil() {
+        let a = AdminAction(name: "x", label: "X", description: "")
+        XCTAssertNil(a.lastResult)
+    }
+
+    func testAdminAction_consequenceDefaultsNil() {
+        let a = AdminAction(name: "x", label: "X", description: "")
+        XCTAssertNil(a.consequence)
+    }
+
+    func testAdminAction_isInertDefaultsFalse() {
+        let a = AdminAction(name: "x", label: "X", description: "")
+        XCTAssertFalse(a.isInert)
+    }
+
+    func testAdminAction_storesAllFourNewFieldsWhenPassed() {
+        let a = AdminAction(
+            name: "x", label: "X", description: "",
+            isRunning: true, lastResult: "14 considered · 5 disconnected",
+            consequence: "This cannot be undone.", isInert: true
+        )
+        XCTAssertTrue(a.isRunning)
+        XCTAssertEqual(a.lastResult, "14 considered · 5 disconnected")
+        XCTAssertEqual(a.consequence, "This cannot be undone.")
+        XCTAssertTrue(a.isInert)
     }
 }
 
@@ -619,6 +657,60 @@ final class BuiltinActionsTests: XCTestCase {
         let actions = adminBuiltinActions(hasLogs: true, hasDelegate: true)
         XCTAssertEqual(actions.count, 2)
         XCTAssertEqual(actions.map(\.name), ["clear-logs", "reload-tls"])
+    }
+
+    func testBuiltinActions_defaultHasTLSParam_preservesOldBehavior() {
+        // Old 2-arg call site (no hasTLS) still compiles and behaves as before: reload-tls is inert.
+        let actions = adminBuiltinActions(hasLogs: false, hasDelegate: true)
+        XCTAssertTrue(actions[0].isInert)
+    }
+
+    func testBuiltinActions_reloadTLS_isInertWhenNoTLS() {
+        let actions = adminBuiltinActions(hasLogs: false, hasDelegate: true, hasTLS: false)
+        XCTAssertTrue(actions[0].isInert)
+    }
+
+    func testBuiltinActions_reloadTLS_notInertWhenTLSConfigured() {
+        let actions = adminBuiltinActions(hasLogs: false, hasDelegate: true, hasTLS: true)
+        XCTAssertFalse(actions[0].isInert)
+    }
+
+    func testBuiltinActions_clearLogs_hasConsequenceText() {
+        let actions = adminBuiltinActions(hasLogs: true, hasDelegate: false)
+        XCTAssertNotNil(actions[0].consequence)
+        XCTAssertFalse(actions[0].consequence!.isEmpty)
+    }
+}
+
+// MARK: - Phase 9: TLS-configured detection + inert-action rejection
+
+final class AdminConsolePhase9Tests: XCTestCase {
+
+    func testAdminHasTLSConfigured_neither_returnsFalse() {
+        XCTAssertFalse(adminHasTLSConfigured(domains: [], hasDefault: false))
+    }
+
+    func testAdminHasTLSConfigured_hasDefaultOnly_returnsTrue() {
+        XCTAssertTrue(adminHasTLSConfigured(domains: [], hasDefault: true))
+    }
+
+    func testAdminHasTLSConfigured_hasRegisteredHostnameOnly_returnsTrue() {
+        XCTAssertTrue(adminHasTLSConfigured(domains: ["example.com"], hasDefault: false))
+    }
+
+    func testAdminInertActionRejection_reloadTLSWithoutTLS_returnsFailed() {
+        let result = adminInertActionRejection(actionName: "reload-tls", hasTLS: false)
+        XCTAssertNotNil(result)
+        XCTAssertFalse(result!.success)
+    }
+
+    func testAdminInertActionRejection_reloadTLSWithTLS_returnsNil() {
+        XCTAssertNil(adminInertActionRejection(actionName: "reload-tls", hasTLS: true))
+    }
+
+    func testAdminInertActionRejection_otherActionName_returnsNilRegardless() {
+        XCTAssertNil(adminInertActionRejection(actionName: "clear-logs", hasTLS: false))
+        XCTAssertNil(adminInertActionRejection(actionName: "clear-logs", hasTLS: true))
     }
 }
 
@@ -1185,9 +1277,10 @@ final class AdminWebUIPhase7Tests: XCTestCase {
         let overviewStart = try XCTUnwrap(html.range(of: "id=\"tab-overview\""))
         let settingsStart = try XCTUnwrap(html.range(of: "id=\"tab-settings\""))
         let overviewBody = html[overviewStart.upperBound..<settingsStart.lowerBound]
-        for id in ["datasource-content", "metrics-rows", "log-box", "actions-section", "models-content"] {
+        for id in ["datasource-content", "metrics-rows", "log-box", "models-content"] {
             XCTAssertTrue(overviewBody.contains("id=\"\(id)\""), "\(id) missing from Overview tab")
         }
+        XCTAssertFalse(overviewBody.contains("id=\"actions-section\""), "Actions catalog moved to the Actions tab in Phase 9 -- Overview should no longer duplicate it")
     }
 
     func testSettingsTab_containsTLSAndACMEAndRoutesCards() async throws {
@@ -1316,5 +1409,60 @@ final class AdminWebUIPhase8LogsViewerTests: XCTestCase {
         let html = try await loadHTML()
         XCTAssertTrue(html.contains("buffer holds "), "footer should use the design's verbatim wording")
         XCTAssertTrue(html.contains("oldest dropped"), "footer should use the design's verbatim wording")
+    }
+}
+
+// MARK: - Phase 9: Actions catalog (admin-console UI redesign phase 3)
+
+final class AdminWebUIPhase9ActionsCatalogTests: XCTestCase {
+
+    private func loadHTML() async throws -> String {
+        let output = AdminWebUI.response(tokenFilePath: "/tmp/tok.token")
+        var body: [UInt8] = []
+        let alloc = ByteBufferAllocator()
+        var chunk = try await output.nextChunk(allocator: alloc)
+        while let buf = chunk {
+            body.append(contentsOf: buf.readableBytesView)
+            chunk = try await output.nextChunk(allocator: alloc)
+        }
+        return String(decoding: body, as: UTF8.self)
+    }
+
+    func testActionsTab_isNoLongerPlaceholder() async throws {
+        let html = try await loadHTML()
+        let actionsStart = try XCTUnwrap(html.range(of: "id=\"tab-actions\""))
+        let settingsStart = try XCTUnwrap(html.range(of: "id=\"tab-settings\""))
+        let actionsBody = html[actionsStart.upperBound..<settingsStart.lowerBound]
+        XCTAssertFalse(actionsBody.contains("being redesigned"), "Actions tab should no longer be a placeholder")
+    }
+
+    func testActionsTab_containsCatalogMountAndFunction() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("id=\"actions-catalog\""), "actions-catalog mount missing")
+        XCTAssertTrue(html.contains("function renderActionsCatalog"), "renderActionsCatalog function missing")
+    }
+
+    func testResponse_containsActionRowCSSClasses() async throws {
+        let html = try await loadHTML()
+        for cls in [".action-group", ".action-row", ".action-consequence", ".action-controls", ".action-tag-running", ".action-tag-destructive"] {
+            XCTAssertTrue(html.contains(cls), "\(cls) missing from CSS")
+        }
+    }
+
+    func testResponse_runActionHasThreeArgSignature() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("function runAction(name, isDestructive, consequence)"), "runAction should now take a consequence param")
+    }
+
+    func testResponse_containsFollowInLogsFunction() async throws {
+        let html = try await loadHTML()
+        XCTAssertTrue(html.contains("function followInLogs"), "followInLogs function missing")
+    }
+
+    func testResponse_actionButtonHTML_handlesInertRunningDestructive() async throws {
+        let html = try await loadHTML()
+        for literal in ["Already running", "Follow in Logs", "No TLS configured", "destructive · confirms", "Download first"] {
+            XCTAssertTrue(html.contains(literal), "\(literal) missing from JS")
+        }
     }
 }

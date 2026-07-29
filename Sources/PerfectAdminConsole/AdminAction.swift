@@ -29,19 +29,42 @@ public struct AdminAction: Sendable {
     public let category: String
     /// When `true` the dashboard shows a confirmation dialog before executing.
     public let isDestructive: Bool
+    /// `true` while this action is currently executing -- renders as a disabled "Already
+    /// running" button plus a "Follow in Logs" link. The console does not track this itself;
+    /// hosts with real long-running actions (e.g. a crawl) set this from their own tracker.
+    public let isRunning: Bool
+    /// One-line summary of the action's most recent outcome, shown below the description.
+    /// `nil` (default) hides that line entirely -- the console keeps no run history on its own.
+    public let lastResult: String?
+    /// For destructive actions: the certain, specific consequence of running this action, shown
+    /// in the UI and reused as the confirmation-dialog text. Falls back to a generic confirmation
+    /// message when `nil`. Ignored when `isDestructive` is `false`.
+    public let consequence: String?
+    /// `true` when this action's prerequisite subsystem isn't configured on this server (e.g.
+    /// reloading TLS certificates when no TLS is configured at all). The action still appears --
+    /// greyed out, with a disabled button -- rather than being hidden.
+    public let isInert: Bool
 
     public init(
         name: String,
         label: String,
         description: String,
         category: String = "general",
-        isDestructive: Bool = false
+        isDestructive: Bool = false,
+        isRunning: Bool = false,
+        lastResult: String? = nil,
+        consequence: String? = nil,
+        isInert: Bool = false
     ) {
         self.name = name
         self.label = label
         self.description = description
         self.category = category
         self.isDestructive = isDestructive
+        self.isRunning = isRunning
+        self.lastResult = lastResult
+        self.consequence = consequence
+        self.isInert = isInert
     }
 }
 

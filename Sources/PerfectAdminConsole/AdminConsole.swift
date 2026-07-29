@@ -330,16 +330,25 @@ public actor AdminConsole {
         // GET /api/actions — list built-in + delegate actions
         let actionsGetRoute = root().GET.path("api").path("actions").map { (req: any HTTPRequest) async throws -> HTTPOutput in
             try tokenStore.requireAuth(from: req.headers)
-            let builtins = adminBuiltinActions(hasLogs: logCapture != nil, hasDelegate: delegate != nil)
+            let domains = await tlsManager?.registeredHostnames() ?? []
+            let hasDefault = await tlsManager?.hasDefaultContext ?? false
+            let hasTLS = adminHasTLSConfigured(domains: domains, hasDefault: hasDefault)
+            let builtins = adminBuiltinActions(hasLogs: logCapture != nil, hasDelegate: delegate != nil, hasTLS: hasTLS)
             let custom = await delegate?.availableActions() ?? []
             struct ActionEnc: Encodable {
                 let name, label, description, category: String
                 let isDestructive: Bool
+                let isRunning: Bool
+                let lastResult: String?
+                let consequence: String?
+                let isInert: Bool
             }
             struct ActionsEnc: Encodable { let actions: [ActionEnc] }
             let all = (builtins + custom).map {
                 ActionEnc(name: $0.name, label: $0.label, description: $0.description,
-                          category: $0.category, isDestructive: $0.isDestructive)
+                          category: $0.category, isDestructive: $0.isDestructive,
+                          isRunning: $0.isRunning, lastResult: $0.lastResult,
+                          consequence: $0.consequence, isInert: $0.isInert)
             }
             return try JSONOutput(ActionsEnc(actions: all))
         }
@@ -352,23 +361,31 @@ public actor AdminConsole {
             struct Body: Decodable { let action: String }
             let body = try JSONDecoder().decode(Body.self, from: Data(bytes))
 
+            let domains = await tlsManager?.registeredHostnames() ?? []
+            let hasDefault = await tlsManager?.hasDefaultContext ?? false
+            let hasTLS = adminHasTLSConfigured(domains: domains, hasDefault: hasDefault)
+
             let result: AdminActionResult
-            switch body.action {
-            case "clear-logs":
-                let dropped = await logCapture?.clear() ?? 0
-                result = .ok("Log buffer cleared — \(dropped) line\(dropped == 1 ? "" : "s") dropped")
-            case "reload-tls":
-                do {
-                    try await delegate?.reloadTLSCertificates()
-                    result = .ok("TLS certificates reloaded")
-                } catch {
-                    result = .failed("TLS reload failed: \(error.localizedDescription)")
+            if let rejection = adminInertActionRejection(actionName: body.action, hasTLS: hasTLS) {
+                result = rejection
+            } else {
+                switch body.action {
+                case "clear-logs":
+                    let dropped = await logCapture?.clear() ?? 0
+                    result = .ok("Log buffer cleared — \(dropped) line\(dropped == 1 ? "" : "s") dropped")
+                case "reload-tls":
+                    do {
+                        try await delegate?.reloadTLSCertificates()
+                        result = .ok("TLS certificates reloaded")
+                    } catch {
+                        result = .failed("TLS reload failed: \(error.localizedDescription)")
+                    }
+                default:
+                    guard let del = delegate else {
+                        throw ErrorOutput(status: .notFound, description: "Unknown action: \(body.action)")
+                    }
+                    result = try await del.executeAction(body.action)
                 }
-            default:
-                guard let del = delegate else {
-                    throw ErrorOutput(status: .notFound, description: "Unknown action: \(body.action)")
-                }
-                result = try await del.executeAction(body.action)
             }
 
             await logCapture?.capture("[admin] action=\(body.action) success=\(result.success): \(result.message)")
@@ -443,7 +460,7 @@ public actor AdminConsole {
 // MARK: - Internal helpers (internal so tests can reach them via @testable import)
 
 /// Built-in actions always offered by the admin console (when the relevant subsystem is configured).
-func adminBuiltinActions(hasLogs: Bool, hasDelegate: Bool) -> [AdminAction] {
+func adminBuiltinActions(hasLogs: Bool, hasDelegate: Bool, hasTLS: Bool = false) -> [AdminAction] {
     var actions: [AdminAction] = []
     if hasLogs {
         actions.append(AdminAction(
@@ -451,7 +468,8 @@ func adminBuiltinActions(hasLogs: Bool, hasDelegate: Bool) -> [AdminAction] {
             label: "Clear Log Buffer",
             description: "Remove all lines from the in-memory log ring buffer.",
             category: "maintenance",
-            isDestructive: true
+            isDestructive: true,
+            consequence: "This immediately empties the entire in-memory log buffer. The removed lines cannot be recovered afterward — download them first if you need a record."
         ))
     }
     if hasDelegate {
@@ -460,10 +478,26 @@ func adminBuiltinActions(hasLogs: Bool, hasDelegate: Bool) -> [AdminAction] {
             label: "Reload TLS Certificates",
             description: "Ask the host to reload TLS certificates from disk without restarting.",
             category: "tls",
-            isDestructive: false
+            isDestructive: false,
+            isInert: !hasTLS
         ))
     }
     return actions
+}
+
+/// Whether TLS is meaningfully configured -- a default cert, or at least one per-domain cert.
+/// Takes the same two primitives the existing /api/tls and /api/acme routes already compute
+/// (`tlsManager?.registeredHostnames()` / `tlsManager?.hasDefaultContext`), not the manager
+/// itself, so this stays trivially testable with plain values.
+func adminHasTLSConfigured(domains: [String], hasDefault: Bool) -> Bool {
+    hasDefault || !domains.isEmpty
+}
+
+/// Rejects execution of an action the UI shows as inert, so a bare POST can't bypass the
+/// disabled button into "succeeding" at something that isn't actually possible.
+func adminInertActionRejection(actionName: String, hasTLS: Bool) -> AdminActionResult? {
+    guard actionName == "reload-tls", !hasTLS else { return nil }
+    return .failed("No TLS configured on this server — nothing to reload.")
 }
 
 /// Reads the full request body and returns it as raw bytes.

@@ -190,12 +190,29 @@ body.detached-logs .tab-panel{padding:16px}
 .ds-sub{color:var(--color-neutral-700);font-size:12px;margin-top:2px}
 .ds-active{color:var(--color-accent-700);font-size:12px}
 @media(max-width:680px){.ds-table{grid-template-columns:1fr}.ds-head{display:none}}
-/* ---- actions section ---- */
-#actions-section{margin-top:14px}
+/* ---- actions catalog (Phase 9: admin-console UI redesign phase 3) ---- */
 .action-btn{padding:5px 12px;border:1px solid var(--color-accent);background:transparent;color:var(--color-accent);cursor:pointer;font-size:12px;font-weight:600;font-family:var(--font-heading);transition:background .15s,color .15s}
 .action-btn:hover{background:var(--color-accent);color:var(--color-bg)}
 .action-btn.destructive{border-color:var(--color-alert);color:var(--color-alert)}
 .action-btn.destructive:hover{background:var(--color-alert);color:var(--color-bg)}
+.action-btn:disabled{opacity:.5;cursor:not-allowed;background:transparent}
+.action-group{border:1px solid var(--color-divider);margin-bottom:14px}
+.action-group-head{display:flex;justify-content:space-between;align-items:baseline;padding:10px 14px;border-bottom:1px solid var(--color-divider);background:var(--color-neutral-100)}
+.action-group-head h2{font-family:var(--font-heading);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--color-neutral-700);margin:0}
+.action-group-count{font-family:var(--font-mono);font-size:11px;color:var(--color-neutral-700)}
+.action-row{display:flex;justify-content:space-between;gap:16px;padding:14px;border:1px solid var(--color-divider);margin:10px 14px}
+.action-row.destructive{border-color:var(--color-alert)}
+.action-row.inert{opacity:.6}
+.action-title{font-family:var(--font-heading);font-weight:600;font-size:20px}
+.action-tag{display:inline-block;padding:2px 8px;font-family:var(--font-mono);font-size:11px;margin-left:8px}
+.action-tag-running{border:1px solid var(--color-accent);color:var(--color-accent-700)}
+.action-tag-destructive{border:1px solid var(--color-alert);color:var(--color-alert-text)}
+.action-desc{max-width:640px;color:var(--color-neutral-700);font-size:13px;margin-top:6px}
+.action-meta{font-family:var(--font-mono);font-size:12px;color:var(--color-neutral-600);margin-top:6px}
+.action-consequence{border-left:3px solid var(--color-alert);background:var(--color-alert-fill);color:var(--color-alert-text);padding:8px 12px;margin-top:8px;font-size:12px;max-width:640px}
+.action-controls{flex:0 0 150px;display:flex;flex-direction:column;align-items:flex-end;gap:6px;text-align:right}
+.action-ghost{background:none;border:none;padding:0;color:var(--color-accent-700);font-family:var(--font-heading);font-weight:600;font-size:12px;cursor:pointer;text-decoration:underline}
+.action-ghost:hover{color:var(--color-accent)}
 /* ---- placeholder tab panels ---- */
 .placeholder{color:var(--color-neutral-700);font-size:14px;padding:40px 0;text-align:center}
 /* ---- toasts ---- */
@@ -270,7 +287,6 @@ body.detached-logs .tab-panel{padding:16px}
         <div class="log-surface-base log-surface-mini" id="log-box">Loading…</div>
       </div>
       <div id="delegate-cards"></div>
-      <div id="actions-section"></div>
     </div>
     <div class="tab-panel" id="tab-data"><div class="placeholder">This tab is being redesigned — see Overview for now.</div></div>
     <div class="tab-panel" id="tab-logs">
@@ -295,7 +311,7 @@ body.detached-logs .tab-panel{padding:16px}
         <span id="logs-next-refresh">…</span>
       </div>
     </div>
-    <div class="tab-panel" id="tab-actions"><div class="placeholder">This tab is being redesigned — see Overview for now.</div></div>
+    <div class="tab-panel" id="tab-actions"><div id="actions-catalog"></div></div>
     <div class="tab-panel" id="tab-settings">
       <div class="grid">
         <div class="card"><h2>TLS Domains</h2><div id="tls-content"><div class="row"><span class="rl">Loading…</span></div></div></div>
@@ -404,7 +420,7 @@ async function refresh() {
     // Re-rendered every cycle (not just on first load) so an action whose
     // description reflects live state — e.g. a crawl-report delegate
     // showing "Running now — 340/1,989 pages" — updates without a reload.
-    renderActions(actions.actions || []);
+    renderActionsCatalog(actions.actions || []);
     if (status.additionalSections && status.additionalSections.length)
       renderDelegate(status.additionalSections);
     document.getElementById('refresh-badge').textContent =
@@ -803,44 +819,91 @@ function renderDelegate(sections) {
   }).join('');
 }
 
-// ---- Phase 2: actions ----
-// Fetched as part of refresh()'s Promise.all so the actions section (and
-// any live status a delegate bakes into an action's description) updates
-// on every periodic tick, not just once at page load.
+// ---- Phase 9: Actions catalog (admin-console UI redesign phase 3) ----
+// Fetched as part of refresh()'s Promise.all so the catalog (and any live
+// status a delegate bakes into an action's description) updates on every
+// periodic tick, not just once at page load.
 
-function renderActions(actions) {
-  const el = document.getElementById('actions-section');
-  if (!actions.length) { el.innerHTML = ''; return; }
-  // Group by category
+function titleCaseCategory(s) {
+  // "tls" is the one real category value that's an acronym, not a word --
+  // every other category (general/maintenance/data/gateway/tenant/...) gets
+  // generic title-casing, not a hardcoded list.
+  if (String(s).toLowerCase() === 'tls') return 'TLS';
+  return String(s).replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// A single-quoted JS string literal, safe to embed inside a double-quoted HTML
+// attribute: escapes backslashes/single-quotes for the JS literal delimiter,
+// and &/</>/" for the surrounding HTML attribute delimiter.
+function attrJsString(s) {
+  return "'" + String(s)
+    .replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') + "'";
+}
+
+function actionButtonHTML(a) {
+  const escapedName = esc(a.name).replace(/'/g, "\\'");
+  if (a.isInert) {
+    const reason = a.name === 'reload-tls' ? 'No TLS configured' : 'Not available';
+    return '<button class="action-btn" disabled>' + esc(reason) + '</button>';
+  }
+  if (a.isRunning) {
+    return '<button class="action-btn" disabled>Already running</button>' +
+      '<button class="action-ghost" onclick="followInLogs(\'' + escapedName + '\')">Follow in Logs</button>';
+  }
+  if (a.isDestructive) {
+    const verb = (a.label.split(' ')[0] || a.label) + '…';
+    const extra = a.name === 'clear-logs'
+      ? '<button class="action-ghost" onclick="downloadLogs()">Download first</button>' : '';
+    const conseq = a.consequence ? attrJsString(a.consequence) : 'null';
+    return extra + '<button class="action-btn destructive" onclick="runAction(\'' + escapedName +
+      '\', true, ' + conseq + ')">' + esc(verb) + '</button>';
+  }
+  return '<button class="action-btn" onclick="runAction(\'' + escapedName + '\', false, null)">Run</button>';
+}
+
+function actionRowHTML(a) {
+  const cls = 'action-row' + (a.isDestructive ? ' destructive' : '') + (a.isInert ? ' inert' : '');
+  let head = '<span class="action-title">' + esc(a.label) + '</span>';
+  if (a.isRunning) head += '<span class="action-tag action-tag-running">running</span>';
+  if (a.isDestructive) head += '<span class="action-tag action-tag-destructive">destructive · confirms</span>';
+  let main = '<div style="max-width:100%">' + head;
+  if (a.description) main += '<p class="action-desc">' + esc(a.description) + '</p>';
+  if (a.lastResult) main += '<div class="action-meta">Last result: ' + esc(a.lastResult) + '</div>';
+  if (a.isDestructive && a.consequence) main += '<div class="action-consequence">' + esc(a.consequence) + '</div>';
+  main += '</div>';
+  return '<div class="' + cls + '">' + main + '<div class="action-controls">' + actionButtonHTML(a) + '</div></div>';
+}
+
+function renderActionsCatalog(actions) {
+  const el = document.getElementById('actions-catalog');
+  if (!el) return;
+  if (!actions.length) { el.innerHTML = '<div class="placeholder">No actions available.</div>'; return; }
   const cats = {};
   for (const a of actions) {
     const c = a.category || 'general';
     (cats[c] = cats[c] || []).push(a);
   }
-  let h = '<h6 style="margin-bottom:8px">Actions</h6>';
-  h += '<div class="grid">';
+  let h = '';
   for (const [cat, acts] of Object.entries(cats)) {
-    h += '<div class="card"><h2>' + esc(cat) + '</h2>';
-    for (const a of acts) {
-      h += '<div class="row" style="flex-direction:column;align-items:flex-start;gap:4px;padding:10px 0">';
-      h += '<div style="display:flex;justify-content:space-between;width:100%;align-items:center;gap:8px">';
-      h += '<strong style="font-size:13px">' + esc(a.label) + '</strong>';
-      const cls = 'action-btn' + (a.isDestructive ? ' destructive' : '');
-      const escaped = esc(a.name).replace(/'/g, "\\'");
-      h += '<button class="' + cls + '" onclick="runAction(\'' + escaped + '\',' + (a.isDestructive ? 'true' : 'false') + ')">';
-      h += a.isDestructive ? 'Run (!)' : 'Run';
-      h += '</button></div>';
-      if (a.description) h += '<span style="color:var(--color-neutral-600);font-size:12px">' + esc(a.description) + '</span>';
-      h += '</div>';
-    }
-    h += '</div>';
+    const destructiveCount = acts.filter(a => a.isDestructive).length;
+    h += '<div class="action-group"><div class="action-group-head"><h2>' + esc(titleCaseCategory(cat)) + '</h2>' +
+      '<span class="action-group-count">' + acts.length + ' action' + (acts.length === 1 ? '' : 's') +
+      ' · ' + destructiveCount + ' destructive</span></div>' + acts.map(actionRowHTML).join('') + '</div>';
   }
-  h += '</div>';
   el.innerHTML = h;
 }
 
-async function runAction(name, isDestructive) {
-  if (isDestructive && !confirm('This action is destructive. Proceed?')) return;
+function followInLogs(name) {
+  showTab('logs');
+  logFilter.query = name;
+  const input = document.getElementById('logs-search-input');
+  if (input) input.value = name;
+  renderLogsView();
+}
+
+async function runAction(name, isDestructive, consequence) {
+  if (isDestructive && !confirm(consequence || 'This action is destructive. Proceed?')) return;
   try {
     const r = await fetch('/api/actions', {
       method: 'POST',
