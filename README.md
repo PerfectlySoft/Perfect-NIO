@@ -12,9 +12,11 @@
 
 # PerfectNIO
 
-A Swift 6 HTTP(S) server library built on SwiftNIO. Routes are a composable, strongly-typed pipeline: each step accepts one type and produces another, terminating in an `HTTPOutput` that writes the response. The library is an updated resurrection of the original [Perfect-NIO](https://github.com/PerfectlySoft/Perfect-NIO) project, part of the broader Perfect-Resurrection effort.
+A Swift 6 HTTP(S) server library built on SwiftNIO. Routes are a composable, strongly-typed pipeline: each step accepts one type and produces another, terminating in an `HTTPOutput` that writes the response. This is the modernized rewrite target for the Perfect ecosystem's HTTP layer.
 
-**Ecosystem role:** PerfectNIO is the core HTTP/server layer for this resurrection effort — it is depended on directly by Perfect-Lasso (a Swift reimplementation of the Lasso language, still in active development and not yet production-ready, though extensively validated by running real, unmodified Lasso code from multiple production e-commerce sites against it), plus `FMTestApp` and `PerfectTemplate`. It is not a standalone demo library; changes here are load-bearing for that ongoing validation work. Logging is done via `import Logging` (apple/swift-log) directly — there is no dependency on Perfect-Logger.
+**Role:** PerfectNIO is the core HTTP/server layer here — depended on directly by `FMTestApp` and `PerfectTemplate`, and includes multi-tenant TLS, an admin console, and graceful restart support. Logging is done via `import Logging` (apple/swift-log) directly — there is no dependency on Perfect-Logger.
+
+The pre-Swift-6 version of this package is preserved on the [`legacy`](../../tree/legacy) branch.
 
 - [Quick start](#quick-start)
 - [Package.swift](#packageswift)
@@ -61,7 +63,7 @@ try await Server(routes: routes, port: 8080).withServer { boundPort in
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/taplin/Perfect-NIO.git", branch: "main"),
+    .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", branch: "main"),
 ],
 targets: [
     .target(
@@ -465,7 +467,7 @@ Beyond the single static `TLSConfiguration` shown above, `Sources/PerfectNIO` al
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/taplin/Perfect-NIO.git", branch: "main"),
+    .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", branch: "main"),
 ],
 targets: [
     .target(

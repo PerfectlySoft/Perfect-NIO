@@ -43,8 +43,8 @@ let package = Package(
         // e.g. Perfect-Lasso's LassoPerfectSMTP -> Perfect-SMTP, which pins `exact: "4.5.1"`.
         // Insecure.SHA1.hash(data:) (the only API this target uses) is stable across 3.x/4.x.
         .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0"..<"5.0.0"),
-        .package(url: "https://github.com/taplin/Perfect-CRUD.git", branch: "main"),
-        .package(url: "https://github.com/taplin/Perfect-MySQL.git", branch: "main"),
+        .package(url: "https://github.com/PerfectlySoft/Perfect-CRUD.git", branch: "main"),
+        .package(url: "https://github.com/PerfectlySoft/Perfect-MySQL.git", branch: "main"),
     ],
     targets: [
         czlibTarget,
