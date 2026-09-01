@@ -1,8 +1,6 @@
 //
-//  HTTPOutput.swift
+//  BytesOutput.swift
 //  PerfectNIO
-//
-//  Created by Kyle Jessup on 2018-11-19.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -20,27 +18,25 @@ import Foundation
 import NIO
 import NIOHTTP1
 
-/// Raw byte output
-public class BytesOutput: HTTPOutput {
-	private let head: HTTPHead?
+/// Raw byte output.
+public class BytesOutput: HTTPOutput, @unchecked Sendable {
+	private let storedHead: HTTPHead?
 	private var bodyBytes: [UInt8]?
-	public init(head: HTTPHead? = nil,
-				body: [UInt8]) {
+
+	public init(head: HTTPHead? = nil, body: [UInt8]) {
 		let headers = HTTPHeaders([("Content-Length", "\(body.count)")])
-		self.head = HTTPHead(headers: headers).merged(with: head)
+		storedHead = HTTPHead(headers: headers).merged(with: head)
 		bodyBytes = body
+		super.init()
 	}
-	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
-		return head
-	}
-	public override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
-		if let b = bodyBytes {
-			bodyBytes = nil
-			var buf = allocator.buffer(capacity: b.count)
-			buf.writeBytes(b)
-			promise.succeed(IOData.byteBuffer(buf))
-		} else {
-			promise.succeed(nil)
-		}
+
+	public override func head(request: HTTPRequestInfo) -> HTTPHead? { storedHead }
+
+	public override func nextChunk(allocator: ByteBufferAllocator) async throws -> ByteBuffer? {
+		guard let bytes = bodyBytes else { return nil }
+		bodyBytes = nil
+		var buf = allocator.buffer(capacity: bytes.count)
+		buf.writeBytes(bytes)
+		return buf
 	}
 }

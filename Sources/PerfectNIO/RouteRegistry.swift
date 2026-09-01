@@ -2,8 +2,6 @@
 //  RouteRegistry.swift
 //  PerfectNIO
 //
-//  Created by Kyle Jessup on 2018-10-23.
-//
 //===----------------------------------------------------------------------===//
 //
 // This source file is part of the Perfect.org open source project
@@ -19,7 +17,7 @@
 import NIO
 import NIOHTTP1
 
-/// An error occurring during process of building a set of routes.
+/// An error occurring while building a route set.
 public enum RouteError: Error, CustomStringConvertible {
 	case duplicatedRoutes([String])
 	public var description: String {
@@ -30,495 +28,329 @@ public enum RouteError: Error, CustomStringConvertible {
 	}
 }
 
-// Internal structure of a route set.
-// This is exposed to users only through struct `Routes`.
-struct RouteRegistry<InType, OutType>: CustomStringConvertible {
-	typealias ResolveFunc = (InType) throws -> OutType
-	typealias Tuple = (String,ResolveFunc)
-	let routes: [String:ResolveFunc]
-	public var description: String {
-		return routes.keys.sorted().joined(separator: "\n")
-	}
-	init(_ routes: [String:ResolveFunc]) {
-		self.routes = routes
-	}
-	init(checkedRoutes routes: [Tuple]) throws {
-		var check = Set<String>()
-		try routes.forEach {
-			let key = $0.0
-			guard !check.contains(key) else {
-				throw RouteError.duplicatedRoutes([key])
-			}
-			check.insert(key)
-		}
-		self.init(Dictionary(uniqueKeysWithValues: routes))
-	}
-	init(routes: [Tuple]) {
-		self.init(Dictionary(uniqueKeysWithValues: routes))
-	}
-	func append<NewOut>(_ registry: RouteRegistry<OutType, NewOut>) -> RouteRegistry<InType, NewOut> {
-		let a = routes.flatMap {
-			(t: Tuple) -> [RouteRegistry<InType, NewOut>.Tuple] in
-			let (itemPath, itemFnc) = t
-			return registry.routes.map {
-				(t: RouteRegistry<OutType, NewOut>.Tuple) -> RouteRegistry<InType, NewOut>.Tuple in
-				let (subPath, subFnc) = t
-				let (meth, path) = subPath.splitMethod
-				let newPath = nil == meth ?
-					itemPath.appending(component: path) :
-					meth!.name + "://" + itemPath.splitMethod.1.appending(component: path)
-				return (newPath, { try subFnc(itemFnc($0)) })
-			}
-		}
-		return .init(routes: a)
-	}
-	func validate() throws {
-		let paths = routes.map { $0.0 }.sorted()
-		var dups = Set<String>()
-		var last: String?
-		paths.forEach {
-			s in
-			if s == last {
-				dups.insert(s)
-			}
-			last = s
-		}
-		guard dups.isEmpty else {
-			throw RouteError.duplicatedRoutes(Array(dups))
-		}
-	}
-}
-
-// The value used in all route Futures.
-struct RouteValueBox<ValueType> {
-	let state: HandlerState
-	let value: ValueType
-	init(_ state: HandlerState, _ value: ValueType) {
-		self.state = state
-		self.value = value
-	}
-}
-
-typealias Future = EventLoopFuture
-
-/// Main routes object.
-/// Created by calling `root()` or by chaining a function from an existing route.
-@dynamicMemberLookup
-public struct Routes<InType, OutType> {
-	typealias Registry = RouteRegistry<Future<RouteValueBox<InType>>, Future<RouteValueBox<OutType>>>
-	let registry: Registry
-	init(_ registry: Registry) {
-		self.registry = registry
-	}
-	func applyPaths(_ call: (String) -> String) -> Routes {
-		return .init(.init(routes: registry.routes.map { (call($0.key), $0.value) }))
-	}
-	func applyFuncs<NewOut>(_ call: @escaping (Future<RouteValueBox<OutType>>) -> Future<RouteValueBox<NewOut>>) -> Routes<InType, NewOut> {
-		return .init(.init(routes: registry.routes.map {
-			let (path, fnc) = $0
-			return (path, { call(try fnc($0)) })
-		}))
-	}
-	func apply<NewOut>(paths: (String) -> String, funcs call: @escaping (Future<RouteValueBox<OutType>>) -> Future<RouteValueBox<NewOut>>) -> Routes<InType, NewOut> {
-		return .init(.init(routes: registry.routes.map {
-			let (path, fnc) = $0
-			return (paths(path), { call(try fnc($0)) })
-		}))
-	}
-}
-
-/// Create a root route accepting/returning the HTTPRequest.
-/// `root()`
-public func root() -> Routes<HTTPRequest, HTTPRequest> {
-	return .init(.init(["/":{$0}]))
-}
-
-/// Create a root route accepting the HTTPRequest and returning some new value.
-/// `root { r in … }`
-public func root<NewOut>(_ call: @escaping (HTTPRequest) throws -> NewOut) -> Routes<HTTPRequest, NewOut> {
-	return .init(.init(["/":{$0.flatMapThrowing{RouteValueBox($0.state, try call($0.value))}}]))
-}
-
-/// Create a root route returning some new value.
-/// `root { ... }`
-public func root<NewOut>(_ call: @escaping () throws -> NewOut) -> Routes<HTTPRequest, NewOut> {
-	return .init(.init(["/":{$0.flatMapThrowing{RouteValueBox($0.state, try call())}}]))
-}
-
-/// Create a root route accepting and returning some new value.
-/// `root("/", Foo.self)`
-public func root<NewOut>(path: String, _ type: NewOut.Type) -> Routes<NewOut, NewOut> {
-	return .init(.init([path:{$0}]))
-}
-
-public extension Routes {
-	/// Add a function mapping the input to the output.
-	func map<NewOut>(_ call: @escaping (OutType) throws -> NewOut) -> Routes<InType, NewOut> {
-		return applyFuncs {
-			return $0.flatMapThrowing {
-				return RouteValueBox($0.state, try call($0.value))
-			}
-		}
-	}
-	/// Add a function mapping the input to the output.
-	func map<NewOut>(_ call: @escaping () throws -> NewOut) -> Routes<InType, NewOut> {
-		return applyFuncs {
-			return $0.flatMapThrowing {
-				return RouteValueBox($0.state, try call())
-			}
-		}
-	}
-	/// Map the values of a Collection to a new Array.
-	func map<NewOut>(_ call: @escaping (OutType.Element) throws -> NewOut) -> Routes<InType, Array<NewOut>> where OutType: Collection {
-		return applyFuncs {
-			return $0.flatMapThrowing {
-				return RouteValueBox($0.state, try $0.value.map(call))
-			}
-		}
-	}
-}
-
-public extension Routes {
-	/// Create and return a new route path.
-	/// The new route accepts and returns the same types as the existing set.
-	/// This adds an additional path component to the route set.
-	subscript(dynamicMember name: String) -> Routes {
-		return path(name)
-	}
-	/// Create and return a new route path.
-	/// The new route accepts the input value and returns a new value.
-	/// This adds an additional path component to the route set.
-	subscript<NewOut>(dynamicMember name: String) -> (@escaping (OutType) throws -> NewOut) -> Routes<InType, NewOut> {
-		return {self.path(name, $0)}
-	}
-	/// Create and return a new route path.
-	/// The new route accepts nothing and returns a new value.
-	/// This adds an additional path component to the route set.
-	subscript<NewOut>(dynamicMember name: String) -> (@escaping () throws -> NewOut) -> Routes<InType, NewOut> {
-		return { call in self.path(name, { _ in return try call()})}
-	}
-}
-
-public extension Routes {
-	/// Create and return a new route path.
-	/// The new route accepts and returns the same types as the existing set.
-	/// This adds an additional path component to the route set.
-	func path(_ name: String) -> Routes {
-		return apply(
-			paths: {$0.appending(component: name)},
-			funcs: {
-				$0.flatMapThrowing {
-					$0.state.advanceComponent()
-					return $0
-				}
-			}
-		)
-	}
-	/// Create and return a new route path.
-	/// The new route accepts the input value and returns a new value.
-	/// This adds an additional path component to the route set.
-	func path<NewOut>(_ name: String, _ call: @escaping (OutType) throws -> NewOut) -> Routes<InType, NewOut> {
-		return apply(
-			paths: {$0.appending(component: name)},
-			funcs: {
-				$0.flatMapThrowing {
-					$0.state.advanceComponent()
-					return RouteValueBox($0.state, try call($0.value))
-				}
-			}
-		)
-	}
-	/// Create and return a new route path.
-	/// The new route accepts nothing and returns a new value.
-	/// This adds an additional path component to the route set.
-	func path<NewOut>(_ name: String, _ call: @escaping () throws -> NewOut) -> Routes<InType, NewOut> {
-		return apply(
-			paths: {$0.appending(component: name)},
-			funcs: {
-				$0.flatMapThrowing {
-					$0.state.advanceComponent()
-					return RouteValueBox($0.state, try call())
-				}
-			}
-		)
-	}
-}
-
-public extension Routes {
-	/// Adds the indicated file extension to the route set.
-	func ext(_ ext: String) -> Routes {
-		let ext = ext.ext
-		return applyPaths { $0 + ext }
-	}
-	/// Adds the indicated file extension to the route set
-	/// and sets the response's content type.
-	func ext(_ ext: String,
-			 contentType: String) -> Routes {
-		let ext = ext.ext
-		return apply(
-			paths: {$0 + ext},
-			funcs: {
-				$0.flatMapThrowing {
-					$0.state.responseHead.headers.add(name: "content-type", value: contentType)
-					return $0
-				}
-			}
-		)
-	}
-	/// Adds the indicated file extension to the route set.
-	/// Optionally set the response's content type.
-	/// The given function accepts the input value and returns a new value.
-	func ext<NewOut>(_ ext: String,
-					  contentType: String? = nil,
-					  _ call: @escaping (OutType) throws -> NewOut) -> Routes<InType, NewOut> {
-		let ext = ext.ext
-		return apply(
-			paths: {$0 + ext},
-			funcs: {
-				$0.flatMapThrowing {
-					if let c = contentType {
-						$0.state.responseHead.headers.add(name: "content-type", value: c)
-					}
-					return RouteValueBox($0.state, try call($0.value))
-				}
-			}
-		)
-	}
-}
-
-public extension Routes {
-	/// Adds a wildcard path component to the route set.
-	/// The given function accepts the input value and the value for that wildcard path component, as given by the HTTP client,
-	/// and returns a new value.
-	func wild<NewOut>(_ call: @escaping (OutType, String) throws -> NewOut) -> Routes<InType, NewOut> {
-		return apply(
-			paths: {$0.appending(component: "*")},
-			funcs: {
-				$0.flatMapThrowing {
-					let c = $0.state.currentComponent ?? "-error-"
-					$0.state.advanceComponent()
-					return RouteValueBox($0.state, try call($0.value, c))
-				}
-			}
-		)
-	}
-	/// Adds a wildcard path component to the route set.
-	/// Gives the wildcard path component a variable name and the path component value is added as a request urlVariable.
-	func wild(name: String) -> Routes {
-		return apply(
-			paths: {$0.appending(component: "*")},
-			funcs: {
-				$0.flatMapThrowing {
-					$0.state.request.uriVariables[name] = $0.state.currentComponent ?? "-error-"
-					$0.state.advanceComponent()
-					return $0
-				}
-			}
-		)
-	}
-	/// Adds a trailing-wildcard to the route set.
-	/// The given function accepts the input value and the value for the remaining path components, as given by the HTTP client,
-	/// and returns a new value.
-	func trailing<NewOut>(_ call: @escaping (OutType, String) throws -> NewOut) -> Routes<InType, NewOut> {
-		return apply(
-			paths: {$0.appending(component: "**")},
-			funcs: {
-				$0.flatMapThrowing {
-					let c = $0.state.trailingComponents ?? ""
-					$0.state.advanceComponent()
-					return RouteValueBox($0.state, try call($0.value, c))
-				}
-			}
-		)
-	}
-}
-
-public extension Routes {
-	/// Adds the current HTTPRequest as a parameter to the function.
-	func request<NewOut>(_ call: @escaping (OutType, HTTPRequest) throws -> NewOut) -> Routes<InType, NewOut> {
-		return applyFuncs {
-			$0.flatMapThrowing {
-				return RouteValueBox($0.state, try call($0.value, $0.state.request))
-			}
-		}
-	}
-	/// Reads the client content body and delivers it to the provided function.
-	func readBody<NewOut>(_ call: @escaping (OutType, HTTPRequestContentType) throws -> NewOut) -> Routes<InType, NewOut> {
-		return applyFuncs {
-			$0.flatMap {
-				box in
-				return box.state.request.readContent().flatMapThrowing {
-					return RouteValueBox(box.state, try call(box.value, $0))
-				}
-			}
-		}
-	}
-}
-
-public extension Routes {
-	/// The caller can inspect the given input value and choose to return an HTTP error code.
-	/// If any code outside of 200..<300 is return the request is aborted.
-	func statusCheck(_ handler: @escaping (OutType) throws -> HTTPResponseStatus) -> Routes<InType, OutType> {
-		return applyFuncs {
-			$0.flatMapThrowing {
-				box in
-				let status = try handler(box.value)
-				box.state.responseHead.status = status
-				switch status.code {
-				case 200..<300:
-					return box
-				default:
-					throw TerminationType.criteriaFailed
-				}
-			}
-		}
-	}
-	/// The caller can choose to return an HTTP error code.
-	/// If any code outside of 200..<300 is return the request is aborted.
-	func statusCheck(_ handler: @escaping () throws -> HTTPResponseStatus) -> Routes<InType, OutType> {
-		return statusCheck { _ in try handler() }
-	}
-}
-
-public extension Routes {
-	/// Read the client content body and then attempt to decode it as the indicated `Decodable` type.
-	/// Both the original input value and the newly decoded object are delivered to the provided function.
-	func decode<Type: Decodable, NewOut>(_ type: Type.Type,
-										 _ handler: @escaping (OutType, Type) throws -> NewOut) -> Routes<InType, NewOut> {
-		return readBody { ($0, $1) }.request {
-			return try handler($0.0, try $1.decode(Type.self, content: $0.1))
-		}
-	}
-	/// Read the client content body and then attempt to decode it as the indicated `Decodable` type.
-	/// The newly decoded object is delivered to the provided function.
-	func decode<Type: Decodable, NewOut>(_ type: Type.Type,
-										 _ handler: @escaping (Type) throws -> NewOut) -> Routes<InType, NewOut> {
-		return decode(type) { try handler($1) }
-	}
-	/// Read the client content body and then attempt to decode it as the indicated `Decodable` type.
-	/// The newly decoded object becomes the route set's new output value.
-	func decode<Type: Decodable>(_ type: Type.Type) -> Routes<InType, Type> {
-		return decode(type) { $1 }
-	}
-}
-/* broke with swift 5.2
-@_functionBuilder
+@resultBuilder
 public struct RouteBuilder<InType, OutType> {
 	public typealias RouteType = Routes<InType, OutType>
-	
-	public static func buildExpression(_ expression: RouteType) -> [RouteType] {
-		return [expression]
+	// buildExpression wraps each route in an array (the component type).
+	public static func buildExpression(_ expression: RouteType) -> [RouteType] { [expression] }
+	// buildBlock receives [RouteType] components (one per expression) and joins them.
+	public static func buildBlock(_ children: [RouteType]...) -> [RouteType] { Array(children.joined()) }
+	public static func buildBlock() -> [RouteType] { [] }
+}
+
+/// Main routes object. Created by calling `root()` or by chaining a builder method.
+@dynamicMemberLookup
+public struct Routes<InType, OutType> {
+	typealias Handler = @Sendable (RouteContext, InType) async throws -> (RouteContext, OutType)
+	var routes: [String: Handler]
+
+	init(_ routes: [String: Handler]) {
+		self.routes = routes
 	}
-	
-	public static func buildBlock(_ children: RouteType...) -> [RouteType] {
-		return children
+
+	func applyPaths(_ call: @escaping (String) -> String) -> Routes {
+		.init(Dictionary(routes.map { (call($0.key), $0.value) }, uniquingKeysWith: { $1 }))
+	}
+
+	func applyFuncs<NewOut>(
+		_ call: @Sendable @escaping (RouteContext, OutType) async throws -> (RouteContext, NewOut)
+	) -> Routes<InType, NewOut> {
+		.init(Dictionary(routes.map { key, existing in
+			let h: Routes<InType, NewOut>.Handler = { ctx, input in
+				let (midCtx, midOut) = try await existing(ctx, input)
+				return try await call(midCtx, midOut)
+			}
+			return (key, h)
+		}, uniquingKeysWith: { $1 }))
+	}
+
+	func apply<NewOut>(
+		paths: @escaping (String) -> String,
+		funcs call: @Sendable @escaping (RouteContext, OutType) async throws -> (RouteContext, NewOut)
+	) -> Routes<InType, NewOut> {
+		.init(Dictionary(routes.map { key, existing in
+			let h: Routes<InType, NewOut>.Handler = { ctx, input in
+				let (midCtx, midOut) = try await existing(ctx, input)
+				return try await call(midCtx, midOut)
+			}
+			return (paths(key), h)
+		}, uniquingKeysWith: { $1 }))
 	}
 }
 
-/// These extensions append new route sets to an existing set.
-public extension Routes {
-	/// Append new routes to the set given a new output type.
-	/// At times, Swift's type inference can fail to discern what the programmer intends when calling functions like this.
-	/// Calling the second version of this method, the one accepting a `type: NewOut.Type` as the first parameter,
-	/// can often clarify your intentions to the compiler. If you experience a compilation error with this function, try the other.
-	func dir<NewOut>(@RouteBuilder<OutType, NewOut> makeChildren: (Routes<OutType, OutType>) throws -> [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
-		return try dir(makeChildren(root(path: "/", OutType.self)))
-	}
-	
-	/// Append new routes to the set given a new output type.
-	/// The first `type` argument to this function serves to help type inference.
-	func dir<NewOut>(type: NewOut.Type, @RouteBuilder<OutType, NewOut> makeChildren: (Routes<OutType, OutType>) throws -> [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
-		return try dir(makeChildren(root(path: "/", OutType.self)))
-	}
-	
-	/// Append new routes to the set given a new output type.
-	/// At times, Swift's type inference can fail to discern what the programmer intends when calling functions like this.
-	/// Calling the second version of this method, the one accepting a `type: NewOut.Type` as the first parameter,
-	/// can often clarify your intentions to the compiler. If you experience a compilation error with this function, try the other.
-	func dir<NewOut>(@RouteBuilder<OutType, NewOut> makeChildren: (Routes<OutType, OutType>) throws -> Routes<OutType, NewOut>) throws -> Routes<InType, NewOut> {
-		return try dir([makeChildren(root(path: "/", OutType.self))])
-	}
-	
-	/// Append new routes to the set given a new output type.
-	/// The first `type` argument to this function serves to help type inference.
-	func dir<NewOut>(type: NewOut.Type, @RouteBuilder<OutType, NewOut> makeChildren: (Routes<OutType, OutType>) throws -> Routes<OutType, NewOut>) throws -> Routes<InType, NewOut> {
-		return try dir([makeChildren(root(path: "/", OutType.self))])
-	}
+// Safe: the only stored property is `routes: [String: Handler]`, and `Handler` is a
+// `@Sendable` function type — so a `Routes` value is just Sendable closures + String keys,
+// regardless of `InType`/`OutType` (which appear only in the closure signatures).
+extension Routes: @unchecked Sendable {}
+
+// MARK: - Root constructors
+
+/// Create a root route that passes the HTTPRequest through unchanged.
+public func root() -> Routes<HTTPRequest, HTTPRequest> {
+	.init(["/": { ctx, req in (ctx, req) }])
 }
 
-public func root<NewOut>(@RouteBuilder<HTTPRequest, NewOut> makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
-	return try root().dir(makeChildren(root()))
+/// Create a root route that accepts the HTTPRequest and maps it to a new value.
+public func root<NewOut>(_ call: @Sendable @escaping (HTTPRequest) async throws -> NewOut) -> Routes<HTTPRequest, NewOut> {
+	.init(["/": { ctx, req in (ctx, try await call(req)) }])
 }
 
-public func root<NewOut>(type: NewOut.Type, @RouteBuilder<HTTPRequest, NewOut> makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
-	return try root().dir(makeChildren(root()))
-}
-*/
-
-// non-function builder versions
-/// These extensions append new route sets to an existing set.
-public extension Routes {
-	/// Append new routes to the set given a new output type.
-	/// At times, Swift's type inference can fail to discern what the programmer intends when calling functions like this.
-	/// Calling the second version of this method, the one accepting a `type: NewOut.Type` as the first parameter,
-	/// can often clarify your intentions to the compiler. If you experience a compilation error with this function, try the other.
-	func dir<NewOut>(makeChildren: (Routes<OutType, OutType>) throws -> [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
-		return try dir(makeChildren(root(path: "/", OutType.self)))
-	}
-	
-	/// Append new routes to the set given a new output type.
-	/// The first `type` argument to this function serves to help type inference.
-	func dir<NewOut>(type: NewOut.Type, makeChildren: (Routes<OutType, OutType>) throws -> [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
-		return try dir(makeChildren(root(path: "/", OutType.self)))
-	}
-	
-	/// Append new routes to the set given a new output type.
-	/// At times, Swift's type inference can fail to discern what the programmer intends when calling functions like this.
-	/// Calling the second version of this method, the one accepting a `type: NewOut.Type` as the first parameter,
-	/// can often clarify your intentions to the compiler. If you experience a compilation error with this function, try the other.
-	func dir<NewOut>(makeChildren: (Routes<OutType, OutType>) throws -> Routes<OutType, NewOut>) throws -> Routes<InType, NewOut> {
-		return try dir([makeChildren(root(path: "/", OutType.self))])
-	}
-	
-	/// Append new routes to the set given a new output type.
-	/// The first `type` argument to this function serves to help type inference.
-	func dir<NewOut>(type: NewOut.Type, makeChildren: (Routes<OutType, OutType>) throws -> Routes<OutType, NewOut>) throws -> Routes<InType, NewOut> {
-		return try dir([makeChildren(root(path: "/", OutType.self))])
-	}
+/// Create a root route that ignores the HTTPRequest and produces a new value.
+public func root<NewOut>(_ call: @Sendable @escaping () async throws -> NewOut) -> Routes<HTTPRequest, NewOut> {
+	.init(["/": { ctx, _ in (ctx, try await call()) }])
 }
 
-public func root<NewOut>(makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
-	return try root().dir(makeChildren(root()))
+/// Create a root route for use inside `dir` chains.
+public func root<NewOut>(path: String, _ type: NewOut.Type) -> Routes<NewOut, NewOut> {
+	.init([path: { ctx, input in (ctx, input) }])
 }
 
-public func root<NewOut>(type: NewOut.Type, makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
-	return try root().dir(makeChildren(root()))
-}
-// --
-
-/// These extensions append new route sets to an existing set.
-public extension Routes {
-	/// Append new routes to this set given an array.
-	func dir<NewOut>(_ registries: [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
-		let reg = try RouteRegistry(checkedRoutes: registries.flatMap { $0.registry.routes })
-		return .init(registry.append(reg))
-	}
-	/// Append a new route set to this set.
-	func dir<NewOut>(_ registry: Routes<OutType, NewOut>, _ registries: Routes<OutType, NewOut>...) throws -> Routes<InType, NewOut> {
-		return try dir([registry] + registries)
-	}
-}
+// MARK: - map
 
 public extension Routes {
-	/// If the output type is an `Optional`, this function permits it to be safely unwraped.
-	/// If it can not be unwrapped the request is terminated.
-	/// The provided function is called with the unwrapped value.
-	func unwrap<U, NewOut>(_ call: @escaping (U) throws -> NewOut) -> Routes<InType, NewOut> where OutType == Optional<U> {
-		return map {
+	func map<NewOut>(_ call: @Sendable @escaping (OutType) async throws -> NewOut) -> Routes<InType, NewOut> {
+		applyFuncs { ctx, output in (ctx, try await call(output)) }
+	}
+	func map<NewOut>(_ call: @Sendable @escaping () async throws -> NewOut) -> Routes<InType, NewOut> {
+		applyFuncs { ctx, _ in (ctx, try await call()) }
+	}
+	func map<NewOut>(_ call: @Sendable @escaping (OutType.Element) async throws -> NewOut) -> Routes<InType, [NewOut]> where OutType: Collection {
+		applyFuncs { ctx, output in
+			var results: [NewOut] = []
+			results.reserveCapacity(output.underestimatedCount)
+			for element in output {
+				results.append(try await call(element))
+			}
+			return (ctx, results)
+		}
+	}
+}
+
+// MARK: - @dynamicMemberLookup
+
+public extension Routes {
+	subscript(dynamicMember name: String) -> Routes {
+		path(name)
+	}
+	subscript<NewOut>(dynamicMember name: String) -> (@Sendable @escaping (OutType) async throws -> NewOut) -> Routes<InType, NewOut> {
+		{ self.path(name, $0) }
+	}
+	subscript<NewOut>(dynamicMember name: String) -> (@Sendable @escaping () async throws -> NewOut) -> Routes<InType, NewOut> {
+		{ call in self.path(name, { _ in try await call() }) }
+	}
+}
+
+// MARK: - path
+
+public extension Routes {
+	func path(_ name: String) -> Routes {
+		apply(paths: { $0.appending(component: name) }) { ctx, output in
+			var newCtx = ctx; newCtx.advanceComponent()
+			return (newCtx, output)
+		}
+	}
+	func path<NewOut>(_ name: String, _ call: @Sendable @escaping (OutType) async throws -> NewOut) -> Routes<InType, NewOut> {
+		apply(paths: { $0.appending(component: name) }) { ctx, output in
+			var newCtx = ctx; newCtx.advanceComponent()
+			return (newCtx, try await call(output))
+		}
+	}
+	func path<NewOut>(_ name: String, _ call: @Sendable @escaping () async throws -> NewOut) -> Routes<InType, NewOut> {
+		apply(paths: { $0.appending(component: name) }) { ctx, output in
+			var newCtx = ctx; newCtx.advanceComponent()
+			return (newCtx, try await call())
+		}
+	}
+}
+
+// MARK: - ext
+
+public extension Routes {
+	func ext(_ ext: String) -> Routes {
+		applyPaths { $0 + ext.ext }
+	}
+	func ext(_ ext: String, contentType: String) -> Routes {
+		apply(paths: { $0 + ext.ext }) { ctx, output in
+			var newCtx = ctx
+			newCtx.responseHeaders.add(name: "content-type", value: contentType)
+			return (newCtx, output)
+		}
+	}
+	func ext<NewOut>(_ ext: String, contentType: String? = nil, _ call: @Sendable @escaping (OutType) async throws -> NewOut) -> Routes<InType, NewOut> {
+		apply(paths: { $0 + ext.ext }) { ctx, output in
+			var newCtx = ctx
+			if let c = contentType { newCtx.responseHeaders.add(name: "content-type", value: c) }
+			return (newCtx, try await call(output))
+		}
+	}
+}
+
+// MARK: - wild / trailing
+
+public extension Routes {
+	func wild<NewOut>(_ call: @Sendable @escaping (OutType, String) async throws -> NewOut) -> Routes<InType, NewOut> {
+		apply(paths: { $0.appending(component: "*") }) { ctx, output in
+			let component = ctx.currentComponent ?? "-error-"
+			var newCtx = ctx; newCtx.advanceComponent()
+			return (newCtx, try await call(output, component))
+		}
+	}
+	func wild(name: String) -> Routes {
+		apply(paths: { $0.appending(component: "*") }) { ctx, output in
+			var newCtx = ctx
+			let component = ctx.currentComponent ?? "-error-"
+			newCtx.uriVariables[name] = component
+			ctx.request.uriVariables[name] = component
+			newCtx.advanceComponent()
+			return (newCtx, output)
+		}
+	}
+	func trailing<NewOut>(_ call: @Sendable @escaping (OutType, String) async throws -> NewOut) -> Routes<InType, NewOut> {
+		apply(paths: { $0.appending(component: "**") }) { ctx, output in
+			let trailing = ctx.trailingComponents
+			var newCtx = ctx; newCtx.advanceComponent()
+			return (newCtx, try await call(output, trailing))
+		}
+	}
+}
+
+// MARK: - request / readBody
+
+public extension Routes {
+	func request<NewOut>(_ call: @Sendable @escaping (OutType, any HTTPRequest) async throws -> NewOut) -> Routes<InType, NewOut> {
+		applyFuncs { ctx, output in (ctx, try await call(output, ctx.request)) }
+	}
+	func readBody<NewOut>(_ call: @Sendable @escaping (OutType, HTTPRequestContentType) async throws -> NewOut) -> Routes<InType, NewOut> {
+		applyFuncs { ctx, output in
+			var newCtx = ctx
+			let content: HTTPRequestContentType
+			if let cached = ctx.cachedContent {
+				content = cached
+			} else {
+				content = try await ctx.request.readContent()
+				newCtx.cachedContent = content
+			}
+			return (newCtx, try await call(output, content))
+		}
+	}
+}
+
+// MARK: - statusCheck
+
+public extension Routes {
+	func statusCheck(_ handler: @Sendable @escaping (OutType) async throws -> HTTPResponseStatus) -> Routes<InType, OutType> {
+		applyFuncs { ctx, output in
+			let status = try await handler(output)
+			var newCtx = ctx
+			newCtx.responseStatus = status
+			switch status.code {
+			case 200..<300:
+				return (newCtx, output)
+			default:
+				throw TerminationType.criteriaFailed(status)
+			}
+		}
+	}
+	func statusCheck(_ handler: @Sendable @escaping () async throws -> HTTPResponseStatus) -> Routes<InType, OutType> {
+		statusCheck { _ in try await handler() }
+	}
+}
+
+// MARK: - decode
+
+public extension Routes {
+	func decode<Type: Decodable, NewOut>(_ type: Type.Type,
+	                                    _ handler: @Sendable @escaping (OutType, Type) async throws -> NewOut) -> Routes<InType, NewOut> {
+		applyFuncs { ctx, output in
+			var newCtx = ctx
+			let content: HTTPRequestContentType
+			if let cached = ctx.cachedContent {
+				content = cached
+			} else {
+				content = try await ctx.request.readContent()
+				newCtx.cachedContent = content
+			}
+			let decoded = try newCtx.request.decode(type, content: content)
+			return (newCtx, try await handler(output, decoded))
+		}
+	}
+	func decode<Type: Decodable, NewOut>(_ type: Type.Type,
+	                                    _ handler: @Sendable @escaping (Type) async throws -> NewOut) -> Routes<InType, NewOut> {
+		decode(type) { try await handler($1) }
+	}
+	func decode<Type: Decodable>(_ type: Type.Type) -> Routes<InType, Type> {
+		decode(type) { $1 }
+	}
+}
+
+// MARK: - unwrap
+
+public extension Routes {
+	func unwrap<U, NewOut>(_ call: @Sendable @escaping (U) async throws -> NewOut) -> Routes<InType, NewOut> where OutType == Optional<U> {
+		map {
 			guard let unwrapped = $0 else {
 				throw ErrorOutput(status: .internalServerError, description: "Assertion failed")
 			}
-			return try call(unwrapped)
+			return try await call(unwrapped)
 		}
 	}
+}
+
+// MARK: - dir (compose parent routes with child routes)
+
+public extension Routes {
+	func dir<NewOut>(_ registries: [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
+		var composed: [String: Routes<InType, NewOut>.Handler] = [:]
+		var seen = Set<String>()
+		var dups: [String] = []
+
+		for (parentPath, parentHandler) in routes {
+			for childRoutes in registries {
+				for (childPath, childHandler) in childRoutes.routes {
+					let (meth, subPath) = childPath.splitMethod
+					let newPath: String
+					if let meth = meth {
+						newPath = meth.name + "://" + parentPath.splitMethod.1.appending(component: subPath)
+					} else {
+						newPath = parentPath.appending(component: subPath)
+					}
+					if !seen.insert(newPath).inserted { dups.append(newPath) }
+					let p = parentHandler
+					let c = childHandler
+					composed[newPath] = { ctx, input in
+						let (midCtx, midOut) = try await p(ctx, input)
+						return try await c(midCtx, midOut)
+					}
+				}
+			}
+		}
+		guard dups.isEmpty else { throw RouteError.duplicatedRoutes(dups) }
+		return .init(composed)
+	}
+
+	func dir<NewOut>(_ registry: Routes<OutType, NewOut>, _ rest: Routes<OutType, NewOut>...) throws -> Routes<InType, NewOut> {
+		try dir([registry] + rest)
+	}
+
+	func dir<NewOut>(@RouteBuilder<OutType, NewOut> makeChildren: (Routes<OutType, OutType>) throws -> [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
+		try dir(makeChildren(root(path: "/", OutType.self)))
+	}
+	func dir<NewOut>(type: NewOut.Type, @RouteBuilder<OutType, NewOut> makeChildren: (Routes<OutType, OutType>) throws -> [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
+		try dir(makeChildren(root(path: "/", OutType.self)))
+	}
+	func dir<NewOut>(@RouteBuilder<OutType, NewOut> makeChildren: (Routes<OutType, OutType>) throws -> Routes<OutType, NewOut>) throws -> Routes<InType, NewOut> {
+		try dir([makeChildren(root(path: "/", OutType.self))])
+	}
+	func dir<NewOut>(type: NewOut.Type, @RouteBuilder<OutType, NewOut> makeChildren: (Routes<OutType, OutType>) throws -> Routes<OutType, NewOut>) throws -> Routes<InType, NewOut> {
+		try dir([makeChildren(root(path: "/", OutType.self))])
+	}
+}
+
+// MARK: - top-level dir constructors
+
+public func root<NewOut>(@RouteBuilder<HTTPRequest, NewOut> makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
+	try root().dir(makeChildren(root()))
+}
+public func root<NewOut>(type: NewOut.Type, @RouteBuilder<HTTPRequest, NewOut> makeChildren: (Routes<HTTPRequest, HTTPRequest>) throws -> [Routes<HTTPRequest, NewOut>]) throws -> Routes<HTTPRequest, NewOut> {
+	try root().dir(makeChildren(root()))
 }

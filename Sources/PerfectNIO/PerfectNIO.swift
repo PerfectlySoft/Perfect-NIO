@@ -90,6 +90,6 @@ extension String {
 
 public enum TerminationType: Error {
 	case error(ErrorOutput)
-	case criteriaFailed
+	case criteriaFailed(HTTPResponseStatus)
 	case internalError
 }

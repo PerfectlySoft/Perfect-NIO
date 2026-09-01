@@ -8,7 +8,7 @@
 import Foundation
 import NIOHTTP1
 
-public struct HTTPRequestOptions: OptionSet {
+public struct HTTPRequestOptions: OptionSet, Sendable {
 	public typealias RawValue = UInt8
 	public let rawValue: RawValue
 	public init(rawValue: RawValue) {

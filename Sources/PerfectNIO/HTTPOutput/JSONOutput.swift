@@ -20,7 +20,7 @@ import Foundation
 import NIOHTTP1
 
 /// JSON output from an Encodable
-public class JSONOutput<E: Encodable>: BytesOutput {
+public class JSONOutput<E: Encodable>: BytesOutput, @unchecked Sendable {
 	public init(_ encodable: E, head: HTTPHead? = nil) throws {
 		let body = Array(try JSONEncoder().encode(encodable))
 		let useHeaders = HTTPHeaders([("content-type", "application/json")])

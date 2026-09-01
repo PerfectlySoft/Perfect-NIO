@@ -71,3 +71,6 @@ fastlane/test_output
 *.xcodeproj/
 Packages/
 Package.resolved
+build/
+.swiftpm/
+.swiftpm/

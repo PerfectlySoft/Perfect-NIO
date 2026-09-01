@@ -20,7 +20,7 @@ import Foundation
 import NIOHTTP1
 
 /// Plain text output from a CustomStringConvertible
-public class TextOutput<C: CustomStringConvertible>: BytesOutput {
+public class TextOutput<C: CustomStringConvertible>: BytesOutput, @unchecked Sendable {
 	public init(_ c: C, status: HTTPResponseStatus? = nil, headers: [(String, String)] = []) {
 		let body = Array("\(c)".utf8)
 		let useHeaders = HTTPHeaders([("content-type", "text/plain")] + headers)

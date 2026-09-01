@@ -18,9 +18,6 @@
 
 import Foundation
 import NIOHTTP1
-import PerfectLib
-import PerfectMIME
-import struct Foundation.UUID
 
 public struct FileUpload: Codable {
 	public let contentType: MIMEType

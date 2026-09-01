@@ -73,12 +73,15 @@ public struct QueryDecoder {
 	func triple2Tuple(_ triple: RangeTriple) -> (String, ArraySlice<UInt8>) {
 		let nameSlice: ArraySlice<UInt8>
 		let valueSlice: ArraySlice<UInt8>
-		if triple.middle == collection.endIndex {
+		if triple.middle > collection.startIndex && collection[triple.middle - 1] == eqChar {
+			nameSlice = collection[triple.start..<triple.middle-1]
+			valueSlice = collection[triple.middle..<triple.end]
+		} else if triple.middle == collection.endIndex {
 			nameSlice = collection[triple.start...]
 			valueSlice = ArraySlice<UInt8>(repeating: 0, count: 0)
 		} else {
-			nameSlice = collection[triple.start..<triple.middle-1]
-			valueSlice = collection[triple.middle..<triple.end]
+			nameSlice = collection[triple.start..<triple.middle]
+			valueSlice = ArraySlice<UInt8>(repeating: 0, count: 0)
 		}
 		return (String(bytes: nameSlice, encoding: .utf8) ?? "", valueSlice)
 	}
@@ -135,12 +138,12 @@ public struct QueryDecoder {
 			ranges.append(triple)
 			do {
 				var nameSlice: ArraySlice<UInt8>
-				if triple.middle == collection.endIndex {
-					nameSlice = collection[triple.start...]
-				} else if collection[triple.middle - 1] != eqChar {
-					nameSlice = collection[triple.start..<triple.middle]
-				} else {
+				if triple.middle > collection.startIndex && collection[triple.middle - 1] == eqChar {
 					nameSlice = collection[triple.start..<triple.middle-1]
+				} else if triple.middle == collection.endIndex {
+					nameSlice = collection[triple.start...]
+				} else {
+					nameSlice = collection[triple.start..<triple.middle]
 				}
 				if let name = String(bytes: nameSlice, encoding: .utf8) {
 					if let fnd = lookup[name] {

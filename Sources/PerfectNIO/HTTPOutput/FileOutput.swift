@@ -1,8 +1,6 @@
 //
-//  HTTPOutput.swift
+//  FileOutput.swift
 //  PerfectNIO
-//
-//  Created by Kyle Jessup on 2018-11-19.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -17,48 +15,30 @@
 //
 
 import Foundation
+import Crypto
 import NIO
 import NIOHTTP1
-import PerfectLib
-import PerfectMIME
-import CNIOSHA1
 
 extension String.UTF8View {
 	var sha1: [UInt8] {
-		let bytes = UnsafeMutablePointer<Int8>.allocate(capacity:  Int(SHA1_RESULTLEN))
-		defer { bytes.deallocate() }
-		let src = Array<UInt8>(self)
-		var ctx = SHA1_CTX()
-		c_nio_sha1_init(&ctx)
-		c_nio_sha1_loop(&ctx, src, src.count)
-		c_nio_sha1_result(&ctx, bytes)
-		var r = [UInt8]()
-		for idx in 0..<Int(SHA1_RESULTLEN) {
-			r.append(UInt8(bitPattern: bytes[idx]))
-		}
-		return r
+		Array(Insecure.SHA1.hash(data: Data(self)))
 	}
 }
 
 extension UInt8 {
-	// same as String(self, radix: 16)
-	// but outputs two characters. i.e. 0 padded
 	var hexString: String {
 		let s = String(self, radix: 16)
-		if s.count == 1 {
-			return "0" + s
-		}
-		return s
+		return s.count == 1 ? "0" + s : s
 	}
 }
 
-public class FileOutput: HTTPOutput {
+public class FileOutput: HTTPOutput, @unchecked Sendable {
 	let path: String
-	let size: Int // !FIX! NIO FileRegions only accept Int in init. should be UInt64
+	let size: Int
 	let modDate: Int
-	let file: NIOFileHandle
-	var region: FileRegion?
-	var useSendfile = true
+	// Set during head(request:) to the byte range that should be served.
+	private var byteRange: Range<Int>?
+
 	public init(localPath inPath: String) throws {
 		var localPath = inPath
 		let fm = FileManager.default
@@ -73,84 +53,77 @@ public class FileOutput: HTTPOutput {
 			}
 			attr = try fm.attributesOfItem(atPath: localPath)
 		}
-		size = Int(attr[FileAttributeKey.size] as! UInt64) // ...
+		size = Int(attr[FileAttributeKey.size] as! UInt64)
 		modDate = Int((attr[.modificationDate] as! Date).timeIntervalSince1970)
 		path = localPath
-		file = try .init(path: localPath)
 		super.init()
-		kind = .fixed
 	}
-	deinit {
-		try? file.close()
-	}
+
 	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
 		let eTag = getETag()
 		var headers = [("Accept-Ranges", "bytes")]
-		if let ifNoneMatch = request.head.headers["if-none-match"].first,
-			ifNoneMatch == eTag {
-			// region is nil. no body
-			return HTTPHead(status: HTTPResponseStatus.notModified, headers: HTTPHeaders(headers))
+		if let ifNoneMatch = request.head.headers["if-none-match"].first, ifNoneMatch == eTag {
+			// ETag match — 304, no body.
+			return HTTPHead(status: .notModified, headers: HTTPHeaders(headers))
 		}
 		let contentType = MIMEType.forExtension(path.filePathExtension)
 		headers.append(("Content-Type", contentType))
-		if let rangeRequest = request.head.headers["range"].first, let range = parseRangeHeader(fromHeader: rangeRequest, max: size).first {
+		headers.append(("ETag", eTag))
+		if let rangeRequest = request.head.headers["range"].first,
+		   let range = parseRangeHeader(fromHeader: rangeRequest, max: size).first {
 			headers.append(("Content-Length", "\(range.count)"))
 			headers.append(("Content-Range", "bytes \(range.startIndex)-\(range.endIndex-1)/\(size)"))
-			region = FileRegion(fileHandle: file, readerIndex: range.startIndex, endIndex: range.endIndex)
+			byteRange = range
 		} else {
 			headers.append(("Content-Length", "\(size)"))
-			region = FileRegion(fileHandle: file, readerIndex: 0, endIndex: size)
+			byteRange = 0..<size
 		}
 		return HTTPHead(status: .ok, headers: HTTPHeaders(headers))
 	}
-	public override func body(promise: EventLoopPromise<IOData?>, allocator: ByteBufferAllocator) {
-		if let r = region {
-			region = nil
-			promise.succeed(.fileRegion(r))
-		} else {
-			promise.succeed(nil)
+
+	public override func nextChunk(allocator: ByteBufferAllocator) async throws -> ByteBuffer? {
+		guard let range = byteRange else { return nil }
+		byteRange = nil
+		guard !range.isEmpty else { return nil }
+		guard let fh = FileHandle(forReadingAtPath: path) else {
+			throw ErrorOutput(status: .internalServerError, description: "Could not open file: \(path)")
 		}
+		defer { fh.closeFile() }
+		fh.seek(toFileOffset: UInt64(range.lowerBound))
+		let data = fh.readData(ofLength: range.upperBound - range.lowerBound)
+		guard !data.isEmpty else { return nil }
+		var buf = allocator.buffer(capacity: data.count)
+		buf.writeBytes(data)
+		return buf
 	}
-	
+
 	func getETag() -> String {
-		let eTagStr = path + "\(modDate)"
-		let eTag = eTagStr.utf8.sha1
-		let eTagReStr = eTag.map { $0.hexString }.joined(separator: "")
-		return eTagReStr
+		let eTag = (path + "\(modDate)").utf8.sha1
+		return eTag.map { $0.hexString }.joined()
 	}
-	
+
 	// bytes=0-3/7-9/10-15
 	func parseRangeHeader(fromHeader header: String, max: Int) -> [Range<Int>] {
 		let initialSplit = header.split(separator: "=")
 		guard initialSplit.count == 2 && String(initialSplit[0]) == "bytes" else {
-			return [Range<Int>]()
+			return []
 		}
-		let ranges = initialSplit[1]
-		return ranges.split(separator: "/").compactMap { self.parseOneRange(fromString: String($0), max: max) }
+		return initialSplit[1].split(separator: "/").compactMap {
+			parseOneRange(fromString: String($0), max: max)
+		}
 	}
-	
-	// 0-3
-	// 0-
+
+	// "0-3" or "0-"
 	func parseOneRange(fromString string: String, max: Int) -> Range<Int>? {
-		let split = string.split(separator: "-", omittingEmptySubsequences: false).map { String($0) }
-		guard split.count == 2 else {
-			return nil
-		}
+		let split = string.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+		guard split.count == 2 else { return nil }
 		if split[1].isEmpty {
-			guard let lower = Int(split[0]),
-				lower <= max else {
-					return nil
-			}
-			return Range(uncheckedBounds: (lower, max))
+			guard let lower = Int(split[0]), lower <= max else { return nil }
+			return lower..<max
 		}
-		guard let lower = Int(split[0]),
-			let upperRaw = Int(split[1]) else {
-				return nil
-		}
-		let upper = Swift.min(max, upperRaw+1)
-		guard lower <= upper else {
-			return nil
-		}
-		return Range(uncheckedBounds: (lower, upper))
+		guard let lower = Int(split[0]), let upperRaw = Int(split[1]) else { return nil }
+		let upper = Swift.min(max, upperRaw + 1)
+		guard lower <= upper else { return nil }
+		return lower..<upper
 	}
 }

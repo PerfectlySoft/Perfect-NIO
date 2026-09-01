@@ -18,17 +18,14 @@
 //
 
 import Foundation
-#if os(Linux)
-	import LinuxBridge
-	let S_IRUSR = __S_IREAD
-	let S_IRGRP	= (S_IRUSR >> 3)
-	let S_IWGRP	= (SwiftGlibc.S_IWUSR >> 3)
-	let S_IROTH = (S_IRGRP >> 3)
-	let S_IWOTH = (S_IWGRP >> 3)
+#if canImport(Darwin)
+import Darwin
 #else
-	import Darwin
+import Glibc
 #endif
-import PerfectLib
+import Logging
+
+private let logger = Logger(label: "perfect.nio.mimereader")
 
 enum MimeReadState {
 	case stateNone
@@ -84,8 +81,8 @@ public final class MimeReader {
 		public var fileSize = 0
 		/// The name of the temporary file which stores the file upload on the server-side.
 		public var tmpFileName = ""
-		/// The File object for the local temporary file.
-		public var file: File?
+		/// The temporary file for the local upload.
+		public var file: TempUploadFile?
 		
 		init() {
 			
@@ -127,7 +124,7 @@ public final class MimeReader {
 	}
 	
 	func openTempFile(spec spc: BodySpec) {
-		spc.file = TemporaryFile(withPrefix: tempDirectory + kPerfectTempPrefix)
+		spc.file = TempUploadFile(withPrefix: tempDirectory + kPerfectTempPrefix)
 		spc.tmpFileName = spc.file!.path
 	}
 	
@@ -242,8 +239,8 @@ public final class MimeReader {
 					if eolPos != position {
 						let check = isField(name: kContentDisposition, bytes: byts, start: position)
 						if check != end { // yes, content-disposition
-							var lineRange = Array(byts[check.advanced(by: 2)..<eolPos])
-							let line = String(bytesNoCopy: &lineRange, length: lineRange.count, encoding: .utf8, freeWhenDone: false) ?? ""
+							let lineRange = Array(byts[check.advanced(by: 2)..<eolPos])
+							let line = String(bytes: lineRange, encoding: .utf8) ?? ""
 							let name = pullValue(name: "name", from: line)
 							let fileName = pullValue(name: "filename", from: line)
 							spec.fieldName = name
@@ -251,8 +248,8 @@ public final class MimeReader {
 						} else {
 							let check = isField(name: kContentType, bytes: byts, start: position)
 							if check != end { // yes, content-type
-								var lineRange = Array(byts[check.advanced(by: 2)..<eolPos])
-								let line = String(bytesNoCopy: &lineRange, length: lineRange.count, encoding: .utf8, freeWhenDone: false) ?? ""
+								let lineRange = Array(byts[check.advanced(by: 2)..<eolPos])
+								let line = String(bytes: lineRange, encoding: .utf8) ?? ""
 								spec.contentType = line
 								
 							}
@@ -284,8 +281,8 @@ public final class MimeReader {
 							if isBoundaryStart(bytes: byts, start: position.advanced(by: 2)) {
 								position = position.advanced(by: 2)
 								state = .stateBoundary
-								var bytes = spec.fieldValueTempBytes ?? []
-								let line = String(bytesNoCopy: &bytes, length: bytes.count, encoding: .utf8, freeWhenDone: false) ?? ""
+								let bytes = spec.fieldValueTempBytes ?? []
+								let line = String(bytes: bytes, encoding: .utf8) ?? ""
 								spec.fieldValue = line
 								spec.fieldValueTempBytes = nil
 								break
@@ -360,7 +357,7 @@ public final class MimeReader {
 						let length = writeEnd - position
 						spec.fileSize += try spec.file!.write(bytes: byts, dataPosition: position, length: length)
 					} catch let e {
-						Log.error(message: "Exception while writing file upload data: \(e)")
+						logger.error("exception while writing file upload data: \(e)")
 						state = .stateNone
 						break
 					}

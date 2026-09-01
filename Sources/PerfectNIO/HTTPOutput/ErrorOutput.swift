@@ -20,7 +20,7 @@ import Foundation
 import NIOHTTP1
 
 /// Output which can be thrown
-public class ErrorOutput: BytesOutput, Error, CustomStringConvertible {
+public class ErrorOutput: BytesOutput, @unchecked Sendable, Error, CustomStringConvertible {
 	public let description: String
 	/// Construct a ErrorOutput with a simple text message
 	public init(status: HTTPResponseStatus, description: String? = nil) {
