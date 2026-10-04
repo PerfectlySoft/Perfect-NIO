@@ -27,14 +27,41 @@ public final class TempUploadFile {
         path = fd >= 0 ? String(cString: buf) : ""
     }
 
+    /// Writes `bytes[dataPosition..<dataPosition + length]` to the file.
+    ///
+    /// Retries short writes and `EINTR` until the whole range is written, so on
+    /// success the return value is always `length`. Throws `EINVAL` if the range
+    /// is not within `bytes`, `EBADF` if the file is closed, and otherwise the
+    /// `errno` reported by `write(2)`. If it throws after a short write, the bytes
+    /// before the failure are already in the file.
     @discardableResult
     public func write(bytes: [UInt8], dataPosition: Int, length: Int) throws -> Int {
         guard fd >= 0 else { throw POSIXError(.EBADF) }
-        let written = bytes.withUnsafeBytes { ptr in
-            posixWrite(fd, ptr.baseAddress!.advanced(by: dataPosition), length)
+        guard dataPosition >= 0, length >= 0,
+              dataPosition <= bytes.count, length <= bytes.count - dataPosition else {
+            throw POSIXError(.EINVAL)
         }
-        guard written >= 0 else { throw POSIXError(.EIO) }
-        return written
+        guard length > 0 else { return 0 }
+        let fd = self.fd
+        try bytes.withUnsafeBytes { buf in
+            // Non-nil: the range check above guarantees buf is non-empty.
+            guard let base = buf.baseAddress else { throw POSIXError(.EINVAL) }
+            var offset = dataPosition
+            let end = dataPosition + length
+            while offset < end {
+                // Darwin's write(2) rejects nbyte > INT_MAX with EINVAL; write in pieces.
+                let n = posixWrite(fd, base + offset, min(end - offset, Int(Int32.max)))
+                if n < 0 {
+                    let code = errno
+                    if code == EINTR { continue }
+                    throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+                }
+                // write(2) returns 0 only for a zero-length request; don't spin.
+                guard n > 0 else { throw POSIXError(.EIO) }
+                offset += n
+            }
+        }
+        return length
     }
 
     public func close() {
