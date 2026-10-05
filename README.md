@@ -46,6 +46,12 @@ try await Server(routes: routes, port: 8080).run()
 
 Build and run with `swift run`. The server listens on port 8080 and responds to every request with `Hello, world!`.
 
+> **Request bodies are capped at 10 MiB by default, uploads included.** The whole body is held in memory before your route runs, so the server refuses anything larger with **413 Payload Too Large** (see [Request body size limit](#request-body-size-limit)). If your app accepts larger uploads, raise the cap when you create the server:
+>
+> ```swift
+> try await Server(routes: routes, port: 8080, maxRequestBodySize: 100 * 1024 * 1024).run()  // 100 MiB; nil = no limit
+> ```
+
 The package also builds a `PerfectNIOExe` executable target (`Sources/PerfectNIOExe/main.swift`) — a minimal smoke-test binary, not a required entry point. Host applications define their own executable target as shown above.
 
 ### Scoped server (useful in tests)
@@ -221,9 +227,25 @@ root().upload.POST.readBody { _, content in
 }.text()
 ```
 
+#### Request body size limit
+
+The server reads the entire request body into memory before the route runs. That includes multipart file uploads, which are only written to temporary files once the whole body has arrived. To keep one request from exhausting memory, bodies are limited by `Server.maxRequestBodySize`:
+
+- **Default: 10 MiB** (`Server.defaultMaxRequestBodySize`). Set a larger value for servers that take big uploads, or `nil` for no limit. A negative value is treated as 0.
+- A request whose `Content-Length` is over the limit gets **413 Payload Too Large** as soon as its headers arrive, before any of the body is read. A chunked body gets the 413 as soon as it grows past the limit. Your route never runs.
+- The connection is closed after a 413.
+- The limit is per request. Every open connection can hold up to this much at once, so size it with your expected number of concurrent uploads in mind.
+
+```swift
+// Accept uploads up to 250 MiB.
+let server = Server(routes: routes, port: 8080, maxRequestBodySize: 250 * 1024 * 1024)
+```
+
+Uploads are also subject to the process's file-size limit (`RLIMIT_FSIZE`, e.g. `ulimit -f`): an upload that can't be written to its temporary file fails with 413 (file too large) or 507 (disk full). The server ignores `SIGXFSZ` when it starts, unless your app has already set its own handling for it, so hitting that limit fails the request instead of killing the process.
+
 ### decode
 
-Read and decode the request body as a `Decodable` type.
+Read and decode the request body as a `Decodable` type. If the body (or the query and path values) can't be decoded into the type, the client gets **400 Bad Request**; the decoding error itself is logged, not sent back.
 
 ```swift
 struct CreateUser: Decodable { let name: String; let email: String }
@@ -887,8 +909,10 @@ public struct Server: Sendable {
                                           // the primitive a graceful hand-off restart needs: start a new
                                           // process, confirm it's bound and healthy, only then stop the old
                                           // one — with zero window where the port refuses connections.
+    public var maxRequestBodySize: Int?  // default 10 MiB (Server.defaultMaxRequestBodySize); nil = no limit.
+                                          // Larger bodies, uploads included, get 413 — see "Request body size limit"
 
-    public init(routes:, host:, port:, tls:, idleTimeout:, reusePortCount:, alwaysReusePort:)
+    public init(routes:, host:, port:, tls:, idleTimeout:, reusePortCount:, alwaysReusePort:, maxRequestBodySize:)
 
     /// Serve until the surrounding Task is cancelled.
     public func run() async throws
@@ -898,6 +922,10 @@ public struct Server: Sendable {
     public func withServer<R>(_ body: (_ boundPort: Int) async throws -> R) async throws -> R
 }
 ```
+
+`maxRequestBodySize` caps how large a request body the server will read into memory. **The 10 MiB default applies to file uploads too**; raise it if your app accepts bigger ones. See [Request body size limit](#request-body-size-limit).
+
+Errors thrown from a route: an `ErrorOutput` (or `TerminationType.error`) is sent as-is, with its status and text. Any other error becomes **500 Internal server error.** with a generic body; the error itself is logged (label `perfect.nio.server`), never sent to the client.
 
 `idleTimeout` closes connections that have no inbound reads for the specified duration. It is a defense against idle keep-alive connections and basic slowloris. Note: it measures *reads*, so streaming endpoints that take longer than the timeout to produce their first byte should use a larger value or `nil`.
 
