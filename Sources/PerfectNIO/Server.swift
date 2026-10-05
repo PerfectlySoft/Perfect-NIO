@@ -397,12 +397,16 @@ public struct Server: Sendable {
 
 	/// Resolves a request against the routes and, if it lands on a `webSocket(...)` route,
 	/// returns that route's handler + options. Returns nil for any non-WebSocket route.
+	///
+	/// Only routes flagged at registration as WebSocket endpoints are run here. Any other route is
+	/// left untouched so it runs exactly once, as plain HTTP with the real body, after the
+	/// Upgrade headers are stripped.
 	fileprivate static func resolveWebSocket(_ request: NIOAsyncHTTPRequest,
 	                                         finder: any RouteFinder) async -> (WebSocketHandler, [WebSocketOption])? {
-		guard let fnc = finder[request.method, request.path] else { return nil }
+		guard let route = finder.route(request.method, request.path), route.isWebSocket else { return nil }
 		let ctx = RouteContext(request: request, uri: request.path)
 		do {
-			let (_, output) = try await fnc(ctx, request)
+			let (_, output) = try await route.handler(ctx, request)
 			guard let wsOutput = output as? WebSocketUpgradeHTTPOutput else { return nil }
 			return (wsOutput.handler, wsOutput.options)
 		} catch {

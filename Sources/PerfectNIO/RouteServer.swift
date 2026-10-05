@@ -203,8 +203,8 @@ public extension Routes {
 	var OPTIONS: Routes { method(.OPTIONS) }
 	func method(_ method: HTTPMethod, _ methods: HTTPMethod...) -> Routes {
 		let allMethods = [method] + methods
-		return .init(Dictionary(routes.flatMap { key, handler in
-			allMethods.map { m in (m.name + "://" + key.splitMethod.1, handler) }
+		return .init(Dictionary(routes.flatMap { key, route in
+			allMethods.map { m in (m.name + "://" + key.splitMethod.1, route) }
 		}, uniquingKeysWith: { $1 }))
 	}
 }

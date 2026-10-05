@@ -428,6 +428,22 @@ final class PerfectNIOSmokeTests: XCTestCase {
         }
     }
 
+    func testWebSocketFlagSurvivesRouteComposition() throws {
+        // The registration-time WebSocket flag must follow the route through dir/path/method/ext
+        // composition, and must not leak onto sibling routes.
+        let p = root(path: "/", HTTPRequest.self)
+        let routes = try root().api.dir(
+            p.plain { "plain" }.text(),
+            p.GET.sock.webSocket(protocol: "x") { _ -> WebSocketHandler in { _ in } },
+            p.wild(name: "id").live.webSocket(protocol: "x") { _ -> WebSocketHandler in { _ in } }.ext("ws")
+        )
+        let finder = try RouteFinderDual(routes)
+        XCTAssertEqual(finder.route(.GET, "/api/plain")?.isWebSocket, false)
+        XCTAssertEqual(finder.route(.GET, "/api/sock")?.isWebSocket, true)
+        XCTAssertNil(finder.route(.POST, "/api/sock"))
+        XCTAssertEqual(finder.route(.GET, "/api/42/live.ws")?.isWebSocket, true)
+    }
+
     /// Opens a raw TCP connection to `port`, sends `request`, and returns the response up to the
     /// end of the headers (or until the peer closes). Used to inspect raw HTTP status lines.
     private func rawExchange(port: Int, request: String, timeout: TimeAmount = .seconds(3)) throws -> String {
