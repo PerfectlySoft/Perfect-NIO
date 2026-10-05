@@ -79,9 +79,7 @@ final class NIOAsyncHTTPRequest: HTTPRequest, @unchecked Sendable {
 		contentConsumed = bodyBytes.count
 		let ct = contentType ?? "application/octet-stream"
 		if ct.hasPrefix("multipart/form-data") {
-			let multi = MimeReader(ct)
-			multi.addToBuffer(bytes: bodyBytes)
-			return .multiPartForm(multi)
+			return .multiPartForm(try MimeReader.parse(contentType: ct, body: bodyBytes))
 		} else if ct.hasPrefix("application/x-www-form-urlencoded") {
 			return .urlForm(QueryDecoder(bodyBytes))
 		} else {

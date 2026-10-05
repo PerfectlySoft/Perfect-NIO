@@ -34,6 +34,7 @@ enum MimeReadState {
 	case stateFieldValue // read a simple value; name has already been set
 	case stateFile // read file data until boundry
 	case stateDone
+	case stateError // a file part couldn't be stored; see `MimeReader.error`
 }
 
 let kMultiPartForm = "multipart/form-data"
@@ -51,11 +52,27 @@ let mime_dash: UInt8 = 45
 /// This class is responsible for reading multi-part POST form data, including handling file uploads.
 /// Data can be given for parsing in little bits at a time by calling the `addTobuffer` function.
 /// Any file uploads which are encountered will be written to the temporary directory indicated when the `MimeReader` is created.
-/// Temporary files will be deleted when this object is deinitialized.
+/// Temporary files are created with mode 0600 and deleted when this object is deinitialized.
+///
+/// If a file part can't be stored (for example the disk is full or the file size limit
+/// is reached), parsing stops and `error` is set. The temporary file for that part is
+/// deleted. Callers that feed data with `addToBuffer` must check `error` before using
+/// `bodySpecs`; the server's `readContent()` turns it into an error response.
 public final class MimeReader {
+	
+	/// The default directory for temporary upload files: `NSTemporaryDirectory()`,
+	/// which honors `TMPDIR` and on Darwin is a per-user directory.
+	public static var defaultTempDirectory: String {
+		let dir = NSTemporaryDirectory()
+		return dir.hasSuffix("/") ? dir : dir + "/"
+	}
 	
 	/// Array of BodySpecs representing each part that was parsed.
 	public var bodySpecs = [BodySpec]()
+	
+	/// The error which stopped parsing, if a file part couldn't be stored.
+	/// When this is set, `bodySpecs` is incomplete and must not be treated as the request's content.
+	public private(set) var error: (any Error)?
 	
 	var (multi, gotFile) = (false, false)
 	var buffer = [UInt8]()
@@ -105,8 +122,9 @@ public final class MimeReader {
 	
 	/// Initialize given a Content-type header line.
 	/// - parameter contentType: The Content-type header line.
-	/// - parameter tempDir: The path to the directory in which to store temporary files. Defaults to "/tmp/".
-	public init(_ contentType: String, tempDir: String = "/tmp/") {
+	/// - parameter tempDir: The path, ending in "/", of the directory in which to store temporary files.
+	///   Defaults to `MimeReader.defaultTempDirectory`.
+	public init(_ contentType: String, tempDir: String = MimeReader.defaultTempDirectory) {
 		tempDirectory = tempDir
 		if contentType.hasPrefix(kMultiPartForm) {
 			multi = true
@@ -123,9 +141,55 @@ public final class MimeReader {
 		}
 	}
 	
-	func openTempFile(spec spc: BodySpec) {
-		spc.file = TempUploadFile(withPrefix: tempDirectory + kPerfectTempPrefix)
-		spc.tmpFileName = spc.file!.path
+	/// Returns false, having called `fail`, if the file couldn't be created.
+	func openTempFile(spec spc: BodySpec) -> Bool {
+		let file = TempUploadFile(withPrefix: tempDirectory + kPerfectTempPrefix)
+		if let openError = file.openError {
+			fail(openError, spec: spc, while: "creating a temp file in \(tempDirectory)")
+			return false
+		}
+		spc.file = file
+		spc.tmpFileName = file.path
+		return true
+	}
+	
+	/// Stops parsing and deletes the part's temporary file, so a partly written upload
+	/// is never handed on as if it were complete.
+	func fail(_ err: any Error, spec: BodySpec, while action: String = "writing file upload data") {
+		logger.error("upload failed \(action): \(err)")
+		error = err
+		state = .stateError
+		spec.cleanup()
+		spec.tmpFileName = ""
+		spec.fileSize = 0
+	}
+	
+	/// Parses a complete multipart body, throwing an `ErrorOutput` if a file part couldn't be
+	/// stored, or 400 if the body ends before its closing boundary (the last part would
+	/// otherwise be handed on truncated).
+	static func parse(contentType: String, body: [UInt8], tempDir: String = MimeReader.defaultTempDirectory) throws -> MimeReader {
+		let reader = MimeReader(contentType, tempDir: tempDir)
+		reader.addToBuffer(bytes: body)
+		try reader.throwIfFailed()
+		guard reader.state == .stateDone else {
+			reader.bodySpecs.forEach { $0.cleanup() }
+			throw ErrorOutput(status: .badRequest, description: "Incomplete multipart body.")
+		}
+		return reader
+	}
+	
+	/// Throws an `ErrorOutput` for `error`, if set: 413 if the file size limit was reached
+	/// (EFBIG), 507 if the disk or quota is full, otherwise 500.
+	func throwIfFailed() throws {
+		guard let error else { return }
+		switch (error as? POSIXError)?.code {
+		case .EFBIG?:
+			throw ErrorOutput(status: .payloadTooLarge, description: "Uploaded file is too large.")
+		case .ENOSPC?, .EDQUOT?:
+			throw ErrorOutput(status: .insufficientStorage, description: "Could not store uploaded file.")
+		default:
+			throw ErrorOutput(status: .internalServerError, description: "Could not store uploaded file.")
+		}
 	}
 	
 	func isBoundaryStart(bytes byts: [UInt8], start: Array<UInt8>.Index) -> Bool {
@@ -200,6 +264,9 @@ public final class MimeReader {
 			switch state {
 			case .stateDone, .stateNone:
 				return .stateNone
+			case .stateError:
+				buffer.removeAll()
+				return .stateError
 			case .stateBoundary:
 				if position.distance(to: end) < boundary.count + 2 {
 					buffer = Array(byts[position..<end])
@@ -259,8 +326,9 @@ public final class MimeReader {
 					if (eolPos == position || position != end) && position.distance(to: end) > 1 && byts[position] == mime_cr && byts[position.advanced(by: 1)] == mime_lf {
 						position = position.advanced(by: 2)
 						if spec.fileName.count > 0 {
-							openTempFile(spec: spec)
-							state = .stateFile
+							if openTempFile(spec: spec) {
+								state = .stateFile
+							}
 						} else {
 							state = .stateFieldValue
 							spec.fieldValueTempBytes = [UInt8]()
@@ -303,6 +371,10 @@ public final class MimeReader {
 				}
 			case .stateFile:
 				let spec = bodySpecs.last!
+				guard let file = spec.file else {
+					fail(POSIXError(.EBADF), spec: spec)
+					break
+				}
 				while position != end {
 					if byts[position] == mime_cr {
 						if position.distance(to: end) == 1 {
@@ -315,9 +387,8 @@ public final class MimeReader {
 							if isBoundaryStart(bytes: byts, start: position.advanced(by: 2)) {
 								position = position.advanced(by: 2)
 								state = .stateBoundary
-								// end of file data
-								spec.file!.close()
-								chmod(spec.file!.path, mode_t(S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH))
+								// end of file data. The file keeps mkstemp's 0600 mode.
+								file.close()
 								break
 							} else if position.distance(to: end) - 2 < boundary.count {
 								// we are at the eol, but check to see if the next line may be starting a boundary
@@ -332,8 +403,7 @@ public final class MimeReader {
 					}
 					// write as much data as we reasonably can
 					var writeEnd = position
-					byts.withUnsafeBufferPointer {
-						let qPtr = $0.baseAddress!
+					byts.withUnsafeBufferPointer { qPtr in
 						while writeEnd < end {
 							if qPtr[writeEnd] == mime_cr {
 								if end - writeEnd < 2 {
@@ -355,10 +425,9 @@ public final class MimeReader {
 					}
 					do {
 						let length = writeEnd - position
-						spec.fileSize += try spec.file!.write(bytes: byts, dataPosition: position, length: length)
+						spec.fileSize += try file.write(bytes: byts, dataPosition: position, length: length)
 					} catch let e {
-						logger.error("exception while writing file upload data: \(e)")
-						state = .stateNone
+						fail(e, spec: spec)
 						break
 					}
 					if (writeEnd == end) {
