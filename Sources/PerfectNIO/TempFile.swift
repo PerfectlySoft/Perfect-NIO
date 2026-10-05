@@ -12,6 +12,8 @@ private func posixClose(_ fd: Int32) { _ = Glibc.close(fd) }
 public final class TempUploadFile {
     public let path: String
     private var fd: Int32
+    /// Why `mkstemp` failed, if it did; `path` is then empty and writes throw `EBADF`.
+    let openError: POSIXError?
 
     public var exists: Bool {
         FileManager.default.fileExists(atPath: path)
@@ -23,8 +25,11 @@ public final class TempUploadFile {
         let buf = UnsafeMutablePointer<CChar>.allocate(capacity: capacity)
         defer { buf.deallocate() }
         template.withCString { src in _ = memcpy(buf, src, capacity) }
-        fd = mkstemp(buf)
+        let result = mkstemp(buf)
+        let code = errno
+        fd = result
         path = fd >= 0 ? String(cString: buf) : ""
+        openError = fd >= 0 ? nil : POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
     }
 
     /// Writes `bytes[dataPosition..<dataPosition + length]` to the file.

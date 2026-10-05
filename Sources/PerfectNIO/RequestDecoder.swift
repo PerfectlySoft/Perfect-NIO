@@ -41,6 +41,8 @@ public extension HTTPRequest {
 		case .none:
 			postTuples = []
 		case .multiPartForm(let mime):
+			// A reader whose upload failed has incomplete bodySpecs; don't decode them.
+			try mime.throwIfFailed()
 			postTuples = mime.bodySpecs.filter {
 				spec in
 				// prune empty file uploads
