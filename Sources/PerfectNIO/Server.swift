@@ -81,6 +81,22 @@ public struct Server: Sendable {
 	/// the old one stops), without opening multiple sockets within *this* process. Defaults to
 	/// `false`, preserving the existing exclusive-bind behavior for a single socket.
 	public var alwaysReusePort: Bool
+	/// The largest request body, in bytes, the server will accept. `nil` means no limit.
+	///
+	/// The whole body (multipart uploads included) is held in memory before the route runs, so
+	/// this bounds the memory one request can use. A request whose `Content-Length` is larger is
+	/// refused with 413 Payload Too Large before any of its body is read; a chunked body is
+	/// refused as soon as it grows past the limit. The connection is closed after a 413.
+	/// Defaults to `Server.defaultMaxRequestBodySize` (10 MiB). Raise it for servers that take
+	/// large uploads. A negative value is treated as 0 (only empty bodies are accepted).
+	///
+	/// The limit is per request. Every open connection can hold up to this much at once, and
+	/// the idle timeout resets on each byte received, so total memory also depends on how many
+	/// slow uploads are in flight.
+	public var maxRequestBodySize: Int?
+
+	/// The default for `maxRequestBodySize`: 10 MiB.
+	public static let defaultMaxRequestBodySize = 10 * 1024 * 1024
 
 	public init(routes: Routes<HTTPRequest, HTTPOutput>,
 	            host: String = "0.0.0.0",
@@ -88,7 +104,8 @@ public struct Server: Sendable {
 	            tls: TLSConfiguration? = nil,
 	            idleTimeout: TimeAmount? = .seconds(60),
 	            reusePortCount: Int = 1,
-	            alwaysReusePort: Bool = false) {
+	            alwaysReusePort: Bool = false,
+	            maxRequestBodySize: Int? = Server.defaultMaxRequestBodySize) {
 		self.routes = routes
 		self.host = host
 		self.port = port
@@ -96,6 +113,7 @@ public struct Server: Sendable {
 		self.idleTimeout = idleTimeout
 		self.reusePortCount = reusePortCount
 		self.alwaysReusePort = alwaysReusePort
+		self.maxRequestBodySize = maxRequestBodySize
 	}
 
 	/// Bind and serve until the surrounding task is cancelled, then gracefully drain in-flight
@@ -147,6 +165,7 @@ public struct Server: Sendable {
 			resolvedManager = nil
 		}
 		let isTLS = resolvedManager != nil
+		let maxBodySize = maxRequestBodySize.map { max(0, $0) }
 		let group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
 
 		func shutdown() async { try? await group.shutdownGracefully() }
@@ -157,7 +176,7 @@ public struct Server: Sendable {
 			try await withThrowingTaskGroup(of: Void.self) { acceptors in
 				for channel in channels {
 					acceptors.addTask {
-						await Server.runAcceptLoop(channel, finder: finder, isTLS: isTLS)
+						await Server.runAcceptLoop(channel, finder: finder, isTLS: isTLS, maxBodySize: maxBodySize)
 					}
 				}
 				// Run the caller's work, then stop accepting. A throw here auto-cancels the
@@ -400,20 +419,23 @@ public struct Server: Sendable {
 	/// `Documentation/macos-deployment-targets.md` for the full cross-repo investigation.
 	private static func runAcceptLoop(_ serverChannel: HTTPServerChannel,
 	                                  finder: any RouteFinder,
-	                                  isTLS: Bool) async {
+	                                  isTLS: Bool,
+	                                  maxBodySize: Int?) async {
 		do {
 			if #available(macOS 14, *) {
 				try await withThrowingDiscardingTaskGroup { connections in
 					try await serverChannel.executeThenClose { inbound in
 						for try await upgradeResult in inbound {
 							connections.addTask {
-								await Server.handleConnection(upgradeResult, finder: finder, isTLS: isTLS)
+								await Server.handleConnection(upgradeResult, finder: finder, isTLS: isTLS,
+								                              maxBodySize: maxBodySize)
 							}
 						}
 					}
 				}
 			} else {
-				try await Server.runAcceptLoopBounded(serverChannel, finder: finder, isTLS: isTLS)
+				try await Server.runAcceptLoopBounded(serverChannel, finder: finder, isTLS: isTLS,
+				                                      maxBodySize: maxBodySize)
 			}
 		} catch {
 			// Server channel closed (cancellation / shutdown) or the accept loop failed.
@@ -428,7 +450,8 @@ public struct Server: Sendable {
 	/// kernel/NIO level until a slot frees.
 	private static func runAcceptLoopBounded(_ serverChannel: HTTPServerChannel,
 	                                         finder: any RouteFinder,
-	                                         isTLS: Bool) async throws {
+	                                         isTLS: Bool,
+	                                         maxBodySize: Int?) async throws {
 		let maxConcurrentConnections = 4096
 		try await withThrowingTaskGroup(of: Void.self) { connections in
 			var active = 0
@@ -439,7 +462,8 @@ public struct Server: Sendable {
 						active -= 1
 					}
 					connections.addTask {
-						await Server.handleConnection(upgradeResult, finder: finder, isTLS: isTLS)
+						await Server.handleConnection(upgradeResult, finder: finder, isTLS: isTLS,
+						                              maxBodySize: maxBodySize)
 					}
 					active += 1
 				}
@@ -450,11 +474,12 @@ public struct Server: Sendable {
 	/// Awaits one connection's upgrade outcome and dispatches it to the right driver.
 	private static func handleConnection(_ upgradeResult: EventLoopFuture<HTTPOrWebSocket>,
 	                                     finder: any RouteFinder,
-	                                     isTLS: Bool) async {
+	                                     isTLS: Bool,
+	                                     maxBodySize: Int?) async {
 		do {
 			switch try await upgradeResult.get() {
 			case .http(let channel):
-				await NIOAsyncHTTPServer.handleConnection(channel, finder: finder, isTLS: isTLS)
+				await NIOAsyncHTTPServer.handleConnection(channel, finder: finder, isTLS: isTLS, maxBodySize: maxBodySize)
 			case .websocket(let channel, let handler, let options):
 				await WebSocketRunner.run(channel, handler: handler, options: options)
 			}
@@ -592,13 +617,22 @@ final class PlainHTTPFallbackHandler: ChannelInboundHandler, RemovableChannelHan
 /// This is necessary because NIO's typed upgrade handler discards a refused upgrade request rather
 /// than serving it as HTTP, so the decision must be made before it sees the request.
 /// `@unchecked Sendable`: lives on and is only touched on its channel's event loop.
-private final class WebSocketUpgradeRouter: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
+///
+/// While a route is being resolved, the router holds back `read()` so that whatever follows the
+/// head (a body, pipelined requests) stays in the socket rather than piling up in `buffered`.
+/// Otherwise a request with an `Upgrade: websocket` header could stream an unbounded body into
+/// memory past `Server.maxRequestBodySize` for as long as resolution takes.
+private final class WebSocketUpgradeRouter: ChannelDuplexHandler, RemovableChannelHandler, @unchecked Sendable {
 	typealias InboundIn = HTTPServerRequestPart
 	typealias InboundOut = HTTPServerRequestPart
+	typealias OutboundIn = NIOAny
+	typealias OutboundOut = NIOAny
 
 	private enum State { case awaitingHead, resolving, passthrough }
 	private var state: State = .awaitingHead
 	private var buffered: [HTTPServerRequestPart] = []
+	/// A `read()` arrived while resolving and was held back; issued in `flush`.
+	private var readPending = false
 	private let finder: any RouteFinder
 	private let isTLS: Bool
 	private let resolved: NIOLockedValueBox<(WebSocketHandler, [WebSocketOption])?>
@@ -629,6 +663,14 @@ private final class WebSocketUpgradeRouter: ChannelInboundHandler, RemovableChan
 		}
 	}
 
+	func read(context: ChannelHandlerContext) {
+		if state == .resolving {
+			readPending = true
+		} else {
+			context.read()
+		}
+	}
+
 	private func resolve(context: ChannelHandlerContext, head: HTTPRequestHead) {
 		let boundContext = NIOLoopBoundBox(context, eventLoop: context.eventLoop)
 		let request = NIOAsyncHTTPRequest(head: head, body: [], channel: context.channel, isTLS: isTLS)
@@ -656,6 +698,10 @@ private final class WebSocketUpgradeRouter: ChannelInboundHandler, RemovableChan
 		buffered.removeAll()
 		context.fireChannelReadComplete()
 		state = .passthrough
+		if readPending {
+			readPending = false
+			context.read()
+		}
 		context.pipeline.syncOperations.removeHandler(self, promise: nil)
 	}
 
@@ -675,7 +721,16 @@ private final class WebSocketUpgradeRouter: ChannelInboundHandler, RemovableChan
 	}
 }
 
-/// One-time process setup: ignore SIGPIPE and raise the open-file limit. Runs on first server bind.
+/// One-time process setup, run on first server bind: ignore SIGPIPE, ignore SIGXFSZ unless the
+/// app has already set its own disposition for it, and raise the open-file limit.
+///
+/// SIGXFSZ: under an RLIMIT_FSIZE, a write past the limit (a large upload, see `MimeReader`)
+/// raises SIGXFSZ, whose default action terminates the process. Ignored, the write fails with
+/// EFBIG instead and the upload is refused with 413. This is process-wide: any code in the
+/// process then gets EFBIG rather than being killed. An app that wants something else can set
+/// SIGXFSZ itself before starting the server (that's kept) or after (that wins). As with
+/// SIGPIPE, an ignored disposition is inherited by child processes across exec unless the code
+/// that spawns them resets it.
 private let processGlobalInit: Bool = {
 	var sa = sigaction()
 #if os(Linux)
@@ -685,6 +740,10 @@ private let processGlobalInit: Bool = {
 #endif
 	sa.sa_flags = 0
 	sigaction(SIGPIPE, &sa, nil)
+	var current = sigaction()
+	if sigaction(SIGXFSZ, nil, &current) == 0 && current.isDefaultDisposition {
+		sigaction(SIGXFSZ, &sa, nil)
+	}
 	var rlmt = rlimit()
 #if os(Linux)
 	getrlimit(Int32(RLIMIT_NOFILE.rawValue), &rlmt)
@@ -697,3 +756,15 @@ private let processGlobalInit: Bool = {
 #endif
 	return true
 }()
+
+private extension sigaction {
+	/// True if the handler is SIG_DFL. With SA_SIGINFO the same storage holds `sa_sigaction`,
+	/// which is never null, so this also covers that case.
+	var isDefaultDisposition: Bool {
+#if os(Linux)
+		__sigaction_handler.sa_handler == nil
+#else
+		__sigaction_u.__sa_handler == nil
+#endif
+	}
+}

@@ -2040,3 +2040,26 @@ final class AdminConsolePhase12ActionReportRouteTests: XCTestCase {
         XCTAssertTrue(true)
     }
 }
+
+// MARK: - JSON body decoding
+
+final class AdminJSONBodyTests: XCTestCase {
+    private struct Body: Decodable { let hostname: String }
+
+    func testValidBodyDecodes() throws {
+        let body = try adminDecodeJSON(Body.self, from: Array(#"{"hostname":"example.com"}"#.utf8))
+        XCTAssertEqual(body.hostname, "example.com")
+    }
+
+    /// A body that doesn't decode is a 400 with a generic message. It used to escape as a
+    /// DecodingError, which the server sent back as a 500 naming the type and key.
+    func testUndecodableBodiesAre400WithoutDetails() {
+        for bytes in [Array(#"{"host":"x"}"#.utf8), Array("not json".utf8), []] {
+            XCTAssertThrowsError(try adminDecodeJSON(Body.self, from: bytes)) { error in
+                let output = error as? ErrorOutput
+                XCTAssertEqual(output?.head(request: HTTPRequestInfo(head: .init(version: .http1_1, method: .POST, uri: "/"), options: []))?.status, .badRequest)
+                XCTAssertEqual(output?.description, "Bad Request")
+            }
+        }
+    }
+}

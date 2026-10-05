@@ -58,6 +58,10 @@ let mime_dash: UInt8 = 45
 /// is reached), parsing stops and `error` is set. The temporary file for that part is
 /// deleted. Callers that feed data with `addToBuffer` must check `error` before using
 /// `bodySpecs`; the server's `readContent()` turns it into an error response.
+///
+/// Under an RLIMIT_FSIZE, writing past the limit raises SIGXFSZ, which terminates the process
+/// unless it's ignored. `Server` ignores it when it starts (unless the app has set its own
+/// disposition); code that uses `MimeReader` without a `Server` must do that itself to get EFBIG.
 public final class MimeReader {
 	
 	/// The default directory for temporary upload files: `NSTemporaryDirectory()`,

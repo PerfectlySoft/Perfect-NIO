@@ -270,7 +270,7 @@ public extension Routes {
 				content = try await ctx.request.readContent()
 				newCtx.cachedContent = content
 			}
-			let decoded = try newCtx.request.decode(type, content: content)
+			let decoded = try newCtx.request.decodeRequestContent(type, content: content)
 			return (newCtx, try await handler(output, decoded))
 		}
 	}

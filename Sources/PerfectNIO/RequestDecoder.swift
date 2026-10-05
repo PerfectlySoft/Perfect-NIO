@@ -18,6 +18,7 @@
 
 import Foundation
 import NIOHTTP1
+import Logging
 
 public struct FileUpload: Codable {
 	public let contentType: MIMEType
@@ -35,6 +36,12 @@ typealias RequestTuples = (String, RequestParamValue)
 /// Extensions on HTTPRequest which permit the request body to be decoded to a Codable type.
 public extension HTTPRequest {
 	/// Decode the request body into the desired type, or throw an error.
+	///
+	/// Decoding failures are thrown as `DecodingError`. A `DecodingError` that escapes a route
+	/// handler becomes a generic 500; the `decode` route modifier instead turns it into a 400.
+	/// To get the same from a handler that calls this directly, catch it and throw
+	/// `ErrorOutput(status: .badRequest)`. Don't put the error's description in the response:
+	/// it names Swift types and key paths.
 	func decode<A: Decodable>(_ type: A.Type, content: HTTPRequestContentType) throws -> A {
 		let postTuples: [RequestTuples]
 		switch content {
@@ -327,3 +334,20 @@ class RequestDecoder: Decoder {
 	}
 }
 
+extension HTTPRequest {
+	/// `decode(_:content:)` for the `decode` route modifier: a `DecodingError` means the client
+	/// sent something that doesn't match `A`, so it becomes a 400 with a generic message. The
+	/// detail, which names Swift types and key paths, is only logged.
+	func decodeRequestContent<A: Decodable>(_ type: A.Type, content: HTTPRequestContentType) throws -> A {
+		do {
+			return try decode(type, content: content)
+		} catch let error as DecodingError {
+			requestDecodingLogger.notice("Could not decode request", metadata: [
+				"method": "\(method)", "path": "\(path)", "type": "\(A.self)", "error": "\(error)",
+			])
+			throw ErrorOutput(status: .badRequest)
+		}
+	}
+}
+
+private let requestDecodingLogger = Logger(label: "perfect.nio.decode")

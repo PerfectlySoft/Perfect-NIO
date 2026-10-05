@@ -323,9 +323,8 @@ public actor AdminConsole {
         let datasourceTestRoute = root().POST.path("api").path("datasources").path("test").map { (req: any HTTPRequest) async throws -> HTTPOutput in
             try tokenStore.requireAuth(from: req.headers)
             try requireCSRF(headers: req.headers, port: adminPort)
-            let bytes = try await adminReadJSONBody(req)
             struct Body: Decodable { let name: String }
-            let body = try JSONDecoder().decode(Body.self, from: Data(bytes))
+            let body = try await adminDecodeJSONBody(Body.self, from: req)
             let result: DatasourceTestResult
             if let del = delegate {
                 result = (try? await del.testDatasource(name: body.name)) ?? .failed("Test threw an unexpected error")
@@ -344,9 +343,8 @@ public actor AdminConsole {
         let datasourceSwitchRoute = root().POST.path("api").path("datasources").path("switch").map { (req: any HTTPRequest) async throws -> HTTPOutput in
             try tokenStore.requireAuth(from: req.headers)
             try requireCSRF(headers: req.headers, port: adminPort)
-            let bytes = try await adminReadJSONBody(req)
             struct Body: Decodable { let name: String; let config: String }
-            let body = try JSONDecoder().decode(Body.self, from: Data(bytes))
+            let body = try await adminDecodeJSONBody(Body.self, from: req)
             let result: DatasourceTestResult
             if let del = delegate {
                 result = (try? await del.switchDatasource(name: body.name, to: body.config))
@@ -411,9 +409,8 @@ public actor AdminConsole {
         let actionsPostRoute = root().POST.path("api").path("actions").map { (req: any HTTPRequest) async throws -> HTTPOutput in
             try tokenStore.requireAuth(from: req.headers)
             try requireCSRF(headers: req.headers, port: adminPort)
-            let bytes = try await adminReadJSONBody(req)
             struct Body: Decodable { let action: String }
-            let body = try JSONDecoder().decode(Body.self, from: Data(bytes))
+            let body = try await adminDecodeJSONBody(Body.self, from: req)
 
             let domains = await tlsManager?.registeredHostnames() ?? []
             let hasDefault = await tlsManager?.hasDefaultContext ?? false
@@ -506,9 +503,8 @@ public actor AdminConsole {
         let tlsReloadRoute = root().POST.path("api").path("tls").path("reload").map { (req: any HTTPRequest) async throws -> HTTPOutput in
             try tokenStore.requireAuth(from: req.headers)
             try requireCSRF(headers: req.headers, port: adminPort)
-            let bytes = try await adminReadJSONBody(req)
             struct Body: Decodable { let hostname: String }
-            let body = try JSONDecoder().decode(Body.self, from: Data(bytes))
+            let body = try await adminDecodeJSONBody(Body.self, from: req)
             struct ResultEnc: Encodable { let success: Bool; let message: String }
             do {
                 try await delegate?.reloadTLSCertificate(for: body.hostname)
@@ -524,9 +520,8 @@ public actor AdminConsole {
         let tlsRemoveRoute = root().DELETE.path("api").path("tls").path("domain").map { (req: any HTTPRequest) async throws -> HTTPOutput in
             try tokenStore.requireAuth(from: req.headers)
             try requireCSRF(headers: req.headers, port: adminPort)
-            let bytes = try await adminReadJSONBody(req)
             struct Body: Decodable { let hostname: String }
-            let body = try JSONDecoder().decode(Body.self, from: Data(bytes))
+            let body = try await adminDecodeJSONBody(Body.self, from: req)
             guard let mgr = tlsManager else {
                 throw ErrorOutput(status: .serviceUnavailable, description: "No TLS manager configured")
             }
@@ -594,4 +589,19 @@ func adminReadJSONBody(_ req: any HTTPRequest) async throws -> [UInt8] {
     let content = try await req.readContent()
     if case .other(let bytes) = content { return bytes }
     return []
+}
+
+/// Reads the request body and decodes it as JSON. A body that doesn't decode is the client's
+/// fault, so it's a 400; the `DecodingError` itself (which names Swift types and keys) isn't
+/// sent back.
+func adminDecodeJSONBody<T: Decodable>(_ type: T.Type, from req: any HTTPRequest) async throws -> T {
+    try adminDecodeJSON(type, from: try await adminReadJSONBody(req))
+}
+
+func adminDecodeJSON<T: Decodable>(_ type: T.Type, from bytes: [UInt8]) throws -> T {
+    do {
+        return try JSONDecoder().decode(type, from: Data(bytes))
+    } catch is DecodingError {
+        throw ErrorOutput(status: .badRequest)
+    }
 }

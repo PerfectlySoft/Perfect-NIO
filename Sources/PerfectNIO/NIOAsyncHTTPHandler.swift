@@ -23,6 +23,9 @@ import NIO
 import NIOCore
 import NIOHTTP1
 import Foundation
+import Logging
+
+private let logger = Logger(label: "perfect.nio.server")
 
 /// The per-request object handed to the route pipeline.
 ///
@@ -97,16 +100,27 @@ enum NIOAsyncHTTPServer {
 	static func handleConnection(
 		_ asyncChannel: NIOAsyncChannel<Inbound, Outbound>,
 		finder: any RouteFinder,
-		isTLS: Bool
+		isTLS: Bool,
+		maxBodySize: Int?
 	) async {
 		do {
 			try await asyncChannel.executeThenClose { inbound, outbound in
 				var iterator = inbound.makeAsyncIterator()
-				while let request = try await assembleRequest(
+				while let assembled = try await assembleRequest(
 					iterator: &iterator,
 					channel: asyncChannel.channel,
-					isTLS: isTLS
+					isTLS: isTLS,
+					maxBodySize: maxBodySize
 				) {
+					let request: NIOAsyncHTTPRequest
+					switch assembled {
+					case .request(let r):
+						request = r
+					case .bodyTooLarge(let head, let bodyStarted):
+						try await rejectBodyTooLarge(head: head, bodyStarted: bodyStarted, iterator: &iterator,
+						                             channel: asyncChannel.channel, outbound: outbound)
+						return
+					}
 					let (head, output) = await dispatch(request: request, finder: finder, isTLS: isTLS)
 					try await writeResponse(head: head, output: output, request: request, outbound: outbound)
 					output.closed()
@@ -128,17 +142,35 @@ enum NIOAsyncHTTPServer {
 		}
 	}
 
+	/// A framed request, or a request whose body was refused for exceeding the size limit.
+	private enum AssembledRequest {
+		case request(NIOAsyncHTTPRequest)
+		/// `bodyStarted`: some of the body had already arrived when it was refused.
+		case bodyTooLarge(HTTPRequestHead, bodyStarted: Bool)
+	}
+
 	/// Reads inbound parts until a complete request (`.head` … `.end`) is framed.
 	/// Returns nil when the inbound stream ends (client closed) or the request was truncated.
+	///
+	/// With a `maxBodySize`, a request whose `Content-Length` exceeds it is refused as soon as its
+	/// head arrives, before any of the body is read; a body without a usable length (chunked) is
+	/// refused as soon as the bytes received exceed the limit. Either way the body collected here
+	/// never exceeds `maxBodySize` (NIO's own inbound buffering comes on top).
 	private static func assembleRequest(
 		iterator: inout NIOAsyncChannelInboundStream<Inbound>.AsyncIterator,
 		channel: Channel,
-		isTLS: Bool
-	) async throws -> NIOAsyncHTTPRequest? {
+		isTLS: Bool,
+		maxBodySize: Int?
+	) async throws -> AssembledRequest? {
 		guard let firstPart = try await iterator.next() else { return nil }
 		guard case .head(let head) = firstPart else {
 			// Body or end with no preceding head — malformed; abandon the connection.
 			return nil
+		}
+		if let maxBodySize,
+		   let declared = head.headers.first(name: "content-length").flatMap({ Int($0) }),
+		   declared > maxBodySize {
+			return .bodyTooLarge(head, bodyStarted: false)
 		}
 		var body: [UInt8] = []
 		while let part = try await iterator.next() {
@@ -147,13 +179,66 @@ enum NIOAsyncHTTPServer {
 				// A second head before .end is a framing error.
 				return nil
 			case .body(let buffer):
+				if let maxBodySize, buffer.readableBytes > maxBodySize - body.count {
+					return .bodyTooLarge(head, bodyStarted: true)
+				}
 				body.append(contentsOf: buffer.readableBytesView)
 			case .end:
-				return NIOAsyncHTTPRequest(head: head, body: body, channel: channel, isTLS: isTLS)
+				return .request(NIOAsyncHTTPRequest(head: head, body: body, channel: channel, isTLS: isTLS))
 			}
 		}
 		// Stream ended before .end — truncated request.
 		return nil
+	}
+
+	/// How much of a refused body is read and discarded after the 413 is sent, and for how long.
+	/// Closing a socket with unread input makes the kernel send a reset, which can destroy the
+	/// response before the client reads it; draining a little first ("lingering close") lets
+	/// clients that send the whole body before reading still see the 413. Both are bounded, so a
+	/// refused body still can't tie up the connection or memory.
+	static let rejectedBodyDrainLimit = 1 << 20
+	static let rejectedBodyDrainTime: TimeAmount = .seconds(2)
+
+	/// Sends 413 with `Connection: close`, then drains (and discards) a bounded amount of the
+	/// remaining body before the connection is closed. The connection is never reused: the rest
+	/// of the body hasn't been read, so the next request couldn't be framed.
+	private static func rejectBodyTooLarge(
+		head: HTTPRequestHead,
+		bodyStarted: Bool,
+		iterator: inout NIOAsyncChannelInboundStream<Inbound>.AsyncIterator,
+		channel: Channel,
+		outbound: NIOAsyncChannelOutboundWriter<Outbound>
+	) async throws {
+		logger.notice("Refusing request body larger than the limit", metadata: [
+			"method": "\(head.method)", "path": "\(head.uri.splitQuery.0)",
+			"content-length": "\(head.headers.first(name: "content-length") ?? "none")",
+		])
+		let body = Array("Request body is too large.".utf8)
+		var headers = HTTPHeaders()
+		headers.add(name: "Content-Type", value: "text/plain")
+		headers.add(name: "Content-Length", value: "\(body.count)")
+		headers.add(name: "Connection", value: "close")
+		try await outbound.write(.head(HTTPResponseHead(version: head.version, status: .payloadTooLarge, headers: headers)))
+		var buffer = channel.allocator.buffer(capacity: body.count)
+		buffer.writeBytes(body)
+		try await outbound.write(.body(.byteBuffer(buffer)))
+		try await outbound.write(.end(nil))
+		// A client that sent `Expect: 100-continue` and hasn't started on the body won't send it
+		// after a final status. (One that has started, e.g. after its own continue timeout, will.)
+		if !bodyStarted, head.headers[canonicalForm: "expect"].contains(where: { $0.lowercased() == "100-continue" }) {
+			return
+		}
+		let deadline = channel.eventLoop.scheduleTask(in: rejectedBodyDrainTime) {
+			channel.close(promise: nil)
+		}
+		defer { deadline.cancel() }
+		var drained = 0
+		while drained <= rejectedBodyDrainLimit, let part = try await iterator.next() {
+			switch part {
+			case .body(let buffer): drained += buffer.readableBytes
+			case .head, .end: return
+			}
+		}
 	}
 
 	/// Resolves the route and runs the async pipeline, mapping thrown errors to outputs.
@@ -188,7 +273,12 @@ enum NIOAsyncHTTPServer {
 			case let err as ErrorOutput:
 				output = err
 			default:
-				output = ErrorOutput(status: .internalServerError, description: "Internal server error: \(error)")
+				// Any other error's description can name internal types, key paths, file paths or
+				// SQL; log it here and send the client only a generic message.
+				logger.error("Unhandled error from route handler", metadata: [
+					"method": "\(request.method)", "path": "\(request.path)", "error": "\(String(reflecting: error))",
+				])
+				output = ErrorOutput(status: .internalServerError, description: "Internal server error.")
 			}
 			let head = ctx.responseHead.merged(with: output.head(request: requestInfo))
 			return (head, output)
