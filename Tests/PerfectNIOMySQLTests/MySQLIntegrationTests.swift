@@ -8,9 +8,9 @@
 //  Compile-time tests (prefixed "_typeCheck") verify generic constraint satisfaction
 //  without requiring a live MySQL server. They are never called at runtime.
 //
-//  Live tests (prefixed "test") require a MySQL server at 127.0.0.1 with user root,
-//  no password, and a database named "test". They are skipped when the environment
-//  variable MYSQL_TESTS is not set.
+//  Live tests (prefixed "testLive") need a MySQL server configured through the
+//  MYSQL_TEST_* environment variables (see MySQLTestEnvironment.swift). They are
+//  skipped unless MYSQL_TESTS=1 and MYSQL_TEST_PORT are both set.
 //
 
 import XCTest
@@ -69,18 +69,13 @@ private func _typeCheckDBChained() throws {
 
 final class MySQLIntegrationTests: XCTestCase {
 
-    // Resolve a live DB configuration, or skip if MySQL isn't available.
-    private func liveDB() throws -> Database<MySQLDatabaseConfiguration>? {
-        guard ProcessInfo.processInfo.environment["MYSQL_TESTS"] != nil else {
-            return nil
+    // Resolve a live DB configuration, or skip if no test server is configured.
+    private func liveDB() throws -> Database<MySQLDatabaseConfiguration> {
+        if let reason = MySQLTestEnvironment.skipReason {
+            throw XCTSkip(reason)
         }
-        let config = try MySQLDatabaseConfiguration(
-            database: "test",
-            host: "127.0.0.1",
-            username: "root",
-            password: ""
-        )
-        return Database(configuration: config)
+        try MySQLTestEnvironment.ensureDatabase()
+        return Database(configuration: try MySQLTestEnvironment.configuration())
     }
 
     // MARK: Structural tests (no server required)
@@ -116,13 +111,10 @@ final class MySQLIntegrationTests: XCTestCase {
         XCTAssertNotNil(tableRoute)
     }
 
-    // MARK: Live tests (require MYSQL_TESTS=1 env var)
+    // MARK: Live tests (require MYSQL_TESTS=1 and MYSQL_TEST_PORT)
 
     func testLiveCreateAndSelect() async throws {
-        guard let db = try liveDB() else {
-            print("Skipping \(#function) — set MYSQL_TESTS=1 to enable live tests")
-            return
-        }
+        let db = try liveDB()
         try db.create(Widget.self, policy: [.dropTable, .shallow])
         try db.table(Widget.self).insert(Widget(id: 1, name: "Sprocket", price: 9.99))
         let results = try db.table(Widget.self).where(\Widget.id == 1).select().map { $0 }
@@ -131,10 +123,7 @@ final class MySQLIntegrationTests: XCTestCase {
     }
 
     func testLiveRouteDBPattern() async throws {
-        guard let db = try liveDB() else {
-            print("Skipping \(#function) — set MYSQL_TESTS=1 to enable live tests")
-            return
-        }
+        let db = try liveDB()
         // Seed data
         try db.create(Widget.self, policy: [.dropTable, .shallow])
         try db.table(Widget.self).insert([
@@ -144,8 +133,7 @@ final class MySQLIntegrationTests: XCTestCase {
 
         // Simulate the body of a Routes.db() handler — this is the exact code
         // pattern that runs inside the route closure when a request arrives.
-        let config = try MySQLDatabaseConfiguration(database: "test", host: "127.0.0.1",
-                                                    username: "root", password: "")
+        let config = try MySQLTestEnvironment.configuration()
         let results = try await Task {
             let queryDB = Database(configuration: config)
             return try queryDB.table(Widget.self).order(by: \Widget.id).select().map { $0 }
