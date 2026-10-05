@@ -42,9 +42,19 @@ public struct RouteBuilder<InType, OutType> {
 @dynamicMemberLookup
 public struct Routes<InType, OutType> {
 	typealias Handler = @Sendable (RouteContext, InType) async throws -> (RouteContext, OutType)
-	var routes: [String: Handler]
+	/// A route's handler plus whether it was declared with `webSocket(...)`. The flag lets the
+	/// server decide whether a handshake targets a WebSocket endpoint without running the handler.
+	struct Route {
+		let handler: Handler
+		let isWebSocket: Bool
+		init(_ handler: @escaping Handler, isWebSocket: Bool = false) {
+			self.handler = handler
+			self.isWebSocket = isWebSocket
+		}
+	}
+	var routes: [String: Route]
 
-	init(_ routes: [String: Handler]) {
+	init(_ routes: [String: Route]) {
 		self.routes = routes
 	}
 
@@ -52,15 +62,21 @@ public struct Routes<InType, OutType> {
 		.init(Dictionary(routes.map { (call($0.key), $0.value) }, uniquingKeysWith: { $1 }))
 	}
 
+	/// Marks every route as a WebSocket endpoint. Used by `webSocket(...)`.
+	func markingWebSocket() -> Routes {
+		.init(routes.mapValues { Route($0.handler, isWebSocket: true) })
+	}
+
 	func applyFuncs<NewOut>(
 		_ call: @Sendable @escaping (RouteContext, OutType) async throws -> (RouteContext, NewOut)
 	) -> Routes<InType, NewOut> {
-		.init(Dictionary(routes.map { key, existing in
+		.init(Dictionary(routes.map { key, route in
+			let existing = route.handler
 			let h: Routes<InType, NewOut>.Handler = { ctx, input in
 				let (midCtx, midOut) = try await existing(ctx, input)
 				return try await call(midCtx, midOut)
 			}
-			return (key, h)
+			return (key, .init(h, isWebSocket: route.isWebSocket))
 		}, uniquingKeysWith: { $1 }))
 	}
 
@@ -68,18 +84,19 @@ public struct Routes<InType, OutType> {
 		paths: @escaping (String) -> String,
 		funcs call: @Sendable @escaping (RouteContext, OutType) async throws -> (RouteContext, NewOut)
 	) -> Routes<InType, NewOut> {
-		.init(Dictionary(routes.map { key, existing in
+		.init(Dictionary(routes.map { key, route in
+			let existing = route.handler
 			let h: Routes<InType, NewOut>.Handler = { ctx, input in
 				let (midCtx, midOut) = try await existing(ctx, input)
 				return try await call(midCtx, midOut)
 			}
-			return (paths(key), h)
+			return (paths(key), .init(h, isWebSocket: route.isWebSocket))
 		}, uniquingKeysWith: { $1 }))
 	}
 }
 
-// Safe: the only stored property is `routes: [String: Handler]`, and `Handler` is a
-// `@Sendable` function type — so a `Routes` value is just Sendable closures + String keys,
+// Safe: the only stored property is `routes: [String: Route]`, and a `Route` holds only a
+// `@Sendable` `Handler` and a Bool — so a `Routes` value is just Sendable closures + String keys,
 // regardless of `InType`/`OutType` (which appear only in the closure signatures).
 extension Routes: @unchecked Sendable {}
 
@@ -87,22 +104,22 @@ extension Routes: @unchecked Sendable {}
 
 /// Create a root route that passes the HTTPRequest through unchanged.
 public func root() -> Routes<HTTPRequest, HTTPRequest> {
-	.init(["/": { ctx, req in (ctx, req) }])
+	.init(["/": .init({ ctx, req in (ctx, req) })])
 }
 
 /// Create a root route that accepts the HTTPRequest and maps it to a new value.
 public func root<NewOut>(_ call: @Sendable @escaping (HTTPRequest) async throws -> NewOut) -> Routes<HTTPRequest, NewOut> {
-	.init(["/": { ctx, req in (ctx, try await call(req)) }])
+	.init(["/": .init({ ctx, req in (ctx, try await call(req)) })])
 }
 
 /// Create a root route that ignores the HTTPRequest and produces a new value.
 public func root<NewOut>(_ call: @Sendable @escaping () async throws -> NewOut) -> Routes<HTTPRequest, NewOut> {
-	.init(["/": { ctx, _ in (ctx, try await call()) }])
+	.init(["/": .init({ ctx, _ in (ctx, try await call()) })])
 }
 
 /// Create a root route for use inside `dir` chains.
 public func root<NewOut>(path: String, _ type: NewOut.Type) -> Routes<NewOut, NewOut> {
-	.init([path: { ctx, input in (ctx, input) }])
+	.init([path: .init({ ctx, input in (ctx, input) })])
 }
 
 // MARK: - map
@@ -300,13 +317,13 @@ public extension Routes {
 
 public extension Routes {
 	func dir<NewOut>(_ registries: [Routes<OutType, NewOut>]) throws -> Routes<InType, NewOut> {
-		var composed: [String: Routes<InType, NewOut>.Handler] = [:]
+		var composed: [String: Routes<InType, NewOut>.Route] = [:]
 		var seen = Set<String>()
 		var dups: [String] = []
 
-		for (parentPath, parentHandler) in routes {
+		for (parentPath, parentRoute) in routes {
 			for childRoutes in registries {
-				for (childPath, childHandler) in childRoutes.routes {
+				for (childPath, childRoute) in childRoutes.routes {
 					let (meth, subPath) = childPath.splitMethod
 					let newPath: String
 					if let meth = meth {
@@ -315,12 +332,12 @@ public extension Routes {
 						newPath = parentPath.appending(component: subPath)
 					}
 					if !seen.insert(newPath).inserted { dups.append(newPath) }
-					let p = parentHandler
-					let c = childHandler
-					composed[newPath] = { ctx, input in
+					let p = parentRoute.handler
+					let c = childRoute.handler
+					composed[newPath] = .init({ ctx, input in
 						let (midCtx, midOut) = try await p(ctx, input)
 						return try await c(midCtx, midOut)
-					}
+					}, isWebSocket: parentRoute.isWebSocket || childRoute.isWebSocket)
 				}
 			}
 		}

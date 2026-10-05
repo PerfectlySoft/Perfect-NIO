@@ -16,8 +16,9 @@
 // Phase 6: async WebSocket. The upgrade itself is performed at the pipeline level by
 // NIOTypedWebSocketServerUpgrader (configured in Server.swift) — that is the only model
 // compatible with NIOAsyncChannel. The route system decides *whether* to upgrade: a
-// `webSocket(...)` route produces a `WebSocketUpgradeHTTPOutput` carrying the handler, and
-// Server's `shouldUpgrade` runs the route to discover it. Once upgraded, the connection is
+// `webSocket(...)` route is flagged at registration and produces a `WebSocketUpgradeHTTPOutput`
+// carrying the handler; at handshake time the server runs only flagged routes to obtain it.
+// Other routes are never run during resolution, so they execute once, as plain HTTP. Once upgraded, the connection is
 // an NIOAsyncChannel<WebSocketFrame, WebSocketFrame> driven by `AsyncWebSocket` below.
 //
 
@@ -70,18 +71,25 @@ public extension Routes {
 	               _ callback: @Sendable @escaping (OutType) async throws -> WebSocketHandler) -> Routes<InType, HTTPOutput> {
 		applyFuncs { ctx, output in
 			let handler = try await callback(output)
-			return (ctx, WebSocketUpgradeHTTPOutput(handler: handler, options: options))
-		}
+			return (ctx, WebSocketUpgradeHTTPOutput(webSocketHandler: handler, options: options))
+		}.markingWebSocket()
 	}
 }
 
 /// Marker output produced by a `webSocket(...)` route. Carries the handler/options that the
 /// pipeline-level upgrader extracts. If a non-upgrade request reaches it (a plain GET to a
-/// WebSocket endpoint), it responds 426 Upgrade Required.
+/// WebSocket endpoint), it responds 426 Upgrade Required. Only routes declared with
+/// `webSocket(...)` upgrade: returning this output from any other route does not.
 public final class WebSocketUpgradeHTTPOutput: HTTPOutput, @unchecked Sendable {
 	let handler: WebSocketHandler
 	let options: [WebSocketOption]
-	public init(handler: @escaping WebSocketHandler, options: [WebSocketOption]) {
+	/// Building this output by hand does not make a route a WebSocket endpoint: only routes
+	/// declared with `webSocket(...)` upgrade, so a hand-built output just answers 426.
+	@available(*, deprecated, message: "Declare the route with webSocket(protocol:options:_:); a hand-built WebSocketUpgradeHTTPOutput no longer upgrades the connection")
+	public convenience init(handler: @escaping WebSocketHandler, options: [WebSocketOption]) {
+		self.init(webSocketHandler: handler, options: options)
+	}
+	init(webSocketHandler handler: @escaping WebSocketHandler, options: [WebSocketOption]) {
 		self.handler = handler
 		self.options = options
 	}

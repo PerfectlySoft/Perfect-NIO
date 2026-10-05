@@ -440,7 +440,7 @@ let echoRoute = root().echo.webSocket(protocol: "echo") { _ -> WebSocketHandler 
 }
 ```
 
-A WebSocket handshake to a path that does not have a `webSocket()` route is served as ordinary HTTP (returning the route's natural status, typically 404) — per RFC 6455 §4.2.2.
+A WebSocket handshake to a path that does not have a `webSocket()` route is served as ordinary HTTP (returning the route's natural status, typically 404) — per RFC 6455 §4.2.2. Only `webSocket()` routes run during the handshake; any other route runs once, as plain HTTP. A route that returns a hand-built `WebSocketUpgradeHTTPOutput` (its initializer is deprecated) does not upgrade and answers 426 Upgrade Required.
 
 ### WebSocketOption
 

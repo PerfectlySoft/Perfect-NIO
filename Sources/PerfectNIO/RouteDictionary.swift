@@ -20,22 +20,30 @@ import NIOHTTP1
 
 protocol RouteFinder: Sendable {
 	typealias ResolveFunc = @Sendable (RouteContext, any HTTPRequest) async throws -> (RouteContext, HTTPOutput)
+	typealias ResolvedRoute = Routes<HTTPRequest, HTTPOutput>.Route
 	init(_ registry: Routes<HTTPRequest, HTTPOutput>) throws
-	subscript(_ method: HTTPMethod, _ uri: String) -> ResolveFunc? { get }
+	/// The route matching `method` and `uri`, including whether it is a WebSocket endpoint.
+	func route(_ method: HTTPMethod, _ uri: String) -> ResolvedRoute?
+}
+
+extension RouteFinder {
+	subscript(_ method: HTTPMethod, _ uri: String) -> ResolveFunc? {
+		route(method, uri)?.handler
+	}
 }
 
 // Expand method-less routes to one entry per HTTP method.
 extension Routes {
-	var withMethods: [String: Handler] {
-		var result: [String: Handler] = [:]
-		for (key, handler) in routes {
+	var withMethods: [String: Route] {
+		var result: [String: Route] = [:]
+		for (key, route) in routes {
 			let (method, path) = key.splitMethod
 			if method == nil {
 				for m in HTTPMethod.allCases {
-					result["\(m.name)://\(path)"] = handler
+					result["\(m.name)://\(path)"] = route
 				}
 			} else {
-				result[key] = handler
+				result[key] = route
 			}
 		}
 		return result
@@ -43,21 +51,21 @@ extension Routes {
 }
 
 class RouteFinderRegExp: RouteFinder, @unchecked Sendable {
-	typealias Matcher = (NSRegularExpression, ResolveFunc)
+	typealias Matcher = (NSRegularExpression, ResolvedRoute)
 	let matchers: [HTTPMethod: [Matcher]]
 	required init(_ registry: Routes<HTTPRequest, HTTPOutput>) throws {
 		let full = registry.withMethods
 		var m = [HTTPMethod: [Matcher]]()
-		try full.forEach { key, fnc in
+		try full.forEach { key, route in
 			let (meth, path) = key.splitMethod
 			let method = meth ?? .GET
-			let matcher: Matcher = (try RouteFinderRegExp.regExp(for: path), fnc)
+			let matcher: Matcher = (try RouteFinderRegExp.regExp(for: path), route)
 			let existing = m[method] ?? []
 			m[method] = existing + [matcher]
 		}
 		matchers = m
 	}
-	subscript(_ method: HTTPMethod, _ uri: String) -> ResolveFunc? {
+	func route(_ method: HTTPMethod, _ uri: String) -> ResolvedRoute? {
 		guard let matchers = self.matchers[method] else { return nil }
 		let uriRange = NSRange(location: 0, length: uri.count)
 		for matcher in matchers {
@@ -80,13 +88,13 @@ class RouteFinderRegExp: RouteFinder, @unchecked Sendable {
 }
 
 class RouteFinderDictionary: RouteFinder, @unchecked Sendable {
-	let dict: [String: ResolveFunc]
+	let dict: [String: ResolvedRoute]
 	required init(_ registry: Routes<HTTPRequest, HTTPOutput>) throws {
 		dict = registry.withMethods.filter {
 			!($0.key.components.contains("*") || $0.key.components.contains("**"))
 		}
 	}
-	subscript(_ method: HTTPMethod, _ uri: String) -> ResolveFunc? {
+	func route(_ method: HTTPMethod, _ uri: String) -> ResolvedRoute? {
 		dict[method.name + "://" + uri]
 	}
 }
@@ -98,7 +106,7 @@ class RouteFinderDual: RouteFinder, @unchecked Sendable {
 		alpha = try RouteFinderDictionary(registry)
 		beta = try RouteFinderRegExp(registry)
 	}
-	subscript(_ method: HTTPMethod, _ uri: String) -> ResolveFunc? {
-		alpha[method, uri] ?? beta[method, uri]
+	func route(_ method: HTTPMethod, _ uri: String) -> ResolvedRoute? {
+		alpha.route(method, uri) ?? beta.route(method, uri)
 	}
 }
