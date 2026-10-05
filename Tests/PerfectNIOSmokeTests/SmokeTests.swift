@@ -382,6 +382,52 @@ final class PerfectNIOSmokeTests: XCTestCase {
         }
     }
 
+    func testWebSocketHandshakeRunsNonWebSocketHandlerOnce() async throws {
+        // A request carrying `Upgrade: websocket` to a plain route must run that route's handler
+        // exactly once. Resolving whether the route is a WebSocket endpoint must not execute it
+        // (that used to run it once with an empty body, then again as plain HTTP).
+        let getCount = LockedBox(0)
+        let postBodies = LockedBox<[String]>([])
+        let p = root(path: "/", HTTPRequest.self)
+        let routes = try root().dir(
+            p.counted { () -> String in
+                getCount.withLockedValue { $0 += 1 }
+                return "counted"
+            }.text(),
+            p.POST.submit.readBody { (_, body) -> String in
+                let text: String
+                switch body {
+                case .urlForm(let form): text = "a=" + form["a"].joined(separator: ",")
+                case .none: text = "<none>"
+                default: text = "<other>"
+                }
+                postBodies.withLockedValue { $0.append(text) }
+                return "ok"
+            }.text(),
+            p.echo.webSocket(protocol: "echo") { _ -> WebSocketHandler in { _ in } }
+        )
+        try await withServer(routes) {
+            let upgradeHeaders = """
+            Connection: Upgrade\r
+            Upgrade: websocket\r
+            Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r
+            Sec-WebSocket-Version: 13\r
+
+            """
+            let get = "GET /counted HTTP/1.1\r\nHost: localhost\r\n" + upgradeHeaders + "\r\n"
+            let getResponse = try rawExchange(port: port, request: get)
+            XCTAssertTrue(getResponse.hasPrefix("HTTP/1.1 200"), "expected HTTP 200, got: \(getResponse.prefix(40))")
+            XCTAssertEqual(getCount.withLockedValue { $0 }, 1, "GET handler must run exactly once")
+
+            let body = "a=1"
+            let post = "POST /submit HTTP/1.1\r\nHost: localhost\r\n" + upgradeHeaders
+                + "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: \(body.utf8.count)\r\n\r\n" + body
+            let postResponse = try rawExchange(port: port, request: post)
+            XCTAssertTrue(postResponse.hasPrefix("HTTP/1.1 200"), "expected HTTP 200, got: \(postResponse.prefix(40))")
+            XCTAssertEqual(postBodies.withLockedValue { $0 }, ["a=1"], "POST handler must run exactly once, with the real body")
+        }
+    }
+
     /// Opens a raw TCP connection to `port`, sends `request`, and returns the response up to the
     /// end of the headers (or until the peer closes). Used to inspect raw HTTP status lines.
     private func rawExchange(port: Int, request: String, timeout: TimeAmount = .seconds(3)) throws -> String {
@@ -527,5 +573,16 @@ final class PerfectNIOSmokeTests: XCTestCase {
             let (_, r2) = try await get("/")
             XCTAssertEqual(r2.statusCode, 200)
         }
+    }
+}
+
+/// A lock-protected value for counting handler invocations from route closures.
+private final class LockedBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+    init(_ value: Value) { self.value = value }
+    func withLockedValue<R>(_ body: (inout Value) throws -> R) rethrows -> R {
+        lock.lock(); defer { lock.unlock() }
+        return try body(&value)
     }
 }
