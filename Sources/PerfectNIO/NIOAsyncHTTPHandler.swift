@@ -376,9 +376,24 @@ enum NIOAsyncHTTPServer {
 		outbound: NIOAsyncChannelOutboundWriter<Outbound>
 	) async throws -> Bool {
 		let version = request.requestHead.version
+		var output = output
 		var responseHead = HTTPResponseHead(version: version,
 		                                    status: head.status ?? .ok,
 		                                    headers: head.headers)
+		if responseHead.status.code < 200 {
+			// A 1xx can't be a final response: 100/103 crashed the process in NIO's error handler
+			// and 101 left the connection in a state neither side agreed on. (WebSocket upgrades
+			// don't come through here.)
+			logger.error("Route returned an informational status as its final response", metadata: [
+				"method": "\(request.method)", "path": "\(request.path)", "status": "\(responseHead.status.code)",
+			])
+			let error = ErrorOutput(status: .internalServerError, description: "Internal server error.")
+			let errorHead = error.head(request: HTTPRequestInfo(head: request.requestHead, options: []))
+			responseHead = HTTPResponseHead(version: version, status: .internalServerError,
+			                                headers: errorHead?.headers ?? HTTPHeaders())
+			responseHead.headers.replaceOrAdd(name: "Connection", value: "close")
+			output = error
+		}
 		let status = responseHead.status
 		let statusAllowsBody = status.code >= 200 && status != .noContent && status != .notModified
 		let isHead = request.method == .HEAD

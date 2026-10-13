@@ -303,4 +303,25 @@ struct ProtocolHardeningTests {
             #expect(r.closed)
         }
     }
+
+    /// A route whose final status is informational (1xx) used to abort the whole process
+    /// (100, 103: a precondition in NIO's protocol error handler) or leave the connection
+    /// confused (101). It now gets 500 and the connection is closed.
+    @Test("A 1xx final status is refused with 500", arguments: [100, 101, 103])
+    func informationalFinalStatus(_ code: Int) async throws {
+        let routes = try root().dir(
+            root().path("info").map {
+                BytesOutput(head: HTTPHead(status: HTTPResponseStatus(statusCode: code), headers: [:]), body: []) as HTTPOutput
+            },
+            tenBytes
+        )
+        try await Server(routes: routes, port: 0).withServer { port in
+            let r = await rawHTTP(port: port, [rawHead("GET", "/info"), rawHead("GET", "/ten")], timeout: 20)
+            #expect(r.status == 500, "\(r.text.debugDescription)")
+            #expect(r.closed)
+            #expect(!r.text.contains("0123456789"))
+            let next = await rawHTTP(port: port, [rawHead("GET", "/ten", [("Connection", "close")])], timeout: 20)
+            #expect(next.status == 200)
+        }
+    }
 }
