@@ -9,6 +9,7 @@
 //
 
 import Foundation
+import NIOCore
 #if canImport(Darwin)
 import Darwin
 #else
@@ -51,7 +52,8 @@ struct RawHTTPResponse {
 /// `partDelay` waits between parts (a slow upload); `readDelay` waits before reading anything
 /// (a client that isn't reading).
 func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5, partDelay: Double = 0,
-             readDelay: Double = 0, halfClose: Bool = false, halfCloseDelay: Double = 0) -> RawHTTPResponse {
+             readDelay: Double = 0, halfClose: Bool = false, halfCloseDelay: Double = 0,
+             resetAfter: Double? = nil) -> RawHTTPResponse {
     let start = Date()
     #if canImport(Darwin)
     let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -92,6 +94,13 @@ func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5, partDelay: Doub
         }
     }
 
+    if let resetAfter {
+        // Abort the connection: with SO_LINGER 0, closing sends RST instead of FIN.
+        Thread.sleep(forTimeInterval: resetAfter)
+        var linger = linger(l_onoff: 1, l_linger: 0)
+        setsockopt(fd, SOL_SOCKET, SO_LINGER, &linger, socklen_t(MemoryLayout<linger>.size))
+        return RawHTTPResponse(text: "", closed: true, elapsed: Date().timeIntervalSince(start), sent: sent)
+    }
     if halfClose {
         if halfCloseDelay > 0 { Thread.sleep(forTimeInterval: halfCloseDelay) }
         shutdown(fd, Int32(SHUT_WR))
@@ -134,12 +143,13 @@ let rawLastChunk: [UInt8] = Array("0\r\n\r\n".utf8)
 /// connection tasks need. (Not a Dispatch queue: on Linux the global concurrent queues and
 /// Swift's global executor share one thread pool.)
 func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5, partDelay: Double = 0,
-             readDelay: Double = 0, halfClose: Bool = false, halfCloseDelay: Double = 0) async -> RawHTTPResponse {
+             readDelay: Double = 0, halfClose: Bool = false, halfCloseDelay: Double = 0,
+             resetAfter: Double? = nil) async -> RawHTTPResponse {
     await withCheckedContinuation { continuation in
         Thread {
             continuation.resume(returning: rawHTTP(port: port, parts, timeout: timeout, partDelay: partDelay,
                                                    readDelay: readDelay, halfClose: halfClose,
-                                                   halfCloseDelay: halfCloseDelay) as RawHTTPResponse)
+                                                   halfCloseDelay: halfCloseDelay, resetAfter: resetAfter) as RawHTTPResponse)
         }.start()
     }
 }
@@ -206,4 +216,24 @@ private func rawSequentialBlocking(port: Int, _ requests: [[UInt8]], timeout: In
         pending.removeSubrange(..<complete)
     }
     return responses
+}
+
+/// Runs `body`, retrying (up to 3 times) when it fails with EINTR. Under emulation a signal
+/// sometimes interrupted a system call while an exit test started its server. Used by the
+/// exit tests that start servers (SIGXFSZTests, MimeReaderTests).
+func retryingEINTR<R>(_ body: () async throws -> R) async throws -> R {
+    for attempt in 1... {
+        do {
+            return try await body()
+        } catch where attempt < 3 && isEINTR(error) {
+            continue
+        }
+    }
+    fatalError("unreachable")
+}
+
+func isEINTR(_ error: any Error) -> Bool {
+    if let error = error as? IOError { return error.errnoCode == EINTR }
+    if let error = error as? POSIXError { return error.code == .EINTR }
+    return String(describing: error).contains("Interrupted system call")
 }

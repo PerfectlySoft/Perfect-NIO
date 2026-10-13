@@ -11,6 +11,7 @@ import Testing
 import Foundation
 import NIOCore
 import NIOHTTP1
+import NIOConcurrencyHelpers
 @testable import PerfectNIO
 
 private func raw(_ s: String) -> [UInt8] { Array(s.utf8) }
@@ -113,6 +114,41 @@ struct ProtocolHardeningTests {
                 #expect(r.closed, "FIN after \(delay) s")
                 #expect(r.elapsed < 10, "FIN after \(delay) s: the connection stayed open for \(r.elapsed) s")
             }
+        }
+    }
+
+    /// A client that aborts (RST) after its request was read: on macOS NIO doesn't read while a
+    /// response is pending, so it never noticed, and the TCP state (CLOSED, not CLOSE_WAIT)
+    /// wasn't treated as closed either; the socket was held until the route finished.
+    @Test func resetClientIsReleasedWhileTheRouteRuns() async throws {
+        let channel = NIOLockedValueBox<Channel?>(nil)
+        let routes = root().path("hang").request { (_: HTTPRequest, req: any HTTPRequest) -> String in
+            channel.withLockedValue { $0 = req.channel }
+            try await Task.sleep(nanoseconds: 30_000_000_000)
+            return "late"
+        }.text()
+        try await Server(routes: routes, port: 0, idleTimeout: .seconds(1)).withServer { port in
+            _ = await rawHTTP(port: port, [rawHead("GET", "/hang")], resetAfter: 0.5)
+            let start = Date()
+            var released = false
+            while Date().timeIntervalSince(start) < 10 {
+                if let ch = channel.withLockedValue({ $0 }), !ch.isActive { released = true; break }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            #expect(released, "the server still held the connection 10 s after the client's RST")
+        }
+    }
+
+    /// A client that half-closes and keeps reading still gets its whole response.
+    @Test func halfClosedClientStillGetsItsResponse() async throws {
+        let routes = root().path("wait").map { () async throws -> String in
+            try await Task.sleep(nanoseconds: 500_000_000)
+            return "done"
+        }.text()
+        try await Server(routes: routes, port: 0, idleTimeout: .seconds(2)).withServer { port in
+            let r = await rawHTTP(port: port, [rawHead("GET", "/wait")], timeout: 20, halfClose: true, halfCloseDelay: 0.2)
+            #expect(r.status == 200)
+            #expect(r.body == "done")
         }
     }
 

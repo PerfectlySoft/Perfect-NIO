@@ -23,7 +23,7 @@ enum RequestPath {
 
 	/// True if the path part of `uri` (everything before the first "?", exactly the text the
 	/// router uses) has a ".." segment, as sent or after percent-decoding (up to
-	/// `maxDecodingPasses` layers, so nested encodings are caught), with "/" and "\\" both treated as
+	/// 7 layers, so nested encodings are caught), with "/" and "\\" both treated as
 	/// separators, so "%2e%2e", ".%2e", "..%2f", "..%5c" and "..\\" all count. A segment also
 	/// counts if it is ".." followed by ";" (a path parameter, "..;jsessionid=") or a NUL.
 	/// Such a request is refused before routing, so `wild` and `trailing` never hand a handler
@@ -45,7 +45,9 @@ enum RequestPath {
 		return true
 	}
 
-	/// How many layers of percent-encoding are undone before giving up.
+	/// How many decoding passes are made before giving up. The last pass's result isn't checked
+	/// again, so 7 layers of encoding are decoded and checked; a path that still changes on
+	/// the 8th pass is refused.
 	static let maxDecodingPasses = 8
 
 	/// The longest request target accepted; longer ones get 414 before anything else looks at

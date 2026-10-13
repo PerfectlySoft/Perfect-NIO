@@ -836,7 +836,8 @@ final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @
 		/// A counter of output that has left the kernel: bytes acknowledged by the peer on
 		/// Linux, bytes transmitted (less retransmissions) on Darwin. Nil if unavailable.
 		var sent: UInt64?
-		/// The connection is in CLOSE_WAIT: the client has closed its side.
+		/// The connection is no longer ESTABLISHED: the client has closed its side (CLOSE_WAIT)
+		/// or reset the connection (CLOSED).
 		var peerClosed: Bool
 	}
 
@@ -844,14 +845,15 @@ final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @
 		#if canImport(Darwin)
 		let info: EventLoopFuture<tcp_connection_info> = provider.unsafeGetSocketOption(
 			level: SocketOptionLevel(IPPROTO_TCP), name: SocketOptionName(TCP_CONNECTION_INFO))
-		// TCPS_CLOSE_WAIT is 5 in Darwin's netinet/tcp_fsm.h.
-		return info.map { KernelSample(sent: $0.tcpi_txbytes &- $0.tcpi_txretransmitbytes, peerClosed: $0.tcpi_state == 5) }
+		// TCPS_ESTABLISHED is 4 in Darwin's netinet/tcp_fsm.h; anything else here (CLOSE_WAIT
+		// after a FIN, CLOSED after an RST) means the client is gone or done sending.
+		return info.map { KernelSample(sent: $0.tcpi_txbytes &- $0.tcpi_txretransmitbytes, peerClosed: $0.tcpi_state != 4) }
 			.recover { _ in nil }
 		#elseif os(Linux)
 		// The kernel's struct tcp_info up to tcpi_bytes_acked (Linux 4.1+), which sits after 8
 		// one-byte fields, 24 UInt32s and two UInt64s (offset 120). Glibc's declaration stops
 		// earlier. An older kernel fills less, leaving the field 0, so no kernel progress is seen.
-		// tcpi_state is the first byte (TCP_CLOSE_WAIT is 8); Linux targets are little-endian.
+		// tcpi_state is the first byte (TCP_ESTABLISHED is 1); Linux targets are little-endian.
 		struct TCPInfoPrefix: Sendable {
 			var leading: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64,
 			              UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64) =
@@ -861,7 +863,7 @@ final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @
 		let info: EventLoopFuture<TCPInfoPrefix> = provider.unsafeGetSocketOption(
 			level: SocketOptionLevel(IPPROTO_TCP), name: SocketOptionName(TCP_INFO))
 		return info.map { KernelSample(sent: $0.bytesAcked == 0 ? nil : $0.bytesAcked,
-		                               peerClosed: $0.leading.0 & 0xff == 8) }
+		                               peerClosed: $0.leading.0 & 0xff != 1) }
 			.recover { _ in nil }
 		#else
 		return provider.eventLoop.makeSucceededFuture(nil)

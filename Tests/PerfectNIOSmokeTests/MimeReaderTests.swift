@@ -248,10 +248,10 @@ struct MimeReaderTests {
             limitFileSize(to: 1024)
             let status: Int32
             do {
-                status = try await Server(routes: uploadRoutes(), port: 0).withServer { port in
+                status = try await retryingEINTR { try await Server(routes: uploadRoutes(), port: 0).withServer { port in
                     let (_, code) = try await postMultipart(port: port, body: multipartBody(payload: payload))
                     return code == 413 ? 0 : code == 200 ? 2 : 3
-                }
+                } }
             } catch {
                 status = 4
             }

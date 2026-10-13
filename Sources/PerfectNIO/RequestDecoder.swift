@@ -389,8 +389,9 @@ public struct RequestDecodingFailure: Error, CustomStringConvertible {
 }
 
 public extension DecodingError {
-	/// True if `HTTPRequest.decode(_:content:)` threw this error: the client's data didn't fit
-	/// the type, and the server answers 400 if it escapes a route.
+	/// True if `HTTPRequest.decode(_:content:)` (which the `decode` route modifier also uses)
+	/// threw this error: the client's data didn't fit the type, and the server answers 400 if
+	/// it escapes a route.
 	var isRequestDecodingFailure: Bool {
 		context?.underlyingError is RequestDecodingFailure
 	}

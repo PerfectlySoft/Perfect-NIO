@@ -205,11 +205,11 @@ enum NIOAsyncHTTPServer {
 			// Body or end with no preceding head — malformed; abandon the connection.
 			return nil
 		}
-		// More than one Host header must be refused (RFC 9112 §3.2): front ends and the app could
-		// disagree on which host the request is for.
 		if head.uri.utf8.count > RequestPath.maxRequestTargetLength {
 			return .badRequest(head, .uriTooLong)
 		}
+		// More than one Host header must be refused (RFC 9112 §3.2): front ends and the app could
+		// disagree on which host the request is for.
 		if head.headers[canonicalForm: "host"].count > 1 {
 			return .badRequest(head)
 		}
