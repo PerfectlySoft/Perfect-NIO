@@ -167,7 +167,8 @@ struct ProtocolHardeningTests {
             let r = await rawHTTP(port: port, [raw("HEAD /ten HTTP/1.1\r\nHost: x\r\n\r\n" +
                                               "GET /ten HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")])
             let responses = r.text.components(separatedBy: "HTTP/1.1 ")
-            #expect(responses.count == 3, "\(r.text.debugDescription)")
+            // require, not expect: indexing after a failed expectation crashed the whole runner.
+            try #require(responses.count == 3, "\(r.text.debugDescription)")
             // The HEAD response keeps the GET's Content-Length but ends with its head.
             #expect(responses[1].lowercased().contains("content-length: 10"))
             #expect(responses[1].hasSuffix("\r\n\r\n"), "\(responses[1].debugDescription)")
@@ -267,7 +268,7 @@ struct ProtocolHardeningTests {
             let r = await rawHTTP(port: port, [raw("HEAD \(path) HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n" +
                                               "GET /ten HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")])
             let responses = r.text.components(separatedBy: "HTTP/1.1 ")
-            #expect(responses.count == 3, "\(r.text.debugDescription)")
+            try #require(responses.count == 3, "\(r.text.debugDescription)")
             #expect(responses[1].hasSuffix("\r\n\r\n"), "\(responses[1].debugDescription)")
             #expect(!responses[1].lowercased().contains("transfer-encoding"))
             #expect(r.text.hasSuffix("0123456789"))

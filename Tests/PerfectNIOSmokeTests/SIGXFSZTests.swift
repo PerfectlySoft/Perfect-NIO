@@ -95,6 +95,25 @@ private let uploadRoutes = root().POST.path("upload").readBody { (_, content) ->
     return "\(mime.bodySpecs.map(\.fileSize))"
 }.text()
 
+/// Runs `body`, retrying (up to 3 times) when it fails with EINTR. Under emulation a signal
+/// sometimes interrupted a system call while an exit test started its server.
+private func retryingEINTR<R>(_ body: () async throws -> R) async throws -> R {
+    for attempt in 1... {
+        do {
+            return try await body()
+        } catch where attempt < 3 && isEINTR(error) {
+            continue
+        }
+    }
+    fatalError("unreachable")
+}
+
+private func isEINTR(_ error: any Error) -> Bool {
+    if let error = error as? IOError { return error.errnoCode == EINTR }
+    if let error = error as? POSIXError { return error.code == .EINTR }
+    return String(describing: error).contains("Interrupted system call")
+}
+
 @Suite("SIGXFSZ")
 struct SIGXFSZTests {
 
@@ -122,7 +141,7 @@ struct SIGXFSZTests {
             signal(SIGXFSZ, SIG_DFL)
             startThreadWithSIGXFSZUnblocked()
             var status: Int32 = 0
-            try await Server(routes: uploadRoutes, port: 0).withServer { port in
+            try await retryingEINTR { try await Server(routes: uploadRoutes, port: 0).withServer { port in
                 setFileSizeLimit(1024)
                 let refused = await rawHTTP(port: port, [uploadRequest(fileBytes: 64 * 1024)])
                 let accepted = await rawHTTP(port: port, [uploadRequest(fileBytes: 100)])
@@ -132,7 +151,7 @@ struct SIGXFSZTests {
                 } else if accepted.status != 200 || accepted.body != "[100]" {
                     status = 3
                 }
-            }
+            } }
             awaitPendingSignals()
             exit(status)
         }
@@ -144,7 +163,7 @@ struct SIGXFSZTests {
         await #expect(processExitsWith: .exitCode(0)) {
             signal(SIGXFSZ, { _ in })
             let before = sigxfszHandlerBits()
-            try await Server(routes: uploadRoutes, port: 0).withServer { _ in }
+            try await retryingEINTR { try await Server(routes: uploadRoutes, port: 0).withServer { _ in } }
             exit(sigxfszHandlerBits() == before ? 0 : 2)
         }
     }
@@ -155,7 +174,7 @@ struct SIGXFSZTests {
         await #expect(processExitsWith: .exitCode(0)) {
             signal(SIGXFSZ, SIG_DFL)
             guard sigxfszHandlerBits() == 0 else { exit(2) }
-            try await Server(routes: uploadRoutes, port: 0).withServer { _ in }
+            try await retryingEINTR { try await Server(routes: uploadRoutes, port: 0).withServer { _ in } }
             exit(sigxfszHandlerBits() == 1 ? 0 : 3)
         }
     }
