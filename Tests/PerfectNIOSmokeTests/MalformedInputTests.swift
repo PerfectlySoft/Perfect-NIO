@@ -87,4 +87,49 @@ struct MalformedInputTests {
 		let isize = gzip.suffix(4).reversed().reduce(0) { $0 << 8 | Int($1) }
 		#expect(isize == chunk.count * 200)
 	}
+
+	// MARK: multipart/form-data
+
+	@Test("A multipart Content-Type whose boundary parameter has no value doesn't trap",
+	      arguments: ["multipart/form-data; boundary", "multipart/form-data;boundary", "multipart/form-data; boundary="])
+	func boundaryWithoutValue(_ contentType: String) {
+		#expect(throws: ErrorOutput.self) {
+			try MimeReader.parse(contentType: contentType, body: Array("--x\r\n\r\n--x--\r\n".utf8))
+		}
+	}
+
+	@Test func boundaryParameterIsParsedPerRFC2046() throws {
+		for contentType in ["multipart/form-data; boundary=\"abc\"",
+		                    "multipart/form-data; boundary=abc; charset=utf-8",
+		                    "multipart/form-data; charset=utf-8; BOUNDARY=abc"] {
+			let body = Array("--abc\r\nContent-Disposition: form-data; name=\"f\"\r\n\r\nv\r\n--abc--\r\n".utf8)
+			let reader = try MimeReader.parse(contentType: contentType, body: body)
+			#expect(reader.bodySpecs.map(\.fieldName) == ["f"], "\(contentType)")
+			#expect(reader.bodySpecs.map(\.fieldValue) == ["v"], "\(contentType)")
+		}
+	}
+
+	@Test func dispositionParametersAreMatchedByWholeName() throws {
+		// "filename=" contains "name="; a filename listed first used to become the field name.
+		let body = Array(("--abc\r\nContent-Disposition: form-data; filename=\"x;y.txt\"; name=\"f\"\r\n" +
+			"Content-Type: text/plain\r\n\r\nv\r\n--abc--\r\n").utf8)
+		let reader = try MimeReader.parse(contentType: "multipart/form-data; boundary=abc", body: body)
+		#expect(reader.bodySpecs.map(\.fieldName) == ["f"])
+		#expect(reader.bodySpecs.map(\.fileName) == ["x;y.txt"])
+		#expect(reader.bodySpecs.map(\.contentType) == ["text/plain"])
+	}
+
+	@Test("A part header parameter with nothing after \"=\" doesn't trap",
+	      arguments: ["form-data; name=", "form-data; name=\"f\"; filename=", "form-data; name=\""])
+	func dispositionParameterWithoutValue(_ disposition: String) {
+		let body = Array("--abc\r\nContent-Disposition: \(disposition)\r\n\r\nv\r\n--abc--\r\n".utf8)
+		_ = try? MimeReader.parse(contentType: "multipart/form-data; boundary=abc", body: body)
+	}
+
+	@Test("An empty part header value doesn't trap",
+	      arguments: ["Content-Disposition:", "Content-Type:", ":", "C:"])
+	func emptyPartHeaderValue(_ line: String) {
+		let body = Array("--abc\r\n\(line)\r\n\r\nv\r\n--abc--\r\n".utf8)
+		_ = try? MimeReader.parse(contentType: "multipart/form-data; boundary=abc", body: body)
+	}
 }
