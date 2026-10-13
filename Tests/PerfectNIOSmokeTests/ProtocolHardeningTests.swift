@@ -148,9 +148,9 @@ struct ProtocolHardeningTests {
                 }
             }
         }
-        try await Server(routes: routes, port: 0, idleTimeout: .seconds(1)).withServer { port in
+        try await Server(routes: routes, port: 0, idleTimeout: .seconds(2)).withServer { port in
             let echo = try await withRawWebSocket(port: port, path: "/ws", protocol: "p") { ws in
-                Thread.sleep(forTimeInterval: 2.5)
+                Thread.sleep(forTimeInterval: 4)
                 try ws.sendText("still here")
                 return try ws.receiveFrame()
             }
