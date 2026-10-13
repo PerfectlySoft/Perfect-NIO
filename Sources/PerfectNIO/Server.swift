@@ -346,7 +346,10 @@ public struct Server: Sendable {
 		// paths, so NIO serves the request as ordinary HTTP and the route's real status (e.g. 404)
 		// is returned, instead of the request being discarded by the upgrader.
 		let sync = channel.pipeline.syncOperations
-		let responseEncoder = HTTPResponseEncoder()
+		// Framing headers are set by NIOAsyncHTTPServer.writeResponse, which knows the request
+		// method: the encoder's automatic framing doesn't (configureHTTPServerPipeline feeds it
+		// that, a hand-built pipeline can't), so it chunked HEAD responses of unknown length.
+		let responseEncoder = HTTPResponseEncoder(configuration: .withoutAutomaticFraming)
 		let requestDecoder = ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes))
 		var extraHTTPHandlers: [RemovableChannelHandler] = [requestDecoder]
 		try sync.addHandler(responseEncoder)
@@ -390,7 +393,10 @@ public struct Server: Sendable {
 		let promise = channel.eventLoop.makePromise(of: HTTPOrWebSocket.self)
 
 		let sync = channel.pipeline.syncOperations
-		let responseEncoder = HTTPResponseEncoder()
+		// Framing headers are set by NIOAsyncHTTPServer.writeResponse, which knows the request
+		// method: the encoder's automatic framing doesn't (configureHTTPServerPipeline feeds it
+		// that, a hand-built pipeline can't), so it chunked HEAD responses of unknown length.
+		let responseEncoder = HTTPResponseEncoder(configuration: .withoutAutomaticFraming)
 		let requestDecoder = ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes))
 		var extraHTTPHandlers: [RemovableChannelHandler] = [requestDecoder]
 		try sync.addHandler(responseEncoder)
@@ -600,6 +606,15 @@ final class CloseOnErrorHandler: ChannelInboundHandler, RemovableChannelHandler,
 	func errorCaught(context: ChannelHandlerContext, error: Error) {
 		context.close(promise: nil)
 		context.fireErrorCaught(error)
+	}
+}
+
+extension HTTPResponseEncoder.Configuration {
+	/// See `NIOAsyncHTTPServer.writeResponse`, which sets the framing headers instead.
+	static var withoutAutomaticFraming: Self {
+		var configuration = Self()
+		configuration.automaticallySetFramingHeaders = false
+		return configuration
 	}
 }
 

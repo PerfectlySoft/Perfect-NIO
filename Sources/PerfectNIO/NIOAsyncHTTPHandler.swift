@@ -135,7 +135,7 @@ enum NIOAsyncHTTPServer {
 						(head, output) = await dispatch(request: request, finder: finder, isTLS: isTLS)
 					}
 					handshake = nil
-					try await writeResponse(head: head, output: output, request: request, outbound: outbound)
+					let keepAlive = try await writeResponse(head: head, output: output, request: request, outbound: outbound)
 					output.closed()
 					// Keep-alive behavior confirmed (Phase 7):
 					//   1. HTTPRequestHead.isKeepAlive correctly returns false for HTTP/1.0 and for
@@ -146,7 +146,7 @@ enum NIOAsyncHTTPServer {
 					//   3. Idle timeout: handled by IdleStateHandler in Server.serve() (Phase 5).
 					//      Future hardening: per-request receive deadline for slow-trickle slowloris
 					//      (read-idle timer resets on each byte; a whole-request deadline does not).
-					if !request.isKeepAlive { break }
+					if !keepAlive { break }
 				}
 			}
 		} catch {
@@ -315,39 +315,52 @@ enum NIOAsyncHTTPServer {
 	}
 
 	/// Writes the response head, pulls the body via `nextChunk()`, and terminates with `.end`.
+	/// Returns whether the connection can carry another request.
+	///
+	/// The response encoder doesn't set framing headers (see `Server.configureUpgrade`), so they
+	/// are set here: no body, Content-Length or Transfer-Encoding goes with a 1xx, 204 or 304
+	/// (RFC 9110 §6.4.1, §8.6); a response to HEAD has no body but keeps the headers GET would
+	/// send, except Transfer-Encoding; a body of unknown length is chunked on HTTP/1.1 and on
+	/// HTTP/1.0 is ended by closing the connection.
 	private static func writeResponse(
 		head: HTTPHead,
 		output: HTTPOutput,
 		request: NIOAsyncHTTPRequest,
 		outbound: NIOAsyncChannelOutboundWriter<Outbound>
-	) async throws {
+	) async throws -> Bool {
 		let version = request.requestHead.version
 		var responseHead = HTTPResponseHead(version: version,
 		                                    status: head.status ?? .ok,
 		                                    headers: head.headers)
-		if !request.headers.contains(name: "keep-alive") && !request.headers.contains(name: "close") {
-			switch (request.isKeepAlive, version.major, version.minor) {
-			case (true, 1, 0):
-				responseHead.headers.add(name: "Connection", value: "keep-alive")
-			case (false, 1, let n) where n >= 1:
-				responseHead.headers.add(name: "Connection", value: "close")
-			default:
-				()
-			}
-		}
-		// No body goes with a response to HEAD, a 1xx, 204 or 304 (RFC 9110 §6.4.1). Writing one
-		// anyway puts bytes on the wire that a keep-alive client or proxy reads as the start of
-		// the next response. A HEAD response keeps the headers, Content-Length included, that
-		// GET would send. A 204 has no Content-Length either.
 		let status = responseHead.status
-		let sendsBody = request.method != .HEAD && status.code >= 200 &&
-			status != .noContent && status != .notModified
-		if status == .noContent {
-			responseHead.headers.remove(name: "content-length")
+		let statusAllowsBody = status.code >= 200 && status != .noContent && status != .notModified
+		let isHead = request.method == .HEAD
+		// An output (or route) that asks for "Connection: close" gets it.
+		var keepAlive = request.isKeepAlive &&
+			!responseHead.headers[canonicalForm: "connection"].contains { $0.lowercased() == "close" }
+		if !statusAllowsBody {
+			if status != .notModified { responseHead.headers.remove(name: "content-length") }
 			responseHead.headers.remove(name: "transfer-encoding")
+		} else if responseHead.headers.contains(name: "content-length") {
+			responseHead.headers.remove(name: "transfer-encoding")
+		} else if isHead {
+			// Length unknown without producing the body; say nothing rather than "chunked".
+			responseHead.headers.remove(name: "transfer-encoding")
+		} else if version.major == 1 && version.minor >= 1 {
+			responseHead.headers.replaceOrAdd(name: "transfer-encoding", value: "chunked")
+		} else {
+			// HTTP/1.0 can only end a body of unknown length by closing the connection.
+			responseHead.headers.remove(name: "transfer-encoding")
+			keepAlive = false
+		}
+		responseHead.headers.remove(name: "connection")
+		if version.major == 1 && version.minor == 0 {
+			if keepAlive { responseHead.headers.add(name: "Connection", value: "keep-alive") }
+		} else if !keepAlive {
+			responseHead.headers.add(name: "Connection", value: "close")
 		}
 		try await outbound.write(.head(responseHead))
-		if sendsBody {
+		if statusAllowsBody && !isHead {
 			let allocator = ByteBufferAllocator()
 			while let chunk = try await output.nextChunk(allocator: allocator) {
 				if chunk.readableBytes > 0 {
@@ -356,5 +369,6 @@ enum NIOAsyncHTTPServer {
 			}
 		}
 		try await outbound.write(.end(nil))
+		return keepAlive
 	}
 }

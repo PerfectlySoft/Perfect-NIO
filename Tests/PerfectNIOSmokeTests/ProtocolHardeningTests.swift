@@ -17,6 +17,14 @@ private func raw(_ s: String) -> [UInt8] { Array(s.utf8) }
 
 private let tenBytes = root().path("ten").map { BytesOutput(body: Array("0123456789".utf8)) as HTTPOutput }
 
+/// A body of unknown length: three chunks, no Content-Length.
+private final class StreamOutput: HTTPOutput, @unchecked Sendable {
+    private var remaining = ["ab", "cd", "ef"]
+    override func nextChunk(allocator: ByteBufferAllocator) async throws -> ByteBuffer? {
+        remaining.isEmpty ? nil : allocator.buffer(string: remaining.removeFirst())
+    }
+}
+
 @Suite("HTTP protocol hardening")
 struct ProtocolHardeningTests {
 
@@ -157,6 +165,52 @@ struct ProtocolHardeningTests {
             let r = await rawHTTP(port: port, [rawHead("GET", "/inject", [("Connection", "close")])])
             #expect(!r.text.lowercased().contains("set-cookie"), "\(r.text.debugDescription)")
             #expect(r.closed)
+        }
+    }
+
+    /// A response to HEAD for an output of unknown length (a stream, or anything under
+    /// compressed()) used to be framed as chunked and end with the "0\r\n\r\n" terminator, which
+    /// a keep-alive client reads as the start of the next response.
+    @Test("HEAD on a body of unknown length sends no chunked framing", arguments: ["/stream", "/gz"])
+    func headOnStreamingOutput(_ path: String) async throws {
+        let routes = try root().dir(
+            root().path("stream").map { StreamOutput() as HTTPOutput },
+            root().path("gz").map { BytesOutput(body: Array(repeating: 65, count: 20_000)) as HTTPOutput }.compressed(),
+            tenBytes
+        )
+        try await Server(routes: routes, port: 0).withServer { port in
+            let r = await rawHTTP(port: port, [raw("HEAD \(path) HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n" +
+                                              "GET /ten HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")])
+            let responses = r.text.components(separatedBy: "HTTP/1.1 ")
+            #expect(responses.count == 3, "\(r.text.debugDescription)")
+            #expect(responses[1].hasSuffix("\r\n\r\n"), "\(responses[1].debugDescription)")
+            #expect(!responses[1].lowercased().contains("transfer-encoding"))
+            #expect(r.text.hasSuffix("0123456789"))
+        }
+    }
+
+    /// GET of a body of unknown length is chunked on HTTP/1.1 and keeps the connection usable.
+    @Test func streamingBodyIsChunkedAndKeepsTheConnection() async throws {
+        let routes = try root().dir(root().path("stream").map { StreamOutput() as HTTPOutput }, tenBytes)
+        try await Server(routes: routes, port: 0).withServer { port in
+            let r = await rawHTTP(port: port, [raw("GET /stream HTTP/1.1\r\nHost: x\r\n\r\n" +
+                                              "GET /ten HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")])
+            #expect(r.text.lowercased().contains("transfer-encoding: chunked"))
+            #expect(r.text.contains("2\r\nab\r\n2\r\ncd\r\n2\r\nef\r\n0\r\n\r\nHTTP/1.1 200"), "\(r.text.debugDescription)")
+            #expect(r.text.hasSuffix("0123456789"))
+        }
+    }
+
+    /// HTTP/1.0 has no chunked encoding: a body of unknown length ends with the connection.
+    @Test func streamingBodyOnHTTP10ClosesTheConnection() async throws {
+        let routes = root().path("stream").map { StreamOutput() as HTTPOutput }
+        try await Server(routes: routes, port: 0).withServer { port in
+            let r = await rawHTTP(port: port, [raw("GET /stream HTTP/1.0\r\nConnection: keep-alive\r\n\r\n")], timeout: 5)
+            #expect(r.text.hasSuffix("\r\n\r\nabcdef"), "\(r.text.debugDescription)")
+            #expect(!r.text.lowercased().contains("transfer-encoding"))
+            #expect(!r.text.lowercased().contains("keep-alive"))
+            #expect(r.closed)
+            #expect(r.elapsed < 4)
         }
     }
 }
