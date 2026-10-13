@@ -97,7 +97,9 @@ public final class WebSocketUpgradeHTTPOutput: HTTPOutput, @unchecked Sendable {
 		self.subprotocol = subprotocol
 	}
 	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
-		HTTPHead(status: .upgradeRequired, headers: HTTPHeaders([("Connection", "close")]))
+		HTTPHead(status: .upgradeRequired, headers: HTTPHeaders([
+			("Connection", "close"), ("Upgrade", "websocket"), ("Sec-WebSocket-Version", "13"),
+		]))
 	}
 }
 

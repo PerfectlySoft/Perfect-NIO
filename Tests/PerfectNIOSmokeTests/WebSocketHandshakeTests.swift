@@ -112,4 +112,25 @@ struct WebSocketHandshakeTests {
             #expect(await selected("chat") == nil)
         }
     }
+
+    /// A handshake NIO's upgrader would reject (no key, wrong version) used to get the
+    /// connection closed with no response. It is now served as HTTP: the webSocket route
+    /// answers 426 Upgrade Required with Sec-WebSocket-Version: 13, other routes as usual.
+    @Test("A malformed handshake gets an HTTP answer", arguments: [
+        ("/ws", "Sec-WebSocket-Version: 8\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n", 426),
+        ("/ws", "Sec-WebSocket-Version: 13\r\n", 426),
+        ("/missing", "Sec-WebSocket-Version: 8\r\n", 404),
+    ])
+    func malformedHandshake(_ path: String, _ fields: String, _ status: Int) async throws {
+        let routes = root().path("ws").webSocket(protocol: "p") { _ -> WebSocketHandler in { _ in } }
+        try await Server(routes: routes, port: 0).withServer { port in
+            let request = "GET \(path) HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\(fields)\r\n"
+            let r = await rawHTTP(port: port, [Array(request.utf8)], timeout: 20)
+            #expect(r.status == status, "\(r.text.debugDescription)")
+            if status == 426 {
+                #expect(r.text.lowercased().contains("sec-websocket-version: 13"))
+            }
+            #expect(r.closed)
+        }
+    }
 }

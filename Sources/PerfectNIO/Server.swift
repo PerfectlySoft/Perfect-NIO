@@ -883,10 +883,20 @@ private final class WebSocketUpgradeRouter: ChannelDuplexHandler, RemovableChann
 			buffered.append(Self.unwrapInboundIn(data))
 		case .awaitingHead:
 			let part = Self.unwrapInboundIn(data)
-			guard case .head(let head) = part, Self.isWebSocketUpgrade(head) else {
+			guard case .head(var head) = part, Self.isWebSocketUpgrade(head) else {
 				// Not a WebSocket handshake; this connection is plain HTTP from here on.
 				state = .passthrough
 				context.fireChannelRead(data)
+				return
+			}
+			guard Self.hasValidHandshakeFields(head) else {
+				// A handshake NIO's upgrader would refuse by closing the connection without a
+				// word (no Sec-WebSocket-Key, a version other than 13). Serve it as plain HTTP
+				// instead: a webSocket route answers 426 with Sec-WebSocket-Version: 13, any
+				// other route its usual response. Either way the connection then closes.
+				Self.removeWebSocketHeaders(&head)
+				state = .passthrough
+				context.fireChannelRead(Self.wrapInboundOut(.head(head)))
 				return
 			}
 			state = .resolving
@@ -935,6 +945,13 @@ private final class WebSocketUpgradeRouter: ChannelDuplexHandler, RemovableChann
 			context.read()
 		}
 		context.pipeline.syncOperations.removeHandler(self, promise: nil)
+	}
+
+	/// One Sec-WebSocket-Key and Sec-WebSocket-Version 13, as NIO's upgrader requires.
+	private static func hasValidHandshakeFields(_ head: HTTPRequestHead) -> Bool {
+		let keys = head.headers[canonicalForm: "sec-websocket-key"]
+		let versions = head.headers[canonicalForm: "sec-websocket-version"]
+		return keys.count == 1 && !keys[0].isEmpty && versions.count == 1 && versions[0] == "13"
 	}
 
 	private static func isWebSocketUpgrade(_ head: HTTPRequestHead) -> Bool {
