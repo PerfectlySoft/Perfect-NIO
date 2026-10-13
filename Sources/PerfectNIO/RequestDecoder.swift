@@ -399,7 +399,10 @@ public extension DecodingError {
 	/// `RequestDecodingFailure` mark.
 	var originalUnderlyingError: (any Error)? {
 		guard let underlying = context?.underlyingError else { return nil }
-		return (underlying as? RequestDecodingFailure)?.underlying ?? underlying
+		if let mark = underlying as? RequestDecodingFailure {
+			return mark.underlying
+		}
+		return underlying
 	}
 }
 

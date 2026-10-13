@@ -2121,8 +2121,12 @@ final class RequestDecodingFailureAPITests: XCTestCase {
             XCTFail("expected a DecodingError")
         } catch let error as DecodingError {
             XCTAssertTrue(error.isRequestDecodingFailure)
-            XCTAssertNotNil(error.originalUnderlyingError)
+            // The decoder's own underlying error (Foundation on Darwin gives one for bad JSON,
+            // swift-corelibs on Linux doesn't), never the mark itself.
             XCTAssertFalse(error.originalUnderlyingError is RequestDecodingFailure)
+            #if canImport(Darwin)
+            XCTAssertNotNil(error.originalUnderlyingError)
+            #endif
         }
     }
 }
