@@ -27,11 +27,11 @@ private let eqChar = "=".utf8.first!
 //	}
 //}
 
-public struct QueryDecoder {
+public struct QueryDecoder: Sendable {
 	typealias A = Array<UInt8>
 	typealias I = A.Index
 	typealias R = Range<I>
-	struct RangeTriple {
+	struct RangeTriple: Sendable {
 		let start: I
 		let middle: I
 		let end: I

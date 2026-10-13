@@ -20,7 +20,7 @@ import Foundation
 import NIOHTTP1
 import Logging
 
-public struct FileUpload: Codable {
+public struct FileUpload: Codable, Sendable {
 	public let contentType: MIMEType
 	public let fileName: String
 	public let fileSize: Int

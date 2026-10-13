@@ -23,7 +23,7 @@ func +(lhs: HTTPHeaders, rhs: HTTPHeaders) -> HTTPHeaders {
 	return HTTPHeaders(lhs.map {$0} + rhs.map {$0})
 }
 
-public struct HTTPHead {
+public struct HTTPHead: Sendable {
 	/// Optional HTTP status
 	public var status: HTTPResponseStatus?
 	/// HTTP headers

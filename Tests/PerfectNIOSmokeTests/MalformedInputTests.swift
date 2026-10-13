@@ -299,3 +299,26 @@ struct MalformedInputTests {
 		}
 	}
 }
+
+// MARK: - Public API shape
+
+/// Compile-time checks: these public value types can cross concurrency domains, and
+/// RouteDescription's uri is readable outside the module (the README uses it).
+@Suite("Public API")
+struct PublicAPITests {
+	private func requireSendable<T: Sendable>(_: T.Type) {}
+
+	@Test func valueTypesAreSendable() {
+		requireSendable(HTTPHead.self)
+		requireSendable(HTTPRequestInfo.self)
+		requireSendable(QueryDecoder.self)
+		requireSendable(FileUpload.self)
+		requireSendable(RouteDescription.self)
+		requireSendable(Server.self)
+	}
+
+	@Test func routeDescriptionsExposeTheirURI() {
+		let routes = root().path("a").map { "a" }.text()
+		#expect(routes.describe.map(\.uri) == ["/a"])
+	}
+}
