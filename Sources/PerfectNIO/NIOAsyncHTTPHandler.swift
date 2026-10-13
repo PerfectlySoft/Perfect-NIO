@@ -112,7 +112,7 @@ enum NIOAsyncHTTPServer {
 		do {
 			try await asyncChannel.executeThenClose { inbound, outbound in
 				var iterator = inbound.makeAsyncIterator()
-				while let assembled = try await assembleRequest(
+				requests: while let assembled = try await assembleRequest(
 					iterator: &iterator,
 					channel: asyncChannel.channel,
 					isTLS: isTLS,
@@ -125,10 +125,10 @@ enum NIOAsyncHTTPServer {
 					case .bodyTooLarge(let head, let bodyStarted):
 						try await rejectBodyTooLarge(head: head, bodyStarted: bodyStarted, iterator: &iterator,
 						                             channel: asyncChannel.channel, outbound: outbound)
-						return
+						break requests
 					case .badRequest(let head):
 						try await rejectBadRequest(head: head, channel: asyncChannel.channel, outbound: outbound)
-						return
+						break requests
 					}
 					let head: HTTPHead
 					let output: HTTPOutput
@@ -154,6 +154,10 @@ enum NIOAsyncHTTPServer {
 					//      (read-idle timer resets on each byte; a whole-request deadline does not).
 					if !keepAlive { break }
 				}
+				// Writes still queued in NIO are dropped when the channel closes, so wait for the
+				// last response to reach the socket before executeThenClose closes it. (If the
+				// client stops reading, the idle timeout closes the channel and this returns.)
+				await HTTPExchangeTracker.flushed(asyncChannel.channel)
 			}
 		} catch {
 			// Connection-level failure (client reset, write error, protocol error).

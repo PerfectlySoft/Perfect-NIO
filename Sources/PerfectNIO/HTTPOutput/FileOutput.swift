@@ -44,7 +44,7 @@ public class FileOutput: HTTPOutput, @unchecked Sendable {
 	// Open while the body is being read.
 	private var handle: FileHandle?
 	/// The most read into memory for one body chunk.
-	static let chunkSize = 256 * 1024
+	static let chunkSize = 64 * 1024
 
 	public init(localPath inPath: String) throws {
 		var localPath = inPath

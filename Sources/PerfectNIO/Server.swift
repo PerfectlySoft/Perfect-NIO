@@ -632,29 +632,30 @@ enum IdleTimeout {
 	/// `@unchecked Sendable`: created, and only used, on the channel's event loop.
 	final class Handlers: @unchecked Sendable {
 		let timer: IdleTimeoutHandler
-		let tracker: HTTPExchangeTracker
 		init(timeout: TimeAmount) {
 			timer = IdleTimeoutHandler(timeout: timeout)
-			tracker = HTTPExchangeTracker(timer: timer)
 		}
 	}
 
 	/// Adds the timer at the front of the pipeline, ahead of TLS and HTTP, so it measures raw
-	/// reads and writes. The tracker goes into the HTTP pipeline later (see `addTracker`).
+	/// reads and writes. An `HTTPExchangeTracker` in the HTTP pipeline tells it about requests
+	/// and responses (see `addTracker`).
 	static func add(to channel: Channel, timeout: TimeAmount) throws -> Handlers {
 		let handlers = Handlers(timeout: timeout)
 		try channel.pipeline.syncOperations.addHandler(handlers.timer, position: .first)
 		return handlers
 	}
 
-	/// Adds the tracker right after the HTTP request decoder, so it sees request and response
-	/// parts. It is one of the upgrader's extra HTTP handlers, removed on a WebSocket upgrade.
+	/// Adds an `HTTPExchangeTracker` right after the HTTP request decoder, so it sees request
+	/// and response parts. It is added with or without an idle timeout (the connection loop
+	/// also waits on it before closing) and is one of the upgrader's extra HTTP handlers,
+	/// removed on a WebSocket upgrade.
 	static func addTracker(_ handlers: Handlers?, after decoder: ChannelHandler,
 	                       to sync: ChannelPipeline.SynchronousOperations,
 	                       extraHTTPHandlers: inout [RemovableChannelHandler]) throws {
-		guard let handlers else { return }
-		try sync.addHandler(handlers.tracker, position: .after(decoder))
-		extraHTTPHandlers.append(handlers.tracker)
+		let tracker = HTTPExchangeTracker(timer: handlers?.timer)
+		try sync.addHandler(tracker, position: .after(decoder))
+		extraHTTPHandlers.append(tracker)
 	}
 
 	/// Called on the event loop when a connection is upgraded to WebSocket.
@@ -663,24 +664,38 @@ enum IdleTimeout {
 	}
 }
 
-/// Closes an idle connection. While no response is pending (before the first request, while
-/// a request is being received, between keep-alive requests) the connection is idle when
-/// nothing has been read for `timeout`. While a response is pending the route is working or
-/// the response is being sent, which can take as long as it takes (a slow download, a long
-/// poll, server-sent events), so the connection is idle only when its writes are backed up
-/// (the client isn't reading) and none has completed for `timeout`.
+/// Closes an idle connection.
+///
+/// While no response is pending (before the first request, while a request arrives, between
+/// keep-alive requests) the connection is idle when nothing has been read for `timeout`.
+///
+/// While a response is pending the route is working or the response is being sent, which can
+/// take as long as it takes (a slow download, a long poll, server-sent events). The connection
+/// is then idle only when the response is backed up (the channel isn't writable) and has made
+/// no progress for `timeout`. Progress is a completed write (writes are passed on in slices of
+/// `sliceSize`, so a steady reader completes one often) or the kernel reporting that more of
+/// the response has left its send buffer, since the kernel can absorb a large part of a
+/// response and wake the server only in big batches. A client that has stopped reading makes
+/// neither, and is closed.
 ///
 /// Sits first in the pipeline. `@unchecked Sendable`: only touched on its channel's event loop.
 final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @unchecked Sendable {
 	typealias InboundIn = NIOAny
 	typealias InboundOut = NIOAny
-	typealias OutboundIn = NIOAny
-	typealias OutboundOut = NIOAny
+	typealias OutboundIn = IOData
+	typealias OutboundOut = IOData
+
+	/// Writes larger than this are passed on in slices of this size, so a slow but steady
+	/// reader completes a write at least every `sliceSize` bytes rather than once per body chunk.
+	static let sliceSize = 16 * 1024
+	/// Kernel-reported progress smaller than this (a zero-window probe) doesn't count.
+	static let minimumKernelProgress: UInt64 = 1024
 
 	private let timeout: TimeAmount
 	private var lastRead = NIODeadline.now()
-	private var lastWrite = NIODeadline.now()
+	private var lastProgress = NIODeadline.now()
 	private var responsesPending = 0
+	private var kernelSent: UInt64?
 	private var check: RepeatedTask?
 
 	init(timeout: TimeAmount) {
@@ -692,7 +707,7 @@ final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @
 		responsesPending += 1
 	}
 
-	/// A response has been fully written. With none pending, the read-idle clock restarts.
+	/// A response has been written to the socket. With none pending, the read-idle clock restarts.
 	func responseEnded() {
 		responsesPending = max(0, responsesPending - 1)
 		if responsesPending == 0 {
@@ -702,7 +717,7 @@ final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @
 
 	func handlerAdded(context: ChannelHandlerContext) {
 		lastRead = .now()
-		lastWrite = .now()
+		lastProgress = .now()
 		let interval = TimeAmount.nanoseconds(max(timeout.nanoseconds / 4, 1_000_000))
 		let bound = NIOLoopBound(context, eventLoop: context.eventLoop)
 		check = context.eventLoop.scheduleRepeatedTask(initialDelay: interval, delay: interval) { [weak self] _ in
@@ -727,18 +742,33 @@ final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @
 	}
 
 	func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+		guard case .byteBuffer(var buffer) = Self.unwrapOutboundIn(data), buffer.readableBytes > Self.sliceSize else {
+			context.write(data, promise: tracking(promise, context: context))
+			return
+		}
+		while buffer.readableBytes > Self.sliceSize, let slice = buffer.readSlice(length: Self.sliceSize) {
+			context.write(Self.wrapOutboundOut(.byteBuffer(slice)), promise: tracking(nil, context: context))
+		}
+		context.write(Self.wrapOutboundOut(.byteBuffer(buffer)), promise: tracking(promise, context: context))
+	}
+
+	/// A promise for a write that records its completion as progress, cascading to `promise`.
+	private func tracking(_ promise: EventLoopPromise<Void>?, context: ChannelHandlerContext) -> EventLoopPromise<Void> {
 		let written = promise ?? context.eventLoop.makePromise()
 		written.futureResult.assumeIsolated().whenSuccess { [weak self] in
-			self?.lastWrite = .now()
+			self?.lastProgress = .now()
 		}
-		context.write(data, promise: written)
+		return written
 	}
 
 	private func closeIfIdle(context: ChannelHandlerContext) {
 		let now = NIODeadline.now()
 		let idle: Bool
 		if responsesPending > 0 {
-			idle = !context.channel.isWritable && now - lastWrite >= timeout
+			if !context.channel.isWritable {
+				sampleKernelProgress(context: context)
+			}
+			idle = !context.channel.isWritable && now - lastProgress >= timeout
 		} else {
 			idle = now - lastRead >= timeout
 		}
@@ -748,34 +778,96 @@ final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @
 			context.close(promise: nil)
 		}
 	}
+
+	/// Asks the kernel how much of the connection's output has left its send buffer, and counts
+	/// an advance as progress.
+	private func sampleKernelProgress(context: ChannelHandlerContext) {
+		guard let provider = context.channel as? SocketOptionProvider else { return }
+		let loop = context.eventLoop
+		Self.kernelBytesSent(provider).hop(to: loop).assumeIsolated().whenSuccess { [weak self] sent in
+			guard let self, let sent else { return }
+			if let previous = self.kernelSent, sent >= previous + Self.minimumKernelProgress {
+				self.lastProgress = .now()
+			}
+			if self.kernelSent.map({ sent >= $0 + Self.minimumKernelProgress || sent < $0 }) ?? true {
+				self.kernelSent = sent
+			}
+		}
+	}
+
+	/// A counter of the connection's output that has left the kernel: bytes acknowledged by the
+	/// peer on Linux, bytes transmitted (less retransmissions) on Darwin. Nil if unavailable.
+	private static func kernelBytesSent(_ provider: SocketOptionProvider) -> EventLoopFuture<UInt64?> {
+		#if canImport(Darwin)
+		let info: EventLoopFuture<tcp_connection_info> = provider.unsafeGetSocketOption(
+			level: SocketOptionLevel(IPPROTO_TCP), name: SocketOptionName(TCP_CONNECTION_INFO))
+		return info.map { $0.tcpi_txbytes &- $0.tcpi_txretransmitbytes }.recover { _ in nil }
+		#elseif os(Linux)
+		// The kernel's struct tcp_info up to tcpi_bytes_acked (Linux 4.1+), which sits after 8
+		// one-byte fields, 24 UInt32s and two UInt64s (offset 120). Glibc's declaration stops
+		// earlier. An older kernel fills less, leaving the field 0, so no kernel progress is seen.
+		struct TCPInfoPrefix: Sendable {
+			var leading: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64,
+			              UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64) =
+				(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+			var bytesAcked: UInt64 = 0
+		}
+		let info: EventLoopFuture<TCPInfoPrefix> = provider.unsafeGetSocketOption(
+			level: SocketOptionLevel(IPPROTO_TCP), name: SocketOptionName(TCP_INFO))
+		return info.map { $0.bytesAcked == 0 ? nil : $0.bytesAcked }.recover { _ in nil }
+		#else
+		return provider.eventLoop.makeSucceededFuture(nil)
+		#endif
+	}
 }
 
-/// Tells the `IdleTimeoutHandler` when a request has been received and when its response has
-/// been written. `@unchecked Sendable`: only touched on its channel's event loop.
+/// Tells the `IdleTimeoutHandler` (if there is one) when a request has been received and when
+/// its response has been written to the socket, and lets the connection loop wait for that
+/// before it closes. `@unchecked Sendable`: only touched on its channel's event loop.
 final class HTTPExchangeTracker: ChannelDuplexHandler, RemovableChannelHandler, @unchecked Sendable {
 	typealias InboundIn = HTTPServerRequestPart
 	typealias InboundOut = HTTPServerRequestPart
 	typealias OutboundIn = HTTPServerResponsePart
 	typealias OutboundOut = HTTPServerResponsePart
 
-	private let timer: IdleTimeoutHandler
+	private let timer: IdleTimeoutHandler?
+	/// Completes when the last response's end has been written to the socket.
+	private var lastEnd: EventLoopFuture<Void>?
 
-	init(timer: IdleTimeoutHandler) {
+	init(timer: IdleTimeoutHandler?) {
 		self.timer = timer
+	}
+
+	/// Waits until every response part written so far has reached the socket (or failed).
+	/// Closing a channel drops writes still queued in NIO, so a large response on a connection
+	/// that closes after it (Connection: close, HTTP/1.0) lost its tail to a slow reader.
+	static func flushed(_ channel: Channel) async {
+		guard let tracker = try? await channel.pipeline.handler(type: HTTPExchangeTracker.self).get() else { return }
+		let pending: EventLoopFuture<Void>?? = try? await channel.eventLoop.submit { tracker.lastEnd }.get()
+		_ = try? await pending??.get()
 	}
 
 	func channelRead(context: ChannelHandlerContext, data: NIOAny) {
 		if case .end = Self.unwrapInboundIn(data) {
-			timer.requestEnded()
+			timer?.requestEnded()
 		}
 		context.fireChannelRead(data)
 	}
 
 	func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
-		if case .end = Self.unwrapOutboundIn(data) {
-			timer.responseEnded()
+		guard case .end = Self.unwrapOutboundIn(data) else {
+			context.write(data, promise: promise)
+			return
 		}
-		context.write(data, promise: promise)
+		// The response is over once its last bytes have been written to the socket, not when
+		// they were queued: until then the client is still reading it.
+		let written = promise ?? context.eventLoop.makePromise()
+		let timer = self.timer
+		written.futureResult.assumeIsolated().whenComplete { _ in
+			timer?.responseEnded()
+		}
+		lastEnd = written.futureResult
+		context.write(data, promise: written)
 	}
 }
 
