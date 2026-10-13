@@ -764,10 +764,18 @@ private final class WebSocketUpgradeRouter: ChannelDuplexHandler, RemovableChann
 		             "Sec-WebSocket-Protocol", "Sec-WebSocket-Extensions"] {
 			head.headers.remove(name: name)
 		}
-		// Drop only the "upgrade" token from Connection, preserving any others (e.g. keep-alive).
-		let remaining = head.headers[canonicalForm: "connection"].filter { $0.lowercased() != "upgrade" }
+		// NIO's HTTP decoder has already stopped parsing this connection: it does that after any
+		// request asking to upgrade, upgraded or not. So the request is served as the
+		// connection's last: "close" replaces the "upgrade" token (and any keep-alive), the
+		// response says "Connection: close" and the connection is closed after it. Keeping it
+		// open used to drop the client's next request on the floor.
+		let remaining = head.headers[canonicalForm: "connection"].filter {
+			let token = $0.lowercased()
+			return token != "upgrade" && token != "keep-alive"
+		}
 		head.headers.remove(name: "Connection")
 		for value in remaining { head.headers.add(name: "Connection", value: String(value)) }
+		head.headers.add(name: "Connection", value: "close")
 	}
 }
 

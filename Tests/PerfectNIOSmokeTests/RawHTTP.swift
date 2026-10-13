@@ -131,3 +131,67 @@ func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5) async -> RawHTT
         }.start()
     }
 }
+
+/// Sends each request on one connection only after the previous response has fully arrived
+/// (head plus Content-Length body), unlike `rawHTTP`, which pipelines. Returns each response's
+/// text; a response that doesn't arrive within `timeout` seconds ends the exchange.
+func rawSequential(port: Int, _ requests: [[UInt8]], timeout: Int = 3) async -> [String] {
+    await withCheckedContinuation { continuation in
+        Thread {
+            continuation.resume(returning: rawSequentialBlocking(port: port, requests, timeout: timeout))
+        }.start()
+    }
+}
+
+private func rawSequentialBlocking(port: Int, _ requests: [[UInt8]], timeout: Int) -> [String] {
+    #if canImport(Darwin)
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    var one: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+    let sendFlags: Int32 = 0
+    #else
+    let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+    let sendFlags = Int32(MSG_NOSIGNAL)
+    #endif
+    guard fd >= 0 else { return [] }
+    defer { close(fd) }
+    var tv = timeval(tv_sec: timeout, tv_usec: 0)
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    var addr = sockaddr_in()
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = in_port_t(UInt16(port).bigEndian)
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let connected = withUnsafePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard connected == 0 else { return [] }
+
+    var responses: [String] = []
+    var pending: [UInt8] = []
+    var buf = [UInt8](repeating: 0, count: 64 * 1024)
+    for request in requests {
+        let sent = request.withUnsafeBytes { send(fd, $0.baseAddress!, request.count, sendFlags) }
+        guard sent == request.count else { break }
+        // Read until a whole response (head, then Content-Length bytes) is buffered.
+        var complete: Int?
+        while complete == nil {
+            let text = String(decoding: pending, as: UTF8.self)
+            if let headEnd = text.range(of: "\r\n\r\n") {
+                let head = text[..<headEnd.lowerBound].lowercased()
+                let length = head.split(separator: "\r\n")
+                    .first { $0.hasPrefix("content-length:") }
+                    .flatMap { Int($0.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) } ?? 0
+                let headBytes = text[..<headEnd.upperBound].utf8.count
+                if pending.count >= headBytes + length { complete = headBytes + length; break }
+            }
+            let n = buf.withUnsafeMutableBytes { recv(fd, $0.baseAddress!, $0.count, 0) }
+            if n > 0 { pending += buf[0..<n] } else if n < 0 && errno == EINTR { continue } else { break }
+        }
+        guard let complete else { break }
+        responses.append(String(decoding: pending[..<complete], as: UTF8.self))
+        pending.removeSubrange(..<complete)
+    }
+    return responses
+}
