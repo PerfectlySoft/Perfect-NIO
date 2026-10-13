@@ -45,6 +45,33 @@ private final class ChunkedSource: HTTPOutput, @unchecked Sendable {
 	}
 }
 
+/// Decodes through the container APIs RequestDecoder doesn't support.
+private struct Nested: Decodable {
+	enum Keys: String, CodingKey { case a, b }
+	init(from decoder: Decoder) throws {
+		let c = try decoder.container(keyedBy: Keys.self)
+		_ = try c.nestedContainer(keyedBy: Keys.self, forKey: .a)
+	}
+}
+private struct NestedUnkeyed: Decodable {
+	enum Keys: String, CodingKey { case a }
+	init(from decoder: Decoder) throws {
+		_ = try decoder.container(keyedBy: Keys.self).nestedUnkeyedContainer(forKey: .a)
+	}
+}
+private struct Super: Decodable {
+	enum Keys: String, CodingKey { case a }
+	init(from decoder: Decoder) throws {
+		_ = try decoder.container(keyedBy: Keys.self).superDecoder()
+	}
+}
+private struct UnkeyedNested: Decodable {
+	init(from decoder: Decoder) throws {
+		var c = try decoder.unkeyedContainer()
+		_ = try c.nestedUnkeyedContainer()
+	}
+}
+
 @Suite("Malformed input")
 struct MalformedInputTests {
 
@@ -258,5 +285,17 @@ struct MalformedInputTests {
 		// and "+" was a quantifier.
 		#expect(finder.route(.GET, "/v1x0/x") == nil)
 		#expect(finder.route(.GET, "/aab/x") == nil)
+	}
+
+	// MARK: Request decoding
+
+	@Test("Container APIs the form decoder lacks throw instead of trapping", arguments: 0..<4)
+	func unsupportedDecoderContainers(_ index: Int) {
+		let type = ([Nested.self, NestedUnkeyed.self, Super.self, UnkeyedNested.self] as [any Decodable.Type])[index]
+		let head = HTTPRequestHead(version: .http1_1, method: .GET, uri: "/x?a=1&b=2")
+		let request = NIOAsyncHTTPRequest(head: head, body: [], channel: nil, isTLS: false)
+		#expect(throws: DecodingError.self) {
+			_ = try request.decode(type, content: .urlForm(QueryDecoder(Array("a=1".utf8))))
+		}
 	}
 }

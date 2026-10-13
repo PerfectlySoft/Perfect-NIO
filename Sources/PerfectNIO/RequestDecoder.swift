@@ -212,17 +212,25 @@ class RequestReader<K : CodingKey>: KeyedDecodingContainerProtocol {
 		throw DecodingError.keyNotFound(key, .init(codingPath: codingPath,
 												   debugDescription: "The data type \(t) is not supported for GET requests."))
 	}
+	// Form and query values are flat name/value pairs, so there is nothing to nest. These threw
+	// fatalError, which took the server down whenever a type with a custom init(from:) used
+	// them; a DecodingError becomes a 400 from the `decode` route modifier instead.
 	func nestedContainer<NestedKey>(keyedBy type: NestedKey.Type, forKey key: Key) throws -> KeyedDecodingContainer<NestedKey> where NestedKey : CodingKey {
-		fatalError("Unimplimented")
+		throw unsupported(type, key)
 	}
 	func nestedUnkeyedContainer(forKey key: Key) throws -> UnkeyedDecodingContainer {
-		fatalError("Unimplimented")
+		throw unsupported(UnkeyedDecodingContainer.self, key)
 	}
 	func superDecoder() throws -> Decoder {
-		fatalError("Unimplimented")
+		throw DecodingError.typeMismatch(Decoder.self, .init(codingPath: codingPath,
+			debugDescription: "Form and query parameters don't support superDecoder()."))
 	}
 	func superDecoder(forKey key: Key) throws -> Decoder {
-		fatalError("Unimplimented")
+		throw unsupported(Decoder.self, key)
+	}
+	private func unsupported(_ type: Any.Type, _ key: Key) -> DecodingError {
+		.typeMismatch(type, .init(codingPath: codingPath + [key],
+			debugDescription: "Form and query parameters are flat; nested values aren't supported."))
 	}
 }
 
@@ -305,10 +313,12 @@ class RequestUnkeyedReader: UnkeyedDecodingContainer, SingleValueDecodingContain
 		return try T(from: parent)
 	}
 	func nestedContainer<NestedKey>(keyedBy type: NestedKey.Type) throws -> KeyedDecodingContainer<NestedKey> where NestedKey : CodingKey {
-		fatalError("Unimplimented")
+		throw DecodingError.typeMismatch(type, .init(codingPath: codingPath,
+			debugDescription: "Form and query parameters are flat; nested values aren't supported."))
 	}
 	func nestedUnkeyedContainer() throws -> UnkeyedDecodingContainer {
-		fatalError("Unimplimented")
+		throw DecodingError.typeMismatch(UnkeyedDecodingContainer.self, .init(codingPath: codingPath,
+			debugDescription: "Form and query parameters are flat; nested values aren't supported."))
 	}
 	func superDecoder() throws -> Decoder {
 		currentIndex += 1
