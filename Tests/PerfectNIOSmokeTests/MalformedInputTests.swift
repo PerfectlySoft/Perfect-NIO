@@ -132,4 +132,44 @@ struct MalformedInputTests {
 		let body = Array("--abc\r\n\(line)\r\n\r\nv\r\n--abc--\r\n".utf8)
 		_ = try? MimeReader.parse(contentType: "multipart/form-data; boundary=abc", body: body)
 	}
+
+	// MARK: Range
+
+	/// A 10-byte temp file served by FileOutput; returns the head for `range` and the body.
+	private func serve(range: String) async throws -> (HTTPHead?, [UInt8]) {
+		let path = NSTemporaryDirectory() + "perfect-nio-range-\(UUID().uuidString)"
+		try Data("0123456789".utf8).write(to: URL(fileURLWithPath: path))
+		defer { try? FileManager.default.removeItem(atPath: path) }
+		let output = try FileOutput(localPath: path)
+		let head = output.head(request: requestInfo([("Range", range)]))
+		return (head, try await drain(output))
+	}
+
+	@Test("A Range end at or near Int.max doesn't trap",
+	      arguments: ["bytes=0-9223372036854775807", "bytes=2-9223372036854775806", "bytes=9223372036854775807-9223372036854775807"])
+	func rangeEndAtIntMax(_ range: String) async throws {
+		_ = try await serve(range: range)
+	}
+
+	@Test func rangeRequests() async throws {
+		func check(_ range: String, _ expected: String, contentRange: String?,
+		           sourceLocation: SourceLocation = #_sourceLocation) async throws {
+			let (head, body) = try await serve(range: range)
+			#expect(String(decoding: body, as: UTF8.self) == expected, sourceLocation: sourceLocation)
+			#expect(head?.headers.first(name: "content-range") == contentRange, sourceLocation: sourceLocation)
+			#expect(head?.headers.first(name: "content-length") == "\(expected.utf8.count)", sourceLocation: sourceLocation)
+			#expect(head?.status == (contentRange == nil ? .ok : .partialContent), sourceLocation: sourceLocation)
+		}
+		try await check("bytes=2-4", "234", contentRange: "bytes 2-4/10")
+		try await check("bytes=7-", "789", contentRange: "bytes 7-9/10")
+		try await check("bytes=8-100", "89", contentRange: "bytes 8-9/10")
+		try await check("bytes=0-9223372036854775807", "0123456789", contentRange: "bytes 0-9/10")
+		// Multiple ranges are comma-separated (RFC 9110 §14.1.1); only the first is served.
+		try await check("bytes=1-2, 5-6", "12", contentRange: "bytes 1-2/10")
+		// Unsatisfiable or malformed ranges are ignored and the whole file is served.
+		try await check("bytes=10-", "0123456789", contentRange: nil)
+		try await check("bytes=5-3", "0123456789", contentRange: nil)
+		try await check("bytes=-3", "0123456789", contentRange: nil)
+		try await check("items=0-1", "0123456789", contentRange: nil)
+	}
 }

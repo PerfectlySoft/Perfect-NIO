@@ -74,10 +74,10 @@ public class FileOutput: HTTPOutput, @unchecked Sendable {
 			headers.append(("Content-Length", "\(range.count)"))
 			headers.append(("Content-Range", "bytes \(range.startIndex)-\(range.endIndex-1)/\(size)"))
 			byteRange = range
-		} else {
-			headers.append(("Content-Length", "\(size)"))
-			byteRange = 0..<size
+			return HTTPHead(status: .partialContent, headers: HTTPHeaders(headers))
 		}
+		headers.append(("Content-Length", "\(size)"))
+		byteRange = 0..<size
 		return HTTPHead(status: .ok, headers: HTTPHeaders(headers))
 	}
 
@@ -102,28 +102,29 @@ public class FileOutput: HTTPOutput, @unchecked Sendable {
 		return eTag.map { $0.hexString }.joined()
 	}
 
-	// bytes=0-3/7-9/10-15
+	/// The satisfiable ranges in a `Range: bytes=…` header (RFC 9110 §14.1.1), in order:
+	/// "bytes=0-3, 7-9, 10-". The header is client input: ranges that are malformed, backwards,
+	/// suffix ranges ("-5", not supported) or that start at or past `max` are dropped.
 	func parseRangeHeader(fromHeader header: String, max: Int) -> [Range<Int>] {
-		let initialSplit = header.split(separator: "=")
-		guard initialSplit.count == 2 && String(initialSplit[0]) == "bytes" else {
+		let initialSplit = header.split(separator: "=", maxSplits: 1)
+		guard initialSplit.count == 2 &&
+				initialSplit[0].trimmingCharacters(in: .whitespaces).lowercased() == "bytes" else {
 			return []
 		}
-		return initialSplit[1].split(separator: "/").compactMap {
-			parseOneRange(fromString: String($0), max: max)
+		return initialSplit[1].split(separator: ",").compactMap {
+			parseOneRange(fromString: $0.trimmingCharacters(in: .whitespaces), max: max)
 		}
 	}
 
-	// "0-3" or "0-"
+	/// "0-3" or "7-". The end is inclusive and clamped to the file; nil for an empty result.
 	func parseOneRange(fromString string: String, max: Int) -> Range<Int>? {
-		let split = string.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
-		guard split.count == 2 else { return nil }
+		let split = string.split(separator: "-", omittingEmptySubsequences: false)
+		guard split.count == 2, let lower = Int(split[0]), lower >= 0, lower < max else { return nil }
 		if split[1].isEmpty {
-			guard let lower = Int(split[0]), lower <= max else { return nil }
 			return lower..<max
 		}
-		guard let lower = Int(split[0]), let upperRaw = Int(split[1]) else { return nil }
-		let upper = Swift.min(max, upperRaw + 1)
-		guard lower <= upper else { return nil }
-		return lower..<upper
+		// Compare before adding 1, so an end of Int.max can't overflow.
+		guard let lastByte = Int(split[1]), lastByte >= lower else { return nil }
+		return lower..<(lastByte >= max - 1 ? max : lastByte + 1)
 	}
 }
