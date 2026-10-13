@@ -467,6 +467,12 @@ enum NIOAsyncHTTPServer {
 					logger.error("Output body is longer than its Content-Length; connection closed", metadata: [
 						"method": "\(request.method)", "path": "\(request.path)", "content-length": "\(declaredLength)",
 					])
+					// Send what fits the declared length, then close.
+					var head = chunk
+					if let fits = head.readSlice(length: declaredLength - sent), fits.readableBytes > 0 {
+						try await outbound.write(.body(.byteBuffer(fits)))
+						sent += fits.readableBytes
+					}
 					keepAlive = false
 					break
 				}

@@ -350,6 +350,9 @@ struct ProtocolHardeningTests {
                 #expect(!r.text.contains("0123456789HTTP") && r.text.components(separatedBy: "HTTP/1.1 ").count == 2,
                         "\(path): \(r.text.debugDescription)")
             }
+            // The longer body is cut at the declared length (it used to be dropped whole).
+            let long = await rawHTTP(port: port, [rawHead("GET", "/long")], timeout: 20)
+            #expect(long.text.hasSuffix("\r\n\r\n012"), "\(long.text.debugDescription)")
             for path in ["/dup", "/bad"] {
                 let r = await rawHTTP(port: port, [rawHead("GET", path, [("Connection", "close")])], timeout: 20)
                 let lengths = r.text.lowercased().components(separatedBy: "\r\n").filter { $0.hasPrefix("content-length:") }
