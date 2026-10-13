@@ -41,7 +41,6 @@ final class NIOAsyncHTTPRequest: HTTPRequest, @unchecked Sendable {
 	private struct MutableState {
 		var uriVariables: [String: String] = [:]
 		var contentConsumed = 0
-		var requestDecodingFailed = false
 	}
 	private let state = NIOLockedValueBox(MutableState())
 
@@ -63,12 +62,7 @@ final class NIOAsyncHTTPRequest: HTTPRequest, @unchecked Sendable {
 	let contentLength: Int
 	var contentRead: Int { bodyBytes.count }
 	var contentConsumed: Int { state.withLockedValue { $0.contentConsumed } }
-	/// Set when `HTTPRequest.decode(_:content:)` failed on this request, so a `DecodingError`
-	/// escaping the route is answered as the client's fault (400), not the server's.
-	var requestDecodingFailed: Bool {
-		get { state.withLockedValue { $0.requestDecodingFailed } }
-		set { state.withLockedValue { $0.requestDecodingFailed = newValue } }
-	}
+
 	var channel: Channel? { channelRef }
 	var localAddress: SocketAddress? { channelRef?.localAddress }
 	var remoteAddress: SocketAddress? { channelRef?.remoteAddress }
@@ -361,7 +355,7 @@ enum NIOAsyncHTTPServer {
 				}
 			case let err as ErrorOutput:
 				output = err
-			case is DecodingError where request.requestDecodingFailed:
+			case let decodingError as DecodingError where decodingError.isRequestDecodingFailure:
 				// Decoding the request failed and the handler let the error escape.
 				logger.notice("Could not decode request", metadata: [
 					"method": "\(request.method)", "path": "\(request.path)", "error": "\(error)",

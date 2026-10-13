@@ -369,7 +369,12 @@ struct MalformedInputTests {
 			try await group.waitForAll()
 		}
 		#expect(request.contentConsumed == 8)
-		#expect(request.requestDecodingFailed)
+		let failure = Result { try request.decode(Small.self, content: .other(Array("bad".utf8))) }
+		if case .failure(let error as DecodingError) = failure {
+			#expect(error.isRequestDecodingFailure)
+		} else {
+			Issue.record("expected a DecodingError")
+		}
 	}
 
 	// MARK: Request decoding

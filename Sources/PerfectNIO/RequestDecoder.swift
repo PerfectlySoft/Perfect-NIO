@@ -45,8 +45,7 @@ public extension HTTPRequest {
 		do {
 			return try decodeContent(type, content: content)
 		} catch let error as DecodingError {
-			(self as? NIOAsyncHTTPRequest)?.requestDecodingFailed = true
-			throw error
+			throw error.markedAsRequestDecodingFailure
 		}
 	}
 
@@ -372,3 +371,44 @@ extension HTTPRequest {
 }
 
 private let requestDecodingLogger = Logger(label: "perfect.nio.decode")
+
+/// Marks a `DecodingError` thrown by `HTTPRequest.decode(_:content:)`: it becomes the error's
+/// context's `underlyingError`, wrapping the original one. A marked error escaping a route is
+/// the client's fault (400); any other `DecodingError`, such as one from the handler decoding
+/// its own data, is the server's (500). The mark travels with the error itself, so a handler
+/// that catches a request-decode failure and then fails on its own data still gets a 500.
+struct RequestDecodingFailure: Error, CustomStringConvertible {
+	let underlying: (any Error)?
+	var description: String {
+		underlying.map { "\(String(reflecting: $0)) (decoding the request)" } ?? "decoding the request"
+	}
+}
+
+extension DecodingError {
+	var isRequestDecodingFailure: Bool {
+		context?.underlyingError is RequestDecodingFailure
+	}
+
+	var markedAsRequestDecodingFailure: DecodingError {
+		guard !isRequestDecodingFailure, let context else { return self }
+		let marked = Context(codingPath: context.codingPath, debugDescription: context.debugDescription,
+		                     underlyingError: RequestDecodingFailure(underlying: context.underlyingError))
+		switch self {
+		case .typeMismatch(let type, _): return .typeMismatch(type, marked)
+		case .valueNotFound(let type, _): return .valueNotFound(type, marked)
+		case .keyNotFound(let key, _): return .keyNotFound(key, marked)
+		case .dataCorrupted: return .dataCorrupted(marked)
+		@unknown default: return self
+		}
+	}
+
+	private var context: Context? {
+		switch self {
+		case .typeMismatch(_, let context), .valueNotFound(_, let context),
+		     .keyNotFound(_, let context), .dataCorrupted(let context):
+			return context
+		@unknown default:
+			return nil
+		}
+	}
+}
