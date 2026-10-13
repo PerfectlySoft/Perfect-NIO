@@ -97,6 +97,21 @@ struct MalformedInputTests {
 		#expect(encoding("gzip;level=9") == "gzip")
 		#expect(encoding("deflate;foo;q=0.3") == "deflate")
 		#expect(encoding("identity") == nil)
+		// "*" stands only for codings not listed; an explicit q=0 refuses one.
+		#expect(encoding("gzip;q=0, *") == "deflate")
+		#expect(encoding("gzip;q=0, deflate;q=0, *") == nil)
+		#expect(encoding("*") == "gzip")
+	}
+
+	@Test("compressed() always sends Vary: Accept-Encoding", arguments: ["gzip", "identity", ""])
+	func compressedVaries(_ acceptEncoding: String) {
+		for size in [100, 20_000] {
+			let output = CompressedOutput(source: BytesOutput(body: Array(repeating: 65, count: size)))
+			let headers = acceptEncoding.isEmpty ? [] : [("Accept-Encoding", acceptEncoding)]
+			let head = output.head(request: requestInfo(headers))
+			#expect(head?.headers[canonicalForm: "vary"].map { $0.lowercased() } == ["accept-encoding"],
+			        "size \(size)")
+		}
 	}
 
 	@Test func compressedStreamIsNotCutShortByAChunkThatCompressesToNothing() async throws {

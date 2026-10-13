@@ -76,7 +76,17 @@ public class CompressedOutput: HTTPOutput, @unchecked Sendable {
 		deinitializeEncoder()
 	}
 
+	/// Every response from a compressed() route depends on Accept-Encoding, compressed or not,
+	/// so caches must key on it.
 	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
+		var head = negotiatedHead(request: request) ?? HTTPHead(headers: HTTPHeaders())
+		if !head.headers[canonicalForm: "vary"].contains(where: { $0.lowercased() == "accept-encoding" }) {
+			head.headers.add(name: "Vary", value: "Accept-Encoding")
+		}
+		return head
+	}
+
+	private func negotiatedHead(request: HTTPRequestInfo) -> HTTPHead? {
 		guard let algo = compressionAlgorithm(request.head) else {
 			return sourceContent.head(request: request)
 		}
@@ -139,7 +149,9 @@ public class CompressedOutput: HTTPOutput, @unchecked Sendable {
 		if gzipQValue > 0 || deflateQValue > 0 {
 			return gzipQValue >= deflateQValue ? .gzip : .deflate
 		} else if anyQValue > 0 {
-			return .gzip
+			// "*" covers only codings not listed: an explicit q=0 refuses that coding.
+			if gzipQValue < 0 { return .gzip }
+			if deflateQValue < 0 { return .deflate }
 		}
 		return nil
 	}
