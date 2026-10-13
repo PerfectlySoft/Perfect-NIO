@@ -67,7 +67,8 @@ class RouteFinderRegExp: RouteFinder, @unchecked Sendable {
 	}
 	func route(_ method: HTTPMethod, _ uri: String) -> ResolvedRoute? {
 		guard let matchers = self.matchers[method.name] else { return nil }
-		let uriRange = NSRange(location: 0, length: uri.count)
+		// NSRange counts UTF-16 code units, not Characters.
+		let uriRange = NSRange(location: 0, length: uri.utf16.count)
 		for matcher in matchers {
 			guard matcher.0.firstMatch(in: uri, range: uriRange) != nil else { continue }
 			return matcher.1
@@ -79,7 +80,7 @@ class RouteFinderRegExp: RouteFinder, @unchecked Sendable {
 			switch comp {
 			case "*":  return "/([^/]*)"
 			case "**": return "/(.*)"
-			default:   return "/" + comp
+			default:   return "/" + NSRegularExpression.escapedPattern(for: comp)
 			}
 		}
 		return try NSRegularExpression(pattern: "^" + strs.joined(separator: "") + "$",

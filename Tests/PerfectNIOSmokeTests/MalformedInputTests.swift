@@ -227,4 +227,36 @@ struct MalformedInputTests {
 		#expect(chunks.count == 3)
 		#expect(body == Array(bytes[100...]))
 	}
+
+	// MARK: Route matching
+
+	@Test func wildcardRouteDoesNotMatchAPathWithMoreComponents() throws {
+		let routes = try root().dir(
+			root().public.wild { (_: HTTPRequest, name: String) in name }.text(),
+			root().v1_0.x { "x" }.text()
+		)
+		let finder = try RouteFinderDual(routes)
+		#expect(finder.route(.GET, "/public/a") != nil)
+		#expect(finder.route(.GET, "/public/\u{1F600}") != nil)
+		// The regex used to be matched over the path's Character count instead of its UTF-16
+		// length, so each multi-unit character cut a code unit off the end of the match. Enough
+		// of them hid a trailing "/secret" and the request reached "/public/*".
+		let emoji = String(repeating: "\u{1F600}", count: 7)
+		#expect(finder.route(.GET, "/public/\(emoji)/secret") == nil)
+		#expect(finder.route(.GET, "/public/e\u{301}e\u{301}/b") == nil)
+	}
+
+	@Test func routeComponentsAreMatchedLiterally() throws {
+		let routes = try root().dir(
+			root().path("v1.0").wild { (_: HTTPRequest, name: String) in name }.text(),
+			root().path("a+b").wild { (_: HTTPRequest, name: String) in name }.text()
+		)
+		let finder = try RouteFinderDual(routes)
+		#expect(finder.route(.GET, "/v1.0/x") != nil)
+		#expect(finder.route(.GET, "/a+b/x") != nil)
+		// A route component was spliced into the regex unescaped: "." matched any character
+		// and "+" was a quantifier.
+		#expect(finder.route(.GET, "/v1x0/x") == nil)
+		#expect(finder.route(.GET, "/aab/x") == nil)
+	}
 }
