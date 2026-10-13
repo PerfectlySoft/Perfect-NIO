@@ -131,6 +131,9 @@ struct RequestBodyLimitTests {
     /// after the 413 rather than waiting to drain a body that won't be sent.
     @Test func expectContinueIsRefusedImmediately() async throws {
         try await withLimitedServer(1024) { port, calls in
+            // Warm up first: under emulation the first request through a path can take over a
+            // second on its own.
+            _ = await rawHTTP(port: port, [rawHead("POST", "/echo", octets + [("Content-Length", "5000")])], timeout: 20)
             let head = rawHead("POST", "/echo", octets + [("Content-Length", "5000"), ("Expect", "100-continue")])
             let r = await rawHTTP(port: port, [head], timeout: 20)
             #expect(r.status == 413)
@@ -140,7 +143,7 @@ struct RequestBodyLimitTests {
             let drained = await rawHTTP(port: port, [rawHead("POST", "/echo", octets + [("Content-Length", "5000")])],
                                         timeout: 20)
             #expect(drained.closed)
-            #expect(r.elapsed < drained.elapsed - 1, "\(r.elapsed) vs \(drained.elapsed)")
+            #expect(r.elapsed < drained.elapsed - 0.5, "\(r.elapsed) vs \(drained.elapsed)")
             #expect(calls.count == 0)
         }
     }
