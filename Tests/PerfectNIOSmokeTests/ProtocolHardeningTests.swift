@@ -97,4 +97,15 @@ struct ProtocolHardeningTests {
             }
         }
     }
+
+    /// statusCheck's 2xx status, or one a handler set on the context, survives an output
+    /// that sets no status of its own.
+    @Test func contextStatusSurvivesAnOutputWithoutAStatus() async throws {
+        let routes = root().path("made").map { "made" }.statusCheck { .created }.text()
+        try await Server(routes: routes, port: 0).withServer { port in
+            let r = await rawHTTP(port: port, [rawHead("GET", "/made", [("Connection", "close")])])
+            #expect(r.status == 201)
+            #expect(r.body == "made")
+        }
+    }
 }
