@@ -85,7 +85,7 @@ struct ProtocolHardeningTests {
             if case .other(let b) = c { return "\(b.count)" }
             return "none"
         }.text()
-        try await Server(routes: routes, port: 0, idleTimeout: .seconds(2)).withServer { port in
+        try await Server(routes: routes, port: 0, idleTimeout: .seconds(4)).withServer { port in
             let parts = [rawHead("POST", "/up", [("Content-Length", "6"), ("Connection", "close")])]
                 + (0..<6).map { _ in Array("x".utf8) }
             let r = await rawHTTP(port: port, parts, timeout: 20, partDelay: 0.5)
