@@ -71,7 +71,7 @@ final class PlainHTTPFallbackHandlerTests: XCTestCase {
 		// Mirrors what the real WebSocket-upgrade path does next; a prior spurious failure above
 		// would make this either trap on double-fulfillment or simply never be observed as .success.
 		let httpChannel = try HTTPConnectionChannel(wrappingChannelSynchronously: channel)
-		promise.succeed(.http(httpChannel))
+		promise.succeed(.http(httpChannel, nil))
 
 		guard case .success(let value) = result.withLockedValue({ $0 }), case .http = value else {
 			XCTFail("expected .success(.http), got \(String(describing: result.withLockedValue({ $0 })))")

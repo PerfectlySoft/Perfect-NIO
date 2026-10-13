@@ -36,9 +36,29 @@ typealias HTTPServerChannel = NIOAsyncChannel<EventLoopFuture<HTTPOrWebSocket>, 
 
 /// The outcome of the HTTP-upgrade negotiation for one connection.
 enum HTTPOrWebSocket: Sendable {
-	case http(HTTPConnectionChannel)
+	/// Plain HTTP. The box holds what resolving the first request's route produced, if that
+	/// request was a WebSocket handshake to a `webSocket(...)` route that didn't upgrade.
+	case http(HTTPConnectionChannel, HandshakeBox?)
 	case websocket(WebSocketConnectionChannel, WebSocketHandler, [WebSocketOption])
 }
+
+/// What running a `webSocket(...)` route for a handshake produced. Written by the pre-upgrade
+/// router and read by the upgrader and, when the connection isn't upgraded, by its first HTTP
+/// dispatch, which serves the result instead of running the route a second time.
+enum HandshakeResolution: Sendable {
+	case webSocket(WebSocketHandler, [WebSocketOption])
+	/// The route threw (a refused handshake: statusCheck, an auth check) or produced an output
+	/// that isn't a WebSocket (a flagged parent `dir`'d into a plain child).
+	case served(Result<(RouteContext, HTTPOutput), any Error>)
+
+	var webSocket: (WebSocketHandler, [WebSocketOption])? {
+		if case .webSocket(let handler, let options) = self { return (handler, options) }
+		return nil
+	}
+}
+
+/// One per connection; see `HandshakeResolution`.
+typealias HandshakeBox = NIOLockedValueBox<HandshakeResolution?>
 
 /// An HTTP(S) server for a set of routes.
 ///
@@ -272,14 +292,14 @@ public struct Server: Sendable {
 	                                     idleHandlers: IdleTimeout.Handlers?) throws -> EventLoopFuture<HTTPOrWebSocket> {
 		// Populated by the pre-upgrade router (below) before the typed upgrader runs, so the
 		// upgrader and its pipeline handler can read the resolved handler synchronously.
-		let resolved = NIOLockedValueBox<(WebSocketHandler, [WebSocketOption])?>(nil)
+		let resolved = HandshakeBox(nil)
 
 		let upgrader = NIOTypedWebSocketServerUpgrader<HTTPOrWebSocket>(
 			shouldUpgrade: { channel, _ in
 				// The router only forwards a handshake here (Upgrade header intact) once it has
 				// confirmed the path is a WebSocket route and stored the handler — so accept iff
 				// that happened. The upgrader validates Sec-WebSocket-* and computes the accept key.
-				let accept = resolved.withLockedValue { $0 } != nil
+				let accept = resolved.withLockedValue { $0?.webSocket } != nil
 				return channel.eventLoop.makeSucceededFuture(accept ? HTTPHeaders() : nil)
 			},
 			upgradePipelineHandler: { channel, _ in
@@ -288,7 +308,7 @@ public struct Server: Sendable {
 					if let idleHandlers { IdleTimeout.remove(idleHandlers, from: channel) }
 					let wsChannel = try WebSocketConnectionChannel(wrappingChannelSynchronously: channel)
 					let noop: WebSocketHandler = { _ in }
-					let (handler, options) = resolved.withLockedValue { $0 } ?? (noop, [])
+					let (handler, options) = resolved.withLockedValue { $0?.webSocket } ?? (noop, [])
 					return HTTPOrWebSocket.websocket(wsChannel, handler, options)
 				}
 			}
@@ -298,7 +318,7 @@ public struct Server: Sendable {
 			upgraders: [upgrader],
 			notUpgradingCompletionHandler: { channel in
 				channel.eventLoop.makeCompletedFuture {
-					HTTPOrWebSocket.http(try HTTPConnectionChannel(wrappingChannelSynchronously: channel))
+					HTTPOrWebSocket.http(try HTTPConnectionChannel(wrappingChannelSynchronously: channel), resolved)
 				}
 			}
 		)
@@ -350,7 +370,7 @@ public struct Server: Sendable {
 	                                             finder: any RouteFinder,
 	                                             isTLS: Bool,
 	                                             idleHandlers: IdleTimeout.Handlers?) throws -> EventLoopFuture<HTTPOrWebSocket> {
-		let resolved = NIOLockedValueBox<(WebSocketHandler, [WebSocketOption])?>(nil)
+		let resolved = HandshakeBox(nil)
 		let promise = channel.eventLoop.makePromise(of: HTTPOrWebSocket.self)
 
 		let sync = channel.pipeline.syncOperations
@@ -374,11 +394,11 @@ public struct Server: Sendable {
 		// Constructed now (captured by wsUpgrader below) but added to the pipeline only after
 		// upgradeHandler, so it sits downstream and only ever sees data via HTTPServerUpgradeHandler's
 		// not-upgrading forwarding path (see its doc comment below).
-		let fallbackHandler = PlainHTTPFallbackHandler(promise: promise)
+		let fallbackHandler = PlainHTTPFallbackHandler(promise: promise, handshake: resolved)
 
 		let wsUpgrader = NIOWebSocketServerUpgrader(
 			shouldUpgrade: { channel, _ in
-				let accept = resolved.withLockedValue { $0 } != nil
+				let accept = resolved.withLockedValue { $0?.webSocket } != nil
 				return channel.eventLoop.makeSucceededFuture(accept ? HTTPHeaders() : nil)
 			},
 			upgradePipelineHandler: { channel, _ in
@@ -394,7 +414,7 @@ public struct Server: Sendable {
 						channel.eventLoop.makeCompletedFuture {
 							let wsChannel = try WebSocketConnectionChannel(wrappingChannelSynchronously: channel)
 							let noop: WebSocketHandler = { _ in }
-							let (handler, options) = resolved.withLockedValue { $0 } ?? (noop, [])
+							let (handler, options) = resolved.withLockedValue { $0?.webSocket } ?? (noop, [])
 							promise.succeed(.websocket(wsChannel, handler, options))
 						}
 					}
@@ -419,16 +439,22 @@ public struct Server: Sendable {
 	/// Only routes flagged at registration as WebSocket endpoints are run here. Any other route is
 	/// left untouched so it runs exactly once, as plain HTTP with the real body, after the
 	/// Upgrade headers are stripped.
+	///
+	/// A WebSocket route that throws, or produces something other than a WebSocket, has its
+	/// result kept so the connection's first HTTP dispatch can serve it without running the
+	/// route again.
 	fileprivate static func resolveWebSocket(_ request: NIOAsyncHTTPRequest,
-	                                         finder: any RouteFinder) async -> (WebSocketHandler, [WebSocketOption])? {
+	                                         finder: any RouteFinder) async -> HandshakeResolution? {
 		guard let route = finder.route(request.method, request.path), route.isWebSocket else { return nil }
 		let ctx = RouteContext(request: request, uri: request.path)
 		do {
-			let (_, output) = try await route.handler(ctx, request)
-			guard let wsOutput = output as? WebSocketUpgradeHTTPOutput else { return nil }
-			return (wsOutput.handler, wsOutput.options)
+			let (finalCtx, output) = try await route.handler(ctx, request)
+			if let wsOutput = output as? WebSocketUpgradeHTTPOutput {
+				return .webSocket(wsOutput.handler, wsOutput.options)
+			}
+			return .served(.success((finalCtx, output)))
 		} catch {
-			return nil
+			return .served(.failure(error))
 		}
 	}
 
@@ -500,8 +526,9 @@ public struct Server: Sendable {
 	                                     maxBodySize: Int?) async {
 		do {
 			switch try await upgradeResult.get() {
-			case .http(let channel):
-				await NIOAsyncHTTPServer.handleConnection(channel, finder: finder, isTLS: isTLS, maxBodySize: maxBodySize)
+			case .http(let channel, let handshake):
+				await NIOAsyncHTTPServer.handleConnection(channel, finder: finder, isTLS: isTLS, maxBodySize: maxBodySize,
+				                                          handshake: handshake?.withLockedValue { $0 })
 			case .websocket(let channel, let handler, let options):
 				await WebSocketRunner.run(channel, handler: handler, options: options)
 			}
@@ -618,10 +645,12 @@ final class PlainHTTPFallbackHandler: ChannelInboundHandler, RemovableChannelHan
 	typealias InboundOut = HTTPServerRequestPart
 
 	private let promise: EventLoopPromise<HTTPOrWebSocket>
+	private let handshake: HandshakeBox?
 	private var resolved = false
 
-	init(promise: EventLoopPromise<HTTPOrWebSocket>) {
+	init(promise: EventLoopPromise<HTTPOrWebSocket>, handshake: HandshakeBox? = nil) {
 		self.promise = promise
+		self.handshake = handshake
 	}
 
 	/// Called by `configureUpgradeFallback` right before it removes this handler as part of a
@@ -640,7 +669,7 @@ final class PlainHTTPFallbackHandler: ChannelInboundHandler, RemovableChannelHan
 		resolved = true
 		do {
 			let httpChannel = try HTTPConnectionChannel(wrappingChannelSynchronously: context.channel)
-			promise.succeed(.http(httpChannel))
+			promise.succeed(.http(httpChannel, handshake))
 		} catch {
 			promise.fail(error)
 		}
@@ -685,9 +714,9 @@ private final class WebSocketUpgradeRouter: ChannelDuplexHandler, RemovableChann
 	private var readPending = false
 	private let finder: any RouteFinder
 	private let isTLS: Bool
-	private let resolved: NIOLockedValueBox<(WebSocketHandler, [WebSocketOption])?>
+	private let resolved: HandshakeBox
 
-	init(finder: any RouteFinder, isTLS: Bool, resolved: NIOLockedValueBox<(WebSocketHandler, [WebSocketOption])?>) {
+	init(finder: any RouteFinder, isTLS: Bool, resolved: HandshakeBox) {
 		self.finder = finder
 		self.isTLS = isTLS
 		self.resolved = resolved
@@ -727,10 +756,10 @@ private final class WebSocketUpgradeRouter: ChannelDuplexHandler, RemovableChann
 		let finder = self.finder
 		let resolved = self.resolved
 		Task {
-			let ws = await Server.resolveWebSocket(request, finder: finder)
+			let resolution = await Server.resolveWebSocket(request, finder: finder)
 			boundContext.eventLoop.execute {
-				if let ws = ws { resolved.withLockedValue { $0 = ws } }
-				self.flush(context: boundContext.value, stripUpgrade: ws == nil)
+				resolved.withLockedValue { $0 = resolution }
+				self.flush(context: boundContext.value, stripUpgrade: resolution?.webSocket == nil)
 			}
 		}
 	}

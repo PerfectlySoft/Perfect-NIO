@@ -101,8 +101,11 @@ enum NIOAsyncHTTPServer {
 		_ asyncChannel: NIOAsyncChannel<Inbound, Outbound>,
 		finder: any RouteFinder,
 		isTLS: Bool,
-		maxBodySize: Int?
+		maxBodySize: Int?,
+		handshake: HandshakeResolution? = nil
 	) async {
+		// Only the connection's first request can be the handshake that was resolved.
+		var handshake = handshake
 		do {
 			try await asyncChannel.executeThenClose { inbound, outbound in
 				var iterator = inbound.makeAsyncIterator()
@@ -121,7 +124,17 @@ enum NIOAsyncHTTPServer {
 						                             channel: asyncChannel.channel, outbound: outbound)
 						return
 					}
-					let (head, output) = await dispatch(request: request, finder: finder, isTLS: isTLS)
+					let head: HTTPHead
+					let output: HTTPOutput
+					// The handshake's route already ran (with an empty body) while the upgrade was
+					// decided; serve that result rather than running it again. A handshake that
+					// carried a body runs the route again with the body.
+					if case .served(let outcome)? = handshake, request.contentRead == 0 {
+						(head, output) = respond(to: request, with: outcome, isTLS: isTLS)
+					} else {
+						(head, output) = await dispatch(request: request, finder: finder, isTLS: isTLS)
+					}
+					handshake = nil
 					try await writeResponse(head: head, output: output, request: request, outbound: outbound)
 					output.closed()
 					// Keep-alive behavior confirmed (Phase 7):
@@ -247,18 +260,34 @@ enum NIOAsyncHTTPServer {
 		finder: any RouteFinder,
 		isTLS: Bool
 	) async -> (HTTPHead, HTTPOutput) {
-		let requestInfo = HTTPRequestInfo(head: request.requestHead, options: isTLS ? .isTLS : [])
 		guard let fnc = finder[request.method, request.path] else {
+			let requestInfo = HTTPRequestInfo(head: request.requestHead, options: isTLS ? .isTLS : [])
 			let error = ErrorOutput(status: .notFound, description: "No route for URI.")
 			let head = HTTPHead(headers: HTTPHeaders()).merged(with: error.head(request: requestInfo))
 			return (head, error)
 		}
 		let ctx = RouteContext(request: request, uri: request.path)
 		do {
-			let (finalCtx, output) = try await fnc(ctx, request)
+			return respond(to: request, with: .success(try await fnc(ctx, request)), isTLS: isTLS)
+		} catch {
+			return respond(to: request, with: .failure(error), isTLS: isTLS)
+		}
+	}
+
+	/// The response head and output for a route's result, mapping a thrown error to an output.
+	private static func respond(
+		to request: NIOAsyncHTTPRequest,
+		with outcome: Result<(RouteContext, HTTPOutput), any Error>,
+		isTLS: Bool
+	) -> (HTTPHead, HTTPOutput) {
+		let requestInfo = HTTPRequestInfo(head: request.requestHead, options: isTLS ? .isTLS : [])
+		switch outcome {
+		case .success(let (finalCtx, output)):
 			let head = finalCtx.responseHead.merged(with: output.head(request: requestInfo))
 			return (head, output)
-		} catch {
+		case .failure(let error):
+			// The context the route started with: an error carries none of its later changes.
+			let ctx = RouteContext(request: request, uri: request.path)
 			let output: HTTPOutput
 			switch error {
 			case let err as TerminationType:
