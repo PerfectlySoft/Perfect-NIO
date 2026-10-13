@@ -21,8 +21,16 @@ struct PathTraversalTests {
         "/files/..%2fsecret.txt", "/files/..%2Fx", "/files/%2e%2e%2fx", "/files/..%5cx",
         "/files/..\\x", "/files/a\\..\\x", "/files/%252e%252e/x",
         "/files/../secret.txt?q=1",
+        // A fragment is never sent by a conforming client, and routing doesn't cut at "#".
+        "/files/x#/../../secret.txt", "/files/x%23/../y", "/files/x#y", "/files/#",
+        // "..;" and "..%00" aren't ".." to the filesystem, but are refused anyway.
+        "/files/..;/x", "/files/..;jsessionid=1/x", "/files/..%00/x",
+        "/files/%25252525252e%25252525252e/x",
+        "http://evil/files/../x",
     ]
-    static let allowed = ["/files/a..b", "/files/.hidden", "/files/x.txt", "/files/a.b.c/d", "/files/...", "/files/x?q=..%2f"]
+    static let allowed = ["/files/a..b", "/files/.hidden", "/files/x.txt", "/files/a.b.c/d", "/files/...", "/files/x?q=..%2f",
+                          // Not dots to any filesystem: overlong UTF-8, %u escapes, fullwidth full stops.
+                          "/files/%c0%ae%c0%ae/x", "/files/%u002e%u002e/x", "/files/%EF%BC%8E%EF%BC%8E/x"]
 
     @Test("A .. segment is refused before routing", arguments: refused)
     func refusedPath(_ path: String) async throws {
@@ -67,7 +75,9 @@ struct PathTraversalTests {
     }
 
     @Test func detection() {
-        for path in Self.refused { #expect(RequestPath.hasDotDotSegment(path), "\(path)") }
+        for path in Self.refused where !path.contains("#") && !path.contains("%23") {
+            #expect(RequestPath.hasDotDotSegment(path), "\(path)")
+        }
         for path in Self.allowed { #expect(!RequestPath.hasDotDotSegment(path), "\(path)") }
         #expect(!RequestPath.hasDotDotSegment("/a/%zz/b"))
         #expect(RequestPath.hasDotDotSegment("/a/%zz/%2e%2e"))

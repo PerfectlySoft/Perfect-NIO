@@ -195,7 +195,7 @@ enum NIOAsyncHTTPServer {
 		}
 		// A ".." segment (raw or percent-encoded) is refused before routing: wild and trailing
 		// would otherwise hand it to a handler, which might join it onto a file path.
-		if RequestPath.hasDotDotSegment(head.uri) {
+		if RequestPath.hasFragment(head.uri) || RequestPath.hasDotDotSegment(head.uri) {
 			return .badRequest(head)
 		}
 		if let maxBodySize,

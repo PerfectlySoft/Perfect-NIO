@@ -15,25 +15,37 @@
 //
 
 enum RequestPath {
-	/// True if the path part of `uri` has a ".." segment, as sent or after percent-decoding
-	/// (repeatedly, so double encoding is caught), with "/" and "\" both treated as
-	/// separators, so "%2e%2e", ".%2e", "..%2f", "..%5c" and "..\" all count. Such a request is
-	/// refused before routing, so `wild` and `trailing` never hand a handler a traversal
-	/// segment. A segment that merely contains dots ("a..b", ".hidden", "...") is fine.
+	/// True if the request target has a "#" (a fragment, which a conforming client never sends;
+	/// routing doesn't treat it specially, so it must not hide path text from the check below).
+	static func hasFragment(_ uri: String) -> Bool {
+		uri.utf8.contains(UInt8(ascii: "#"))
+	}
+
+	/// True if the path part of `uri` (everything before the first "?", exactly the text the
+	/// router uses) has a ".." segment, as sent or after percent-decoding (repeated until
+	/// nothing changes, so nested encodings are caught), with "/" and "\\" both treated as
+	/// separators, so "%2e%2e", ".%2e", "..%2f", "..%5c" and "..\\" all count. A segment also
+	/// counts if it is ".." followed by ";" (a path parameter, "..;jsessionid=") or a NUL.
+	/// Such a request is refused before routing, so `wild` and `trailing` never hand a handler
+	/// a traversal segment. A segment that merely contains dots ("a..b", ".hidden", "...") is
+	/// fine.
 	static func hasDotDotSegment(_ uri: String) -> Bool {
-		var bytes = Array(uri.utf8.prefix { $0 != UInt8(ascii: "?") && $0 != UInt8(ascii: "#") })
-		for _ in 0..<4 {
+		var bytes = Array(uri.utf8.prefix { $0 != UInt8(ascii: "?") })
+		while true {
 			if hasDotDotSegment(bytes: bytes) { return true }
 			let decoded = percentDecoded(bytes)
+			// Each pass that changes anything makes the text shorter, so this ends.
 			if decoded == bytes { return false }
 			bytes = decoded
 		}
-		return hasDotDotSegment(bytes: bytes)
 	}
 
 	private static func hasDotDotSegment(bytes: [UInt8]) -> Bool {
 		bytes.split(omittingEmptySubsequences: false) { $0 == UInt8(ascii: "/") || $0 == UInt8(ascii: "\\") }
-			.contains { $0.elementsEqual([UInt8(ascii: "."), UInt8(ascii: ".")]) }
+			.contains { segment in
+				let name = segment.prefix { $0 != UInt8(ascii: ";") && $0 != 0 }
+				return name.elementsEqual([UInt8(ascii: "."), UInt8(ascii: ".")])
+			}
 	}
 
 	/// Decodes valid %XX escapes and leaves anything else (an invalid escape) as it is.
