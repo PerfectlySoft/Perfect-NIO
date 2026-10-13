@@ -22,6 +22,7 @@
 import NIO
 import NIOCore
 import NIOHTTP1
+import NIOConcurrencyHelpers
 import Foundation
 import Logging
 
@@ -33,10 +34,17 @@ private let logger = Logger(label: "perfect.nio.server")
 /// so `readContent()` / `readSomeContent()` serve from an in-memory byte buffer
 /// rather than pulling from the channel mid-handling.
 ///
-/// `@unchecked Sendable`: created and consumed within a single connection task.
-/// `uriVariables` is mutated only during route resolution (before the body runs),
-/// and `contentConsumed` is touched only by the owning task.
+/// `@unchecked Sendable`: the immutable parts are set at creation; the mutable state
+/// (`uriVariables`, `contentConsumed`, the decode-failure flag) is behind a lock, so a handler
+/// may use the request from several tasks at once (two `async let` decodes, say).
 final class NIOAsyncHTTPRequest: HTTPRequest, @unchecked Sendable {
+	private struct MutableState {
+		var uriVariables: [String: String] = [:]
+		var contentConsumed = 0
+		var requestDecodingFailed = false
+	}
+	private let state = NIOLockedValueBox(MutableState())
+
 	let requestHead: HTTPRequestHead
 	private let bodyBytes: [UInt8]
 	private let channelRef: Channel?
@@ -45,16 +53,22 @@ final class NIOAsyncHTTPRequest: HTTPRequest, @unchecked Sendable {
 	var method: HTTPMethod { requestHead.method }
 	var uri: String { requestHead.uri }
 	var headers: HTTPHeaders { requestHead.headers }
-	var uriVariables: [String: String] = [:]
+	var uriVariables: [String: String] {
+		get { state.withLockedValue { $0.uriVariables } }
+		set { state.withLockedValue { $0.uriVariables = newValue } }
+	}
 	let path: String
 	let searchArgs: QueryDecoder?
 	let contentType: String?
 	let contentLength: Int
 	var contentRead: Int { bodyBytes.count }
-	private(set) var contentConsumed: Int = 0
+	var contentConsumed: Int { state.withLockedValue { $0.contentConsumed } }
 	/// Set when `HTTPRequest.decode(_:content:)` failed on this request, so a `DecodingError`
 	/// escaping the route is answered as the client's fault (400), not the server's.
-	var requestDecodingFailed = false
+	var requestDecodingFailed: Bool {
+		get { state.withLockedValue { $0.requestDecodingFailed } }
+		set { state.withLockedValue { $0.requestDecodingFailed = newValue } }
+	}
 	var channel: Channel? { channelRef }
 	var localAddress: SocketAddress? { channelRef?.localAddress }
 	var remoteAddress: SocketAddress? { channelRef?.remoteAddress }
@@ -73,16 +87,21 @@ final class NIOAsyncHTTPRequest: HTTPRequest, @unchecked Sendable {
 	}
 
 	func readSomeContent() async throws -> [ByteBuffer] {
-		guard contentConsumed < bodyBytes.count else { return [] }
+		let count = bodyBytes.count
+		let alreadyRead = state.withLockedValue { state in
+			defer { state.contentConsumed = count }
+			return state.contentConsumed >= count
+		}
+		guard !alreadyRead else { return [] }
 		var buf = ByteBufferAllocator().buffer(capacity: bodyBytes.count)
 		buf.writeBytes(bodyBytes)
-		contentConsumed = bodyBytes.count
 		return [buf]
 	}
 
 	func readContent() async throws -> HTTPRequestContentType {
 		guard !bodyBytes.isEmpty else { return .none }
-		contentConsumed = bodyBytes.count
+		let count = bodyBytes.count
+		state.withLockedValue { $0.contentConsumed = count }
 		let ct = contentType ?? "application/octet-stream"
 		if ct.hasPrefix("multipart/form-data") {
 			return .multiPartForm(try MimeReader.parse(contentType: ct, body: bodyBytes))

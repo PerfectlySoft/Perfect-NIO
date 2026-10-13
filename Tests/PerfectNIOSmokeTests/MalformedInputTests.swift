@@ -344,6 +344,34 @@ struct MalformedInputTests {
 		#expect(finder.route(.GET, "/aab/x") == nil)
 	}
 
+	// MARK: Concurrent use of a request
+
+	private struct Small: Decodable { let a: Int }
+
+	/// HTTPRequest is Sendable, so a handler may decode one request from two tasks at once
+	/// (two `async let`s). Its mutable state used to be unsynchronised: under Thread Sanitizer
+	/// this reported data races on contentConsumed and the decode-failure flag. Run this
+	/// suite with `swift test --sanitize=thread` to check; it passes either way without TSan.
+	@Test func concurrentUseOfOneRequest() async throws {
+		let head = HTTPRequestHead(version: .http1_1, method: .POST, uri: "/x",
+		                           headers: HTTPHeaders([("Content-Type", "application/json")]))
+		let request = NIOAsyncHTTPRequest(head: head, body: Array("{\"a\": 1}".utf8), channel: nil, isTLS: false)
+		try await withThrowingTaskGroup(of: Void.self) { group in
+			for i in 0..<50 {
+				group.addTask {
+					let content = try await request.readContent()
+					_ = try? request.decode(Small.self, content: i % 2 == 0 ? content : .other(Array("bad".utf8)))
+					_ = try await request.readSomeContent()
+					request.uriVariables["k\(i % 3)"] = "\(i)"
+					_ = request.contentConsumed
+				}
+			}
+			try await group.waitForAll()
+		}
+		#expect(request.contentConsumed == 8)
+		#expect(request.requestDecodingFailed)
+	}
+
 	// MARK: Request decoding
 
 	private struct NameForm: Decodable { let name: String }
