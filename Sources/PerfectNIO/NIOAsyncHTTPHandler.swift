@@ -123,6 +123,9 @@ enum NIOAsyncHTTPServer {
 						try await rejectBodyTooLarge(head: head, bodyStarted: bodyStarted, iterator: &iterator,
 						                             channel: asyncChannel.channel, outbound: outbound)
 						return
+					case .badRequest(let head):
+						try await rejectBadRequest(head: head, channel: asyncChannel.channel, outbound: outbound)
+						return
 					}
 					let head: HTTPHead
 					let output: HTTPOutput
@@ -160,6 +163,8 @@ enum NIOAsyncHTTPServer {
 		case request(NIOAsyncHTTPRequest)
 		/// `bodyStarted`: some of the body had already arrived when it was refused.
 		case bodyTooLarge(HTTPRequestHead, bodyStarted: Bool)
+		/// A head NIO's parser accepted but HTTP forbids; answered 400 and the connection closed.
+		case badRequest(HTTPRequestHead)
 	}
 
 	/// Reads inbound parts until a complete request (`.head` … `.end`) is framed.
@@ -179,6 +184,11 @@ enum NIOAsyncHTTPServer {
 		guard case .head(let head) = firstPart else {
 			// Body or end with no preceding head — malformed; abandon the connection.
 			return nil
+		}
+		// More than one Host header must be refused (RFC 9112 §3.2): front ends and the app could
+		// disagree on which host the request is for.
+		if head.headers[canonicalForm: "host"].count > 1 {
+			return .badRequest(head)
 		}
 		if let maxBodySize,
 		   let declared = head.headers.first(name: "content-length").flatMap({ Int($0) }),
@@ -252,6 +262,25 @@ enum NIOAsyncHTTPServer {
 			case .head, .end: return
 			}
 		}
+	}
+
+	/// Sends 400 with `Connection: close`. The body (if any) isn't read, so the connection can't
+	/// carry another request.
+	private static func rejectBadRequest(
+		head: HTTPRequestHead,
+		channel: Channel,
+		outbound: NIOAsyncChannelOutboundWriter<Outbound>
+	) async throws {
+		let body = Array("Bad request.".utf8)
+		var headers = HTTPHeaders()
+		headers.add(name: "Content-Type", value: "text/plain")
+		headers.add(name: "Content-Length", value: "\(body.count)")
+		headers.add(name: "Connection", value: "close")
+		try await outbound.write(.head(HTTPResponseHead(version: head.version, status: .badRequest, headers: headers)))
+		var buffer = channel.allocator.buffer(capacity: body.count)
+		buffer.writeBytes(body)
+		try await outbound.write(.body(.byteBuffer(buffer)))
+		try await outbound.write(.end(nil))
 	}
 
 	/// Resolves the route and runs the async pipeline, mapping thrown errors to outputs.

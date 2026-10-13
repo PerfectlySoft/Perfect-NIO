@@ -274,4 +274,15 @@ struct ProtocolHardeningTests {
             #expect(r.elapsed < 10)
         }
     }
+
+    /// Two Host headers are refused (RFC 9112 §3.2); NIO's parser accepts them and the request
+    /// used to be served.
+    @Test func duplicateHostIsRefused() async throws {
+        try await Server(routes: tenBytes, port: 0).withServer { port in
+            let r = await rawHTTP(port: port, [raw("GET /ten HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n")], timeout: 20)
+            #expect(r.status == 400, "\(r.text.debugDescription)")
+            #expect(!r.text.contains("0123456789"))
+            #expect(r.closed)
+        }
+    }
 }
