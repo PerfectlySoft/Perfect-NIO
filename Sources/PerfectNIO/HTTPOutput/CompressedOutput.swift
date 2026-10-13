@@ -106,14 +106,18 @@ public class CompressedOutput: HTTPOutput, @unchecked Sendable {
 		}
 		guard !done else { return nil }
 
-		guard let chunk = try await sourceContent.nextChunk(allocator: allocator) else {
-			// Source exhausted — flush the compressor and mark done.
-			done = true
-			let flushed = compress(nil, allocator: allocator)
-			return flushed.readableBytes > 0 ? flushed : nil
+		// zlib may hold back a chunk's output (Z_NO_FLUSH). Returning that empty result would
+		// read as the end of the body, so keep feeding the compressor until it emits something.
+		while let chunk = try await sourceContent.nextChunk(allocator: allocator) {
+			let compressed = compress(chunk, allocator: allocator)
+			if compressed.readableBytes > 0 {
+				return compressed
+			}
 		}
-		let compressed = compress(chunk, allocator: allocator)
-		return compressed.readableBytes > 0 ? compressed : nil
+		// Source exhausted — flush the compressor and mark done.
+		done = true
+		let flushed = compress(nil, allocator: allocator)
+		return flushed.readableBytes > 0 ? flushed : nil
 	}
 
 	private func compressionAlgorithm(_ head: HTTPRequestHead) -> CompressionAlgorithm? {

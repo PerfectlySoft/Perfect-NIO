@@ -27,6 +27,24 @@ private func drain(_ output: HTTPOutput) async throws -> [UInt8] {
 	return bytes
 }
 
+/// Streams `count` chunks of `chunk` with no Content-Length, like a hand-written HTTPOutput.
+private final class ChunkedSource: HTTPOutput, @unchecked Sendable {
+	let chunk: [UInt8]
+	var remaining: Int
+	init(chunk: [UInt8], count: Int) {
+		self.chunk = chunk
+		self.remaining = count
+	}
+	override func head(request: HTTPRequestInfo) -> HTTPHead? {
+		HTTPHead(headers: HTTPHeaders([("Content-Type", "text/plain")]))
+	}
+	override func nextChunk(allocator: ByteBufferAllocator) async throws -> ByteBuffer? {
+		guard remaining > 0 else { return nil }
+		remaining -= 1
+		return allocator.buffer(bytes: chunk)
+	}
+}
+
 @Suite("Malformed input")
 struct MalformedInputTests {
 
@@ -52,5 +70,21 @@ struct MalformedInputTests {
 		#expect(encoding("gzip;level=9") == "gzip")
 		#expect(encoding("deflate;foo;q=0.3") == "deflate")
 		#expect(encoding("identity") == nil)
+	}
+
+	@Test func compressedStreamIsNotCutShortByAChunkThatCompressesToNothing() async throws {
+		// zlib buffers small, repetitive input without emitting anything; such a chunk used to
+		// end the response (nextChunk returned nil), dropping the rest and the gzip trailer.
+		let chunk = Array(String(repeating: "perfect ", count: 32).utf8)
+		let source = ChunkedSource(chunk: chunk, count: 200)
+		let output = CompressedOutput(source: source)
+		let head = output.head(request: requestInfo([("Accept-Encoding", "gzip")]))
+		#expect(head?.headers.first(name: "content-encoding") == "gzip")
+		let gzip = try await drain(output)
+		#expect(source.remaining == 0, "the source wasn't read to the end")
+		// The gzip trailer ends with ISIZE, the uncompressed length mod 2^32, little-endian.
+		try #require(gzip.count >= 18)
+		let isize = gzip.suffix(4).reversed().reduce(0) { $0 << 8 | Int($1) }
+		#expect(isize == chunk.count * 200)
 	}
 }
