@@ -37,18 +37,21 @@ internal extension String {
 	}
 }
 
-/// Given a header value, extracts the q value if there is one present. If one is not present,
-/// returns the default q value, 1.0.
+/// Given one Accept-Encoding element (e.g. `gzip;q=0.5`), returns its q value: 1 when there is
+/// no `q` parameter, 0 when the value is missing or isn't a number in 0...1. Parameters other
+/// than `q`, with or without a value, are ignored. The header is client input, so nothing here
+/// assumes it is well formed.
 private func qValueFromHeader(_ text: String) -> Float {
-	let headerParts = text.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
-	guard headerParts.count > 1 && headerParts[1].count > 0 else {
-		return 1
+	for parameter in text.split(separator: ";").dropFirst() {
+		let pair = parameter.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+		guard pair[0].trimmingCharacters(in: .whitespaces).lowercased() == "q" else { continue }
+		guard pair.count == 2, let qValue = Float(pair[1].trimmingCharacters(in: .whitespaces)),
+		      qValue >= 0, qValue <= 1 else {
+			return 0
+		}
+		return qValue
 	}
-	let qValue = Float(headerParts[1].split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)[1]) ?? 0
-	if qValue < 0 || qValue > 1 || qValue.isNaN {
-		return 0
-	}
-	return qValue
+	return 1
 }
 
 public class CompressedOutput: HTTPOutput, @unchecked Sendable {
