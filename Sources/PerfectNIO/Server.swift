@@ -176,6 +176,7 @@ public struct Server: Sendable {
 	/// structured-concurrency replacement for start/stop; teardown (including EventLoopGroup
 	/// shutdown) is automatic and awaited.
 	@discardableResult
+	nonisolated(nonsending)
 	public func withServer<R>(_ body: (_ boundPort: Int) async throws -> R) async throws -> R {
 		// Captured out of the serve task; only read after `body` runs (i.e. after binding).
 		let resultBox = NIOLockedValueBox<Result<R, Error>?>(nil)
@@ -196,6 +197,7 @@ public struct Server: Sendable {
 
 	/// Owns the full server lifecycle: bind N channels, run their accept loops, invoke `onReady`
 	/// once listening, and tear everything down (channels + EventLoopGroup) when `onReady` returns.
+	nonisolated(nonsending)
 	private func serve(onReady: (_ boundPort: Int) async throws -> Void) async throws {
 		_ = processGlobalInit
 		let finder = try RouteFinderDual(routes)

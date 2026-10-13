@@ -405,6 +405,20 @@ struct PublicAPITests {
 		#expect(!routes.describe.isEmpty)
 	}
 
+	/// withServer called from the main actor, as in a main.swift or the README's scoped-server
+	/// example: its body used to be a non-Sendable closure the call had to send to a
+	/// nonisolated function, which Swift 6 refused ("sending value of non-Sendable type").
+	@MainActor @Test func withServerFromTheMainActor() async throws {
+		var hits = 0
+		let routes = root().path("a").map { "a" }.text()
+		let port = try await Server(routes: routes, port: 0).withServer { port in
+			hits += 1
+			return port
+		}
+		#expect(port > 0)
+		#expect(hits == 1)
+	}
+
 	@Test func routeDescriptionsExposeTheirURI() {
 		let routes = root().path("a").map { "a" }.text()
 		#expect(routes.describe.map(\.uri) == ["/a"])
