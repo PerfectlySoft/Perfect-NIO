@@ -190,4 +190,41 @@ struct MalformedInputTests {
 			#expect(!String(decoding: body, as: UTF8.self).contains("perfect-nio-secret"))
 		}
 	}
+
+	@Test func fileOutputServesIndexHTMLForADirectory() async throws {
+		let dir = NSTemporaryDirectory() + "perfect-nio-dir-\(UUID().uuidString)"
+		try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: false)
+		defer { try? FileManager.default.removeItem(atPath: dir) }
+		try Data("<p>index</p>".utf8).write(to: URL(fileURLWithPath: dir + "/index.html"))
+		let output = try FileOutput(localPath: dir)
+		let head = output.head(request: requestInfo([]))
+		#expect(head?.headers.first(name: "content-type")?.hasPrefix("text/html") == true)
+		#expect(String(decoding: try await drain(output), as: UTF8.self) == "<p>index</p>")
+	}
+
+	@Test func fileOutputForADirectoryWithoutIndexIsNotFound() throws {
+		let dir = NSTemporaryDirectory() + "perfect-nio-dir-\(UUID().uuidString)"
+		try FileManager.default.createDirectory(atPath: dir + "/index.html", withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(atPath: dir) }
+		// No index.html file (here it is itself a directory): 404, not a trap reading a directory.
+		#expect(throws: ErrorOutput.self) { try FileOutput(localPath: dir) }
+	}
+
+	@Test func fileOutputStreamsALargeFileInChunks() async throws {
+		let path = NSTemporaryDirectory() + "perfect-nio-large-\(UUID().uuidString)"
+		let bytes = (0..<(FileOutput.chunkSize * 2 + 1000)).map { UInt8(truncatingIfNeeded: $0 &* 7) }
+		try Data(bytes).write(to: URL(fileURLWithPath: path))
+		defer { try? FileManager.default.removeItem(atPath: path) }
+		let output = try FileOutput(localPath: path)
+		_ = output.head(request: requestInfo([("Range", "bytes=100-")]))
+		var chunks: [Int] = []
+		var body: [UInt8] = []
+		while let chunk = try await output.nextChunk(allocator: ByteBufferAllocator()) {
+			chunks.append(chunk.readableBytes)
+			body += chunk.readableBytesView
+		}
+		#expect(chunks.allSatisfy { $0 <= FileOutput.chunkSize })
+		#expect(chunks.count == 3)
+		#expect(body == Array(bytes[100...]))
+	}
 }

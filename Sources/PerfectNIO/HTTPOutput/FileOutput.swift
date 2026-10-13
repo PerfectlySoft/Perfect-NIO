@@ -41,23 +41,34 @@ public class FileOutput: HTTPOutput, @unchecked Sendable {
 	let modDate: Int
 	// Set during head(request:) to the byte range that should be served.
 	private var byteRange: Range<Int>?
+	// Open while the body is being read.
+	private var handle: FileHandle?
+	/// The most read into memory for one body chunk.
+	static let chunkSize = 256 * 1024
 
 	public init(localPath inPath: String) throws {
 		var localPath = inPath
 		let fm = FileManager.default
-		guard fm.fileExists(atPath: localPath) else {
+		var isDirectory: ObjCBool = false
+		guard fm.fileExists(atPath: localPath, isDirectory: &isDirectory) else {
 			throw ErrorOutput(status: .notFound, description: "The specified file did not exist.")
 		}
-		var attr = try fm.attributesOfItem(atPath: localPath)
-		if attr[.type] as? String == "NSFileTypeDirectory" {
+		// fileExists(atPath:isDirectory:) works on every platform; comparing the .type
+		// attribute to a string only worked on Darwin, so on Linux a directory was "served"
+		// and reading it trapped inside FileHandle.
+		if isDirectory.boolValue {
 			localPath = inPath + "/index.html"
-			guard fm.fileExists(atPath: localPath) else {
+			guard fm.fileExists(atPath: localPath, isDirectory: &isDirectory), !isDirectory.boolValue else {
 				throw ErrorOutput(status: .notFound, description: "The specified file did not exist.")
 			}
-			attr = try fm.attributesOfItem(atPath: localPath)
 		}
-		size = Int(attr[FileAttributeKey.size] as! UInt64)
-		modDate = Int((attr[.modificationDate] as! Date).timeIntervalSince1970)
+		let attr = try fm.attributesOfItem(atPath: localPath)
+		guard let fileSize = (attr[.size] as? NSNumber)?.int64Value ?? (attr[.size] as? Int64),
+		      let date = attr[.modificationDate] as? Date else {
+			throw ErrorOutput(status: .internalServerError, description: "Could not read the file.")
+		}
+		size = Int(fileSize)
+		modDate = Int(date.timeIntervalSince1970)
 		path = localPath
 		super.init()
 	}
@@ -85,21 +96,52 @@ public class FileOutput: HTTPOutput, @unchecked Sendable {
 	}
 
 	public override func nextChunk(allocator: ByteBufferAllocator) async throws -> ByteBuffer? {
-		guard let range = byteRange else { return nil }
-		byteRange = nil
-		guard !range.isEmpty else { return nil }
-		guard let fh = FileHandle(forReadingAtPath: path) else {
-			// The response goes to the client; the local path stays in the log.
-			logger.error("Could not open file", metadata: ["path": "\(path)"])
+		guard let range = byteRange, !range.isEmpty else {
+			closed()
+			return nil
+		}
+		let fh: FileHandle
+		if let handle {
+			fh = handle
+		} else {
+			do {
+				fh = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+				try fh.seek(toOffset: UInt64(range.lowerBound))
+			} catch {
+				// The response goes to the client; the local path stays in the log.
+				logger.error("Could not open file", metadata: ["path": "\(path)", "error": "\(error)"])
+				throw ErrorOutput(status: .internalServerError, description: "Could not read the file.")
+			}
+			handle = fh
+		}
+		// Read the range a chunk at a time, so a large file isn't held in memory at once.
+		let data: Data
+		do {
+			data = try fh.read(upToCount: Swift.min(range.count, Self.chunkSize)) ?? Data()
+		} catch {
+			logger.error("Could not read file", metadata: ["path": "\(path)", "error": "\(error)"])
+			closed()
+			throw error
+		}
+		guard !data.isEmpty else {
+			// The file shrank after the head (and its Content-Length) went out; the response is
+			// short, so end it with an error rather than as if it were complete.
+			closed()
 			throw ErrorOutput(status: .internalServerError, description: "Could not read the file.")
 		}
-		defer { fh.closeFile() }
-		fh.seek(toFileOffset: UInt64(range.lowerBound))
-		let data = fh.readData(ofLength: range.upperBound - range.lowerBound)
-		guard !data.isEmpty else { return nil }
+		byteRange = (range.lowerBound + data.count)..<range.upperBound
 		var buf = allocator.buffer(capacity: data.count)
 		buf.writeBytes(data)
 		return buf
+	}
+
+	public override func closed() {
+		try? handle?.close()
+		handle = nil
+	}
+
+	deinit {
+		try? handle?.close()
 	}
 
 	func getETag() -> String {
