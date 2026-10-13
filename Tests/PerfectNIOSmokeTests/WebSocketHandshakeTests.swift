@@ -91,4 +91,25 @@ struct WebSocketHandshakeTests {
             #expect(r.elapsed < 2)
         }
     }
+
+    /// webSocket(protocol:) names the subprotocol the endpoint speaks. When the client offers
+    /// it, the 101 must select it: browsers fail the connection if they offered subprotocols
+    /// and the response names none. The protocol used to be ignored.
+    @Test func subprotocolIsSelectedWhenOffered() async throws {
+        let routes = root().path("ws").webSocket(protocol: "echo") { _ -> WebSocketHandler in { _ in } }
+        try await Server(routes: routes, port: 0).withServer { port in
+            func selected(_ offered: String?) async -> String? {
+                let r = await rawHTTP(port: port, [handshake("/ws", protocols: offered)], timeout: 1)
+                guard r.status == 101 else { return "status \(r.status ?? 0)" }
+                return r.text.split(separator: "\r\n")
+                    .first { $0.lowercased().hasPrefix("sec-websocket-protocol:") }
+                    .map { $0.dropFirst("sec-websocket-protocol:".count).trimmingCharacters(in: .whitespaces) }
+            }
+            #expect(await selected("echo") == "echo")
+            #expect(await selected("chat, echo") == "echo")
+            #expect(await selected(nil) == nil)
+            // Not offered: the upgrade goes ahead without one, as before; the client decides.
+            #expect(await selected("chat") == nil)
+        }
+    }
 }

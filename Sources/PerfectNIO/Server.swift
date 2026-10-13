@@ -46,14 +46,30 @@ enum HTTPOrWebSocket: Sendable {
 /// router and read by the upgrader and, when the connection isn't upgraded, by its first HTTP
 /// dispatch, which serves the result instead of running the route a second time.
 enum HandshakeResolution: Sendable {
-	case webSocket(WebSocketHandler, [WebSocketOption])
+	/// The handler, its options, and the subprotocol the route declared.
+	case webSocket(WebSocketHandler, [WebSocketOption], String?)
 	/// The route threw (a refused handshake: statusCheck, an auth check) or produced an output
 	/// that isn't a WebSocket (a flagged parent `dir`'d into a plain child).
 	case served(Result<(RouteContext, HTTPOutput), any Error>)
 
 	var webSocket: (WebSocketHandler, [WebSocketOption])? {
-		if case .webSocket(let handler, let options) = self { return (handler, options) }
+		if case .webSocket(let handler, let options, _) = self { return (handler, options) }
 		return nil
+	}
+
+	/// The extra 101 response headers for `request`, or nil to refuse the upgrade. Selects the
+	/// route's subprotocol when the client offers it (RFC 6455 §4.2.2); browsers fail a
+	/// connection whose 101 names none of the subprotocols they offered.
+	func upgradeHeaders(for request: HTTPRequestHead) -> HTTPHeaders? {
+		guard case .webSocket(_, _, let subprotocol) = self else { return nil }
+		var headers = HTTPHeaders()
+		let offered = request.headers[canonicalForm: "sec-websocket-protocol"].map {
+			$0.trimmingCharacters(in: .whitespaces)
+		}
+		if let subprotocol, offered.contains(subprotocol) {
+			headers.add(name: "Sec-WebSocket-Protocol", value: subprotocol)
+		}
+		return headers
 	}
 }
 
@@ -295,12 +311,12 @@ public struct Server: Sendable {
 		let resolved = HandshakeBox(nil)
 
 		let upgrader = NIOTypedWebSocketServerUpgrader<HTTPOrWebSocket>(
-			shouldUpgrade: { channel, _ in
+			shouldUpgrade: { channel, head in
 				// The router only forwards a handshake here (Upgrade header intact) once it has
 				// confirmed the path is a WebSocket route and stored the handler — so accept iff
 				// that happened. The upgrader validates Sec-WebSocket-* and computes the accept key.
-				let accept = resolved.withLockedValue { $0?.webSocket } != nil
-				return channel.eventLoop.makeSucceededFuture(accept ? HTTPHeaders() : nil)
+				let headers = resolved.withLockedValue { $0?.upgradeHeaders(for: head) }
+				return channel.eventLoop.makeSucceededFuture(headers)
 			},
 			upgradePipelineHandler: { channel, _ in
 				channel.eventLoop.makeCompletedFuture {
@@ -397,9 +413,9 @@ public struct Server: Sendable {
 		let fallbackHandler = PlainHTTPFallbackHandler(promise: promise, handshake: resolved)
 
 		let wsUpgrader = NIOWebSocketServerUpgrader(
-			shouldUpgrade: { channel, _ in
-				let accept = resolved.withLockedValue { $0?.webSocket } != nil
-				return channel.eventLoop.makeSucceededFuture(accept ? HTTPHeaders() : nil)
+			shouldUpgrade: { channel, head in
+				let headers = resolved.withLockedValue { $0?.upgradeHeaders(for: head) }
+				return channel.eventLoop.makeSucceededFuture(headers)
 			},
 			upgradePipelineHandler: { channel, _ in
 				// Remove the still-present, never-triggered plain-HTTP tail handler first: it would
@@ -450,7 +466,7 @@ public struct Server: Sendable {
 		do {
 			let (finalCtx, output) = try await route.handler(ctx, request)
 			if let wsOutput = output as? WebSocketUpgradeHTTPOutput {
-				return .webSocket(wsOutput.handler, wsOutput.options)
+				return .webSocket(wsOutput.handler, wsOutput.options, wsOutput.subprotocol)
 			}
 			return .served(.success((finalCtx, output)))
 		} catch {

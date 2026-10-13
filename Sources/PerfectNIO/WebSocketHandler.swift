@@ -71,7 +71,7 @@ public extension Routes {
 	               _ callback: @Sendable @escaping (OutType) async throws -> WebSocketHandler) -> Routes<InType, HTTPOutput> {
 		applyFuncs { ctx, output in
 			let handler = try await callback(output)
-			return (ctx, WebSocketUpgradeHTTPOutput(webSocketHandler: handler, options: options))
+			return (ctx, WebSocketUpgradeHTTPOutput(webSocketHandler: handler, options: options, protocol: proto))
 		}.markingWebSocket()
 	}
 }
@@ -83,15 +83,18 @@ public extension Routes {
 public final class WebSocketUpgradeHTTPOutput: HTTPOutput, @unchecked Sendable {
 	let handler: WebSocketHandler
 	let options: [WebSocketOption]
+	/// The subprotocol the endpoint speaks, selected in the 101 when the client offers it.
+	let subprotocol: String?
 	/// Building this output by hand does not make a route a WebSocket endpoint: only routes
 	/// declared with `webSocket(...)` upgrade, so a hand-built output just answers 426.
 	@available(*, deprecated, message: "Declare the route with webSocket(protocol:options:_:); a hand-built WebSocketUpgradeHTTPOutput no longer upgrades the connection")
 	public convenience init(handler: @escaping WebSocketHandler, options: [WebSocketOption]) {
 		self.init(webSocketHandler: handler, options: options)
 	}
-	init(webSocketHandler handler: @escaping WebSocketHandler, options: [WebSocketOption]) {
+	init(webSocketHandler handler: @escaping WebSocketHandler, options: [WebSocketOption], protocol subprotocol: String? = nil) {
 		self.handler = handler
 		self.options = options
+		self.subprotocol = subprotocol
 	}
 	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
 		HTTPHead(status: .upgradeRequired, headers: HTTPHeaders([("Connection", "close")]))
