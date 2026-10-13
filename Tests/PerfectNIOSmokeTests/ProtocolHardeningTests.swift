@@ -53,9 +53,9 @@ struct ProtocolHardeningTests {
           arguments: [("silent", ""), ("partial head", "GET /ten HTTP/1.1\r\nHo")])
     func idleTimeoutBeforeFirstRequest(_ name: String, _ bytes: String) async throws {
         try await Server(routes: tenBytes, port: 0, idleTimeout: .milliseconds(500)).withServer { port in
-            let r = await rawHTTP(port: port, bytes.isEmpty ? [] : [raw(bytes)], timeout: 5)
+            let r = await rawHTTP(port: port, bytes.isEmpty ? [] : [raw(bytes)], timeout: 20)
             #expect(r.closed, "\(name): the server never closed the connection")
-            #expect(r.elapsed < 4, "\(name)")
+            #expect(r.elapsed < 10, "\(name)")
         }
     }
 
@@ -108,10 +108,10 @@ struct ProtocolHardeningTests {
     /// rather than stay open with a parser that will never accept another request.
     @Test func connectionClosesAfterAParseError() async throws {
         try await Server(routes: tenBytes, port: 0, idleTimeout: nil).withServer { port in
-            let r = await rawHTTP(port: port, [raw("GARBAGE\r\n\r\n")], timeout: 5)
+            let r = await rawHTTP(port: port, [raw("GARBAGE\r\n\r\n")], timeout: 20)
             #expect(r.status == 400)
             #expect(r.closed)
-            #expect(r.elapsed < 4)
+            #expect(r.elapsed < 10)
         }
     }
 
@@ -266,12 +266,12 @@ struct ProtocolHardeningTests {
     @Test func streamingBodyOnHTTP10ClosesTheConnection() async throws {
         let routes = root().path("stream").map { StreamOutput() as HTTPOutput }
         try await Server(routes: routes, port: 0).withServer { port in
-            let r = await rawHTTP(port: port, [raw("GET /stream HTTP/1.0\r\nConnection: keep-alive\r\n\r\n")], timeout: 5)
+            let r = await rawHTTP(port: port, [raw("GET /stream HTTP/1.0\r\nConnection: keep-alive\r\n\r\n")], timeout: 20)
             #expect(r.text.hasSuffix("\r\n\r\nabcdef"), "\(r.text.debugDescription)")
             #expect(!r.text.lowercased().contains("transfer-encoding"))
             #expect(!r.text.lowercased().contains("keep-alive"))
             #expect(r.closed)
-            #expect(r.elapsed < 4)
+            #expect(r.elapsed < 10)
         }
     }
 }

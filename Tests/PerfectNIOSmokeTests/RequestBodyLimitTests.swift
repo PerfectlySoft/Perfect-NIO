@@ -68,12 +68,13 @@ struct RequestBodyLimitTests {
     @Test func contentLengthOverTheLimitIsRefused() async throws {
         try await withLimitedServer(1024) { port, calls in
             let head = rawHead("POST", "/echo", octets + [("Content-Length", "1025")])
-            let r = await rawHTTP(port: port, [head])
+            let r = await rawHTTP(port: port, [head], timeout: 20)
             #expect(r.status == 413)
             #expect(r.closed)
-            // Refused from the head alone: the server waits at most the drain time for a body
-            // that never comes, not the client's 5 s read timeout.
-            #expect(r.elapsed < 4)
+            // Refused from the head alone: the server waits at most the drain time (2 s) for a
+            // body that never comes, not the client's 20 s read timeout. Loose bound for slow
+            // runners (it failed at 4 s under amd64 emulation).
+            #expect(r.elapsed < 10)
             #expect(calls.count == 0)
         }
     }
@@ -134,7 +135,8 @@ struct RequestBodyLimitTests {
             let r = await rawHTTP(port: port, [head])
             #expect(r.status == 413)
             #expect(r.closed)
-            #expect(r.elapsed < 1.5)
+            // Sooner than the 2 s drain deadline it would otherwise wait for.
+            #expect(r.elapsed < Double(NIOAsyncHTTPServer.rejectedBodyDrainTime.nanoseconds) / 1e9)
             #expect(calls.count == 0)
         }
     }

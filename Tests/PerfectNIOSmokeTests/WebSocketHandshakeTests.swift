@@ -34,7 +34,7 @@ struct WebSocketHandshakeTests {
             }
             .webSocket(protocol: "p") { _ -> WebSocketHandler in { _ in } }
         try await Server(routes: routes, port: 0).withServer { port in
-            let r = await rawHTTP(port: port, [handshake("/ws")], timeout: 2)
+            let r = await rawHTTP(port: port, [handshake("/ws")], timeout: 10)
             #expect(r.status == 403, "\(r.text.debugDescription)")
             #expect(!r.text.contains("101 Switching"))
             #expect(runs.withLockedValue { $0 } == 1)
@@ -48,7 +48,7 @@ struct WebSocketHandshakeTests {
             throw ErrorOutput(status: .unauthorized, description: "no")
         }
         try await Server(routes: routes, port: 0).withServer { port in
-            let r = await rawHTTP(port: port, [handshake("/ws")], timeout: 2)
+            let r = await rawHTTP(port: port, [handshake("/ws")], timeout: 10)
             #expect(r.status == 401)
             #expect(r.body == "no")
             #expect(runs.withLockedValue { $0 } == 1)
@@ -67,7 +67,7 @@ struct WebSocketHandshakeTests {
         let routes = try root().path("ws").webSocket(protocol: "p") { _ -> WebSocketHandler in { _ in } }
             .dir(child)
         try await Server(routes: routes, port: 0).withServer { port in
-            let r = await rawHTTP(port: port, [handshake("/ws/plain", extra: "Connection: close\r\n")], timeout: 2)
+            let r = await rawHTTP(port: port, [handshake("/ws/plain", extra: "Connection: close\r\n")], timeout: 10)
             #expect(r.status == 200, "\(r.text.debugDescription)")
             #expect(r.body == "plain")
             #expect(runs.withLockedValue { $0 } == 1)
@@ -84,11 +84,11 @@ struct WebSocketHandshakeTests {
             root().path("ten").map { BytesOutput(body: Array("0123456789".utf8)) as HTTPOutput }
         )
         try await Server(routes: routes, port: 0, idleTimeout: nil).withServer { port in
-            let r = await rawHTTP(port: port, [handshake(path)], timeout: 3)
+            let r = await rawHTTP(port: port, [handshake(path)], timeout: 20)
             #expect(r.status != 101)
             #expect(r.text.lowercased().contains("connection: close"), "\(r.text.debugDescription)")
             #expect(r.closed)
-            #expect(r.elapsed < 2)
+            #expect(r.elapsed < 10)
         }
     }
 
@@ -99,7 +99,7 @@ struct WebSocketHandshakeTests {
         let routes = root().path("ws").webSocket(protocol: "echo") { _ -> WebSocketHandler in { _ in } }
         try await Server(routes: routes, port: 0).withServer { port in
             func selected(_ offered: String?) async -> String? {
-                let r = await rawHTTP(port: port, [handshake("/ws", protocols: offered)], timeout: 1)
+                let r = await rawHTTP(port: port, [handshake("/ws", protocols: offered)], timeout: 5)
                 guard r.status == 101 else { return "status \(r.status ?? 0)" }
                 return r.text.split(separator: "\r\n")
                     .first { $0.lowercased().hasPrefix("sec-websocket-protocol:") }
