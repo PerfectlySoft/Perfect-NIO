@@ -200,6 +200,48 @@ struct MalformedInputTests {
 		try await check("items=0-1", "0123456789", contentRange: nil)
 	}
 
+	// MARK: Conditional requests
+
+	@Test func conditionalFileRequests() async throws {
+		let path = NSTemporaryDirectory() + "perfect-nio-cond-\(UUID().uuidString)"
+		try Data("0123456789".utf8).write(to: URL(fileURLWithPath: path))
+		defer { try? FileManager.default.removeItem(atPath: path) }
+		/// FileOutput's head for `headers` on the 10-byte file, and the body that follows.
+		func serve(_ headers: [(String, String)]) async throws -> (HTTPHead?, String, FileOutput) {
+			let output = try FileOutput(localPath: path)
+			let head = output.head(request: requestInfo(headers))
+			return (head, String(decoding: try await drain(output), as: UTF8.self), output)
+		}
+		let (plain, _, _) = try await serve([])
+		let eTag = try #require(plain?.headers.first(name: "etag"))
+		let lastModified = try #require(plain?.headers.first(name: "last-modified"))
+		// The ETag is a quoted string, as RFC 9110 requires.
+		#expect(eTag.hasPrefix("\"") && eTag.hasSuffix("\"") && eTag.count > 2)
+		#expect(lastModified.hasSuffix(" GMT"))
+
+		// If-Range: a matching validator gets the range, a stale one the whole file. The range
+		// used to be served whatever If-Range said, splicing old and new content on resume.
+		var (head, body, _) = try await serve([("Range", "bytes=2-4"), ("If-Range", eTag)])
+		#expect(head?.status == .partialContent); #expect(body == "234")
+		(head, body, _) = try await serve([("Range", "bytes=2-4"), ("If-Range", "\"stale\"")])
+		#expect(head?.status == .ok); #expect(body == "0123456789")
+		(head, body, _) = try await serve([("Range", "bytes=2-4"), ("If-Range", "W/" + eTag)])
+		#expect(head?.status == .ok, "a weak tag never satisfies If-Range")
+		(head, body, _) = try await serve([("Range", "bytes=2-4"), ("If-Range", lastModified)])
+		#expect(head?.status == .partialContent); #expect(body == "234")
+		(head, body, _) = try await serve([("Range", "bytes=2-4"), ("If-Range", "Thu, 01 Jan 1970 00:00:00 GMT")])
+		#expect(head?.status == .ok); #expect(body == "0123456789")
+
+		// If-None-Match: lists, weak tags and "*" all match (weak comparison).
+		for value in [eTag, "\"x\", " + eTag, "W/" + eTag, "*"] {
+			(head, body, _) = try await serve([("If-None-Match", value)])
+			#expect(head?.status == .notModified, "\(value)")
+			#expect(body == "")
+		}
+		(head, _, _) = try await serve([("If-None-Match", "\"other\"")])
+		#expect(head?.status == .ok)
+	}
+
 	// MARK: FileOutput errors
 
 	@Test func fileOutputErrorDoesNotNameTheLocalPath() async throws {

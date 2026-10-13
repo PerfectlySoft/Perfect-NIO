@@ -75,15 +75,19 @@ public class FileOutput: HTTPOutput, @unchecked Sendable {
 
 	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
 		let eTag = getETag()
-		var headers = [("Accept-Ranges", "bytes")]
-		if let ifNoneMatch = request.head.headers["if-none-match"].first, ifNoneMatch == eTag {
-			// ETag match — 304, no body.
+		let lastModified = Self.httpDate(modDate)
+		var headers = [("Accept-Ranges", "bytes"), ("ETag", eTag), ("Last-Modified", lastModified)]
+		// If-None-Match (RFC 9110 §13.1.2): a list of tags or "*", compared weakly.
+		let ifNoneMatch = request.head.headers[canonicalForm: "if-none-match"].map {
+			$0.trimmingCharacters(in: .whitespaces)
+		}
+		if ifNoneMatch.contains(where: { $0 == "*" || Self.weakTag($0) == Self.weakTag(eTag) }) {
 			return HTTPHead(status: .notModified, headers: HTTPHeaders(headers))
 		}
 		let contentType = MIMEType.forExtension(path.filePathExtension)
 		headers.append(("Content-Type", contentType))
-		headers.append(("ETag", eTag))
 		if let rangeRequest = request.head.headers["range"].first,
+		   rangeIsCurrent(request.head.headers.first(name: "if-range"), eTag: eTag, lastModified: lastModified),
 		   let range = parseRangeHeader(fromHeader: rangeRequest, max: size).first {
 			headers.append(("Content-Length", "\(range.count)"))
 			headers.append(("Content-Range", "bytes \(range.startIndex)-\(range.endIndex-1)/\(size)"))
@@ -93,6 +97,31 @@ public class FileOutput: HTTPOutput, @unchecked Sendable {
 		headers.append(("Content-Length", "\(size)"))
 		byteRange = 0..<size
 		return HTTPHead(status: .ok, headers: HTTPHeaders(headers))
+	}
+
+	/// If-Range (RFC 9110 §13.1.5): a range is served only if the validator still matches;
+	/// otherwise the client's earlier copy is stale and it gets the whole file. An entity tag
+	/// must match strongly (a weak tag never does); a date must equal Last-Modified exactly.
+	func rangeIsCurrent(_ ifRange: String?, eTag: String, lastModified: String) -> Bool {
+		guard let ifRange = ifRange?.trimmingCharacters(in: .whitespaces) else { return true }
+		if ifRange.hasPrefix("\"") || ifRange.hasPrefix("W/") {
+			return ifRange == eTag
+		}
+		return ifRange == lastModified
+	}
+
+	/// The tag without a weak "W/" prefix, for weak comparison.
+	static func weakTag(_ tag: String) -> String {
+		tag.hasPrefix("W/") ? String(tag.dropFirst(2)) : tag
+	}
+
+	/// An IMF-fixdate (RFC 9110 §5.6.7).
+	static func httpDate(_ secondsSince1970: Int) -> String {
+		let formatter = DateFormatter()
+		formatter.locale = Locale(identifier: "en_US_POSIX")
+		formatter.timeZone = TimeZone(identifier: "GMT")
+		formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+		return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(secondsSince1970)))
 	}
 
 	public override func nextChunk(allocator: ByteBufferAllocator) async throws -> ByteBuffer? {
@@ -144,9 +173,10 @@ public class FileOutput: HTTPOutput, @unchecked Sendable {
 		try? handle?.close()
 	}
 
+	/// A strong entity tag, quoted as RFC 9110 §8.8.3 requires (it used to be bare hex).
 	func getETag() -> String {
-		let eTag = (path + "\(modDate)").utf8.sha1
-		return eTag.map { $0.hexString }.joined()
+		let eTag = (path + "\(modDate)\(size)").utf8.sha1
+		return "\"" + eTag.map { $0.hexString }.joined() + "\""
 	}
 
 	/// The satisfiable ranges in a `Range: bytes=…` header (RFC 9110 §14.1.1), in order:
