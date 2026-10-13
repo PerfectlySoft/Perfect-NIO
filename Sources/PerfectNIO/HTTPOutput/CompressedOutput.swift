@@ -97,6 +97,11 @@ public class CompressedOutput: HTTPOutput, @unchecked Sendable {
 		   contentLength < minCompressLength {
 			return sourceHead
 		}
+		// A partial response (206, Content-Range) is sent as is: Content-Range counts identity
+		// bytes, and gzip and identity bodies would share one strong ETag.
+		if sourceHead?.status == .partialContent || sourceHead?.headers.contains(name: "content-range") == true {
+			return sourceHead
+		}
 		if let contentTypeStr = sourceHead?.headers["content-type"].first,
 		   noCompressMimes.first(where: { contentTypeStr.hasPrefix($0) }) != nil {
 			return sourceHead

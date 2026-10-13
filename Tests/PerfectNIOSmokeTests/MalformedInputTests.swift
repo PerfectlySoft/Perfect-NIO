@@ -280,6 +280,23 @@ struct MalformedInputTests {
 		#expect(try eTag() != second)
 	}
 
+	/// compressed() used to gzip a 206: Content-Range then counted identity bytes of a gzip
+	/// body, and both encodings shared the file's strong ETag. Ranges are sent uncompressed.
+	@Test func rangeResponsesAreNotCompressed() async throws {
+		let path = NSTemporaryDirectory() + "perfect-nio-gzrange-\(UUID().uuidString)"
+		try Data(String(repeating: "abcdefghij", count: 3000).utf8).write(to: URL(fileURLWithPath: path))
+		defer { try? FileManager.default.removeItem(atPath: path) }
+		let output = CompressedOutput(source: try FileOutput(localPath: path))
+		let head = output.head(request: requestInfo([("Accept-Encoding", "gzip"), ("Range", "bytes=0-19999")]))
+		#expect(head?.status == .partialContent)
+		#expect(head?.headers.first(name: "content-encoding") == nil)
+		#expect(head?.headers.first(name: "vary") == "Accept-Encoding")
+		#expect(try await drain(output).count == 20_000)
+		// The whole file is still compressed.
+		let full = CompressedOutput(source: try FileOutput(localPath: path))
+		#expect(full.head(request: requestInfo([("Accept-Encoding", "gzip")]))?.headers.first(name: "content-encoding") == "gzip")
+	}
+
 	// MARK: FileOutput errors
 
 	@Test func fileOutputErrorDoesNotNameTheLocalPath() async throws {

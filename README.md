@@ -371,7 +371,7 @@ root().user { User(id: 1, name: "Alice") }.json()
 
 ### compressed()
 
-Wraps any `HTTPOutput` with gzip/deflate compression, chosen from the request's `Accept-Encoding` (a coding refused with `q=0` is never used). Content shorter than ~14 KB or with an image/video/audio content type is passed through uncompressed. Every response carries `Vary: Accept-Encoding`, compressed or not.
+Wraps any `HTTPOutput` with gzip/deflate compression, chosen from the request's `Accept-Encoding` (a coding refused with `q=0` is never used). Content shorter than ~14 KB or with an image/video/audio content type is passed through uncompressed. Partial (206) responses are never compressed. Every response carries `Vary: Accept-Encoding`, compressed or not.
 
 ```swift
 root { BytesOutput(body: largeBytes) as HTTPOutput }.compressed()
