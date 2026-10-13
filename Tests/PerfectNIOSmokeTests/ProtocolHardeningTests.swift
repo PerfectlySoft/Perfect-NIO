@@ -108,4 +108,55 @@ struct ProtocolHardeningTests {
             #expect(r.body == "made")
         }
     }
+
+    // MARK: Request smuggling and malformed requests (regression coverage; NIO's parser
+    // already refuses these)
+
+    @Test("Ambiguous framing is refused with 400 and the connection closed",
+          arguments: [
+            "POST /ten HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nGET /ten HTTP/1.1\r\nHost: x\r\n\r\n",
+            "POST /ten HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello!",
+            "POST /ten HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: xchunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+            "POST /ten HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked, identity\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+            "POST /ten HTTP/1.1\r\nHost: x\r\nTransfer-Encoding : chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+            "GET /ten HTTP/1.1\r\nHost: x\r\nX-A: b\r\n c\r\n\r\n",
+            "GET /ten HTTP/1.1\nHost: x\n\n",
+            "GET /ten HTTP/9.9\r\n\r\n",
+            "GET /t\u{0}n HTTP/1.1\r\n\r\n",
+            "GET /\u{1F600} HTTP/1.1\r\nHost: x\r\n\r\n",
+          ])
+    func ambiguousOrMalformedRequestIsRefused(_ request: String) async throws {
+        try await Server(routes: tenBytes, port: 0).withServer { port in
+            let r = await rawHTTP(port: port, [raw(request)], timeout: 5)
+            #expect(r.status == 400, "\(r.text.debugDescription)")
+            #expect(r.closed)
+            // Nothing after the refused request was served.
+            #expect(!r.text.contains("0123456789"))
+            // And the server is still serving.
+            let next = await rawHTTP(port: port, [rawHead("GET", "/ten", [("Connection", "close")])])
+            #expect(next.status == 200)
+        }
+    }
+
+    @Test func oversizedHeaderIsRefused() async throws {
+        try await Server(routes: tenBytes, port: 0).withServer { port in
+            let head = "GET /ten HTTP/1.1\r\nHost: x\r\nX-Big: \(String(repeating: "a", count: 200_000))\r\n\r\n"
+            let r = await rawHTTP(port: port, [raw(head)], timeout: 5)
+            #expect(r.status == 400)
+            #expect(r.closed)
+        }
+    }
+
+    /// A header value the application sets with CR/LF in it must not split the response.
+    /// NIO's response header validator refuses the head and the connection is closed.
+    @Test func headerValueWithCRLFDoesNotInjectHeaders() async throws {
+        let routes = root().path("inject").map {
+            TextOutput("x", headers: [("X-Test", "a\r\nSet-Cookie: injected=1")]) as HTTPOutput
+        }
+        try await Server(routes: routes, port: 0).withServer { port in
+            let r = await rawHTTP(port: port, [rawHead("GET", "/inject", [("Connection", "close")])])
+            #expect(!r.text.lowercased().contains("set-cookie"), "\(r.text.debugDescription)")
+            #expect(r.closed)
+        }
+    }
 }
