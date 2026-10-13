@@ -29,16 +29,28 @@ enum RequestPath {
 	/// Such a request is refused before routing, so `wild` and `trailing` never hand a handler
 	/// a traversal segment. A segment that merely contains dots ("a..b", ".hidden", "...") is
 	/// fine.
+	///
+	/// Decoding stops after `maxDecodingPasses`; a path that still changes then (more nested
+	/// encoding than any real client sends) counts as a traversal. Each pass is linear, so the
+	/// check is too. (Decoding until stable, one layer per pass, was quadratic: an 80 KB URI of
+	/// nested "%25" cost seconds of CPU.)
 	static func hasDotDotSegment(_ uri: String) -> Bool {
 		var bytes = Array(uri.utf8.prefix { $0 != UInt8(ascii: "?") })
-		while true {
+		for _ in 0..<maxDecodingPasses {
 			if hasDotDotSegment(bytes: bytes) { return true }
 			let decoded = percentDecoded(bytes)
-			// Each pass that changes anything makes the text shorter, so this ends.
 			if decoded == bytes { return false }
 			bytes = decoded
 		}
+		return true
 	}
+
+	/// How many layers of percent-encoding are undone before giving up.
+	static let maxDecodingPasses = 8
+
+	/// The longest request target accepted; longer ones get 414 before anything else looks at
+	/// them. (nginx's default limit is the same order: 8 KiB header lines.)
+	static let maxRequestTargetLength = 8 * 1024
 
 	private static func hasDotDotSegment(bytes: [UInt8]) -> Bool {
 		bytes.split(omittingEmptySubsequences: false) { $0 == UInt8(ascii: "/") || $0 == UInt8(ascii: "\\") }

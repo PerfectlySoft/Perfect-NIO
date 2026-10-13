@@ -82,4 +82,33 @@ struct PathTraversalTests {
         #expect(!RequestPath.hasDotDotSegment("/a/%zz/b"))
         #expect(RequestPath.hasDotDotSegment("/a/%zz/%2e%2e"))
     }
+
+    /// Decoding until stable stripped one "%25" layer per pass and was quadratic: an 80 KB URI
+    /// of nested encodings cost seconds of CPU (30 of them stalled other connections). Decoding
+    /// is now capped at a few passes, and a path still changing after them is refused.
+    @Test func nestedEncodingIsBoundedAndRefused() {
+        let layers = 30_000
+        let path = "/seg/%" + String(repeating: "25", count: layers) + "2e%2e/x"
+        let start = Date()
+        #expect(RequestPath.hasDotDotSegment(path))
+        #expect(Date().timeIntervalSince(start) < 1, "took \(Date().timeIntervalSince(start)) s")
+        // Nine layers is past the cap: refused even though it isn't (yet) a "..".
+        #expect(RequestPath.hasDotDotSegment("/seg/%" + String(repeating: "25", count: 9) + "41/x"))
+        // Two layers decodes to "A": fine.
+        #expect(!RequestPath.hasDotDotSegment("/seg/%252541/x"))
+    }
+
+    @Test func overlongRequestTargetIs414() async throws {
+        let routes = root().path("seg").trailing { (_: HTTPRequest, rest: String) in rest }.text()
+        try await Server(routes: routes, port: 0).withServer { port in
+            let long = "/seg/%" + String(repeating: "25", count: 40_000) + "2e%2e/x"
+            let start = Date()
+            let r = await rawHTTP(port: port, [raw("GET \(long) HTTP/1.1\r\nHost: x\r\n\r\n")], timeout: 20)
+            #expect(r.status == 414, "\(r.text.prefix(80).debugDescription)")
+            #expect(r.closed)
+            #expect(Date().timeIntervalSince(start) < 5)
+            let ok = await rawHTTP(port: port, [raw("GET /seg/" + String(repeating: "a", count: 8000) + " HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")], timeout: 20)
+            #expect(ok.status == 200)
+        }
+    }
 }

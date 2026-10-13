@@ -139,8 +139,8 @@ enum NIOAsyncHTTPServer {
 						try await rejectBodyTooLarge(head: head, bodyStarted: bodyStarted, iterator: &iterator,
 						                             channel: asyncChannel.channel, outbound: outbound)
 						break requests
-					case .badRequest(let head):
-						try await rejectBadRequest(head: head, channel: asyncChannel.channel, outbound: outbound)
+					case .badRequest(let head, let status):
+						try await rejectBadRequest(head: head, status: status, channel: asyncChannel.channel, outbound: outbound)
 						break requests
 					}
 					let head: HTTPHead
@@ -184,7 +184,7 @@ enum NIOAsyncHTTPServer {
 		/// `bodyStarted`: some of the body had already arrived when it was refused.
 		case bodyTooLarge(HTTPRequestHead, bodyStarted: Bool)
 		/// A head NIO's parser accepted but HTTP forbids; answered 400 and the connection closed.
-		case badRequest(HTTPRequestHead)
+		case badRequest(HTTPRequestHead, HTTPResponseStatus = .badRequest)
 	}
 
 	/// Reads inbound parts until a complete request (`.head` … `.end`) is framed.
@@ -207,6 +207,9 @@ enum NIOAsyncHTTPServer {
 		}
 		// More than one Host header must be refused (RFC 9112 §3.2): front ends and the app could
 		// disagree on which host the request is for.
+		if head.uri.utf8.count > RequestPath.maxRequestTargetLength {
+			return .badRequest(head, .uriTooLong)
+		}
 		if head.headers[canonicalForm: "host"].count > 1 {
 			return .badRequest(head)
 		}
@@ -293,15 +296,16 @@ enum NIOAsyncHTTPServer {
 	/// carry another request.
 	private static func rejectBadRequest(
 		head: HTTPRequestHead,
+		status: HTTPResponseStatus,
 		channel: Channel,
 		outbound: NIOAsyncChannelOutboundWriter<Outbound>
 	) async throws {
-		let body = Array("Bad request.".utf8)
+		let body = Array((status == .badRequest ? "Bad request." : status.reasonPhrase + ".").utf8)
 		var headers = HTTPHeaders()
 		headers.add(name: "Content-Type", value: "text/plain")
 		headers.add(name: "Content-Length", value: "\(body.count)")
 		headers.add(name: "Connection", value: "close")
-		try await outbound.write(.head(HTTPResponseHead(version: head.version, status: .badRequest, headers: headers)))
+		try await outbound.write(.head(HTTPResponseHead(version: head.version, status: status, headers: headers)))
 		var buffer = channel.allocator.buffer(capacity: body.count)
 		buffer.writeBytes(body)
 		try await outbound.write(.body(.byteBuffer(buffer)))
