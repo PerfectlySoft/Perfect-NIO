@@ -22,8 +22,8 @@ enum RequestPath {
 	}
 
 	/// True if the path part of `uri` (everything before the first "?", exactly the text the
-	/// router uses) has a ".." segment, as sent or after percent-decoding (repeated until
-	/// nothing changes, so nested encodings are caught), with "/" and "\\" both treated as
+	/// router uses) has a ".." segment, as sent or after percent-decoding (up to
+	/// `maxDecodingPasses` layers, so nested encodings are caught), with "/" and "\\" both treated as
 	/// separators, so "%2e%2e", ".%2e", "..%2f", "..%5c" and "..\\" all count. A segment also
 	/// counts if it is ".." followed by ";" (a path parameter, "..;jsessionid=") or a NUL.
 	/// Such a request is refused before routing, so `wild` and `trailing` never hand a handler
