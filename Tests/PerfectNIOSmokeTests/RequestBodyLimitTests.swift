@@ -132,11 +132,15 @@ struct RequestBodyLimitTests {
     @Test func expectContinueIsRefusedImmediately() async throws {
         try await withLimitedServer(1024) { port, calls in
             let head = rawHead("POST", "/echo", octets + [("Content-Length", "5000"), ("Expect", "100-continue")])
-            let r = await rawHTTP(port: port, [head])
+            let r = await rawHTTP(port: port, [head], timeout: 20)
             #expect(r.status == 413)
             #expect(r.closed)
-            // Sooner than the 2 s drain deadline it would otherwise wait for.
-            #expect(r.elapsed < Double(NIOAsyncHTTPServer.rejectedBodyDrainTime.nanoseconds) / 1e9)
+            // Compared with the same refusal without Expect, which waits out the 2 s drain
+            // deadline: a relative check, so a slow runner shifts both alike.
+            let drained = await rawHTTP(port: port, [rawHead("POST", "/echo", octets + [("Content-Length", "5000")])],
+                                        timeout: 20)
+            #expect(drained.closed)
+            #expect(r.elapsed < drained.elapsed - 1, "\(r.elapsed) vs \(drained.elapsed)")
             #expect(calls.count == 0)
         }
     }

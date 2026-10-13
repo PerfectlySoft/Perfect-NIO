@@ -63,17 +63,19 @@ struct ProtocolHardeningTests {
     /// timeout to deliver (a slow stream, a long poll, a slow download) was cut off mid-body.
     @Test func slowResponseOutlivesTheIdleTimeout() async throws {
         let routes = try root().dir(
-            root().path("slow").map { SlowOutput(count: 6, delay: 0.25) as HTTPOutput },
+            root().path("slow").map { SlowOutput(count: 6, delay: 0.6) as HTTPOutput },
             root().path("poll").map { () async throws -> HTTPOutput in
-                try await Task.sleep(nanoseconds: 1_200_000_000)
+                try await Task.sleep(nanoseconds: 3_000_000_000)
                 return TextOutput("late")
             }
         )
-        try await Server(routes: routes, port: 0, idleTimeout: .milliseconds(400)).withServer { port in
-            let slow = await rawHTTP(port: port, [rawHead("GET", "/slow", [("Connection", "close")])])
+        // Timeouts well clear of scheduling delays on a loaded or emulated runner: a 2 s
+        // timeout against responses that take 3 s or more to finish.
+        try await Server(routes: routes, port: 0, idleTimeout: .seconds(2)).withServer { port in
+            let slow = await rawHTTP(port: port, [rawHead("GET", "/slow", [("Connection", "close")])], timeout: 20)
             #expect(slow.text.hasSuffix("0\r\n\r\n"), "\(slow.text.debugDescription)")
             #expect(slow.text.components(separatedBy: "aaaaaaaaaa").count == 7)
-            let poll = await rawHTTP(port: port, [rawHead("GET", "/poll", [("Connection", "close")])])
+            let poll = await rawHTTP(port: port, [rawHead("GET", "/poll", [("Connection", "close")])], timeout: 20)
             #expect(poll.body == "late", "\(poll.text.debugDescription)")
         }
     }
@@ -83,10 +85,10 @@ struct ProtocolHardeningTests {
             if case .other(let b) = c { return "\(b.count)" }
             return "none"
         }.text()
-        try await Server(routes: routes, port: 0, idleTimeout: .milliseconds(500)).withServer { port in
+        try await Server(routes: routes, port: 0, idleTimeout: .seconds(2)).withServer { port in
             let parts = [rawHead("POST", "/up", [("Content-Length", "6"), ("Connection", "close")])]
                 + (0..<6).map { _ in Array("x".utf8) }
-            let r = await rawHTTP(port: port, parts, partDelay: 0.3)
+            let r = await rawHTTP(port: port, parts, timeout: 20, partDelay: 0.5)
             #expect(r.status == 200)
             #expect(r.body == "6")
         }
@@ -124,9 +126,9 @@ struct ProtocolHardeningTests {
                 }
             }
         }
-        try await Server(routes: routes, port: 0, idleTimeout: .milliseconds(300)).withServer { port in
+        try await Server(routes: routes, port: 0, idleTimeout: .seconds(1)).withServer { port in
             let echo = try await withRawWebSocket(port: port, path: "/ws", protocol: "p") { ws in
-                Thread.sleep(forTimeInterval: 1)
+                Thread.sleep(forTimeInterval: 2.5)
                 try ws.sendText("still here")
                 return try ws.receiveFrame()
             }
