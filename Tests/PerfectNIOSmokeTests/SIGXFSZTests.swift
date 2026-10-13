@@ -122,7 +122,7 @@ struct SIGXFSZTests {
             signal(SIGXFSZ, SIG_DFL)
             startThreadWithSIGXFSZUnblocked()
             var status: Int32 = 0
-            try await Server(routes: uploadRoutes, port: 0).withServer { port in
+            try await retryingEINTR { try await Server(routes: uploadRoutes, port: 0).withServer { port in
                 setFileSizeLimit(1024)
                 let refused = await rawHTTP(port: port, [uploadRequest(fileBytes: 64 * 1024)])
                 let accepted = await rawHTTP(port: port, [uploadRequest(fileBytes: 100)])
@@ -132,7 +132,7 @@ struct SIGXFSZTests {
                 } else if accepted.status != 200 || accepted.body != "[100]" {
                     status = 3
                 }
-            }
+            } }
             awaitPendingSignals()
             exit(status)
         }
@@ -144,7 +144,7 @@ struct SIGXFSZTests {
         await #expect(processExitsWith: .exitCode(0)) {
             signal(SIGXFSZ, { _ in })
             let before = sigxfszHandlerBits()
-            try await Server(routes: uploadRoutes, port: 0).withServer { _ in }
+            try await retryingEINTR { try await Server(routes: uploadRoutes, port: 0).withServer { _ in } }
             exit(sigxfszHandlerBits() == before ? 0 : 2)
         }
     }
@@ -155,7 +155,7 @@ struct SIGXFSZTests {
         await #expect(processExitsWith: .exitCode(0)) {
             signal(SIGXFSZ, SIG_DFL)
             guard sigxfszHandlerBits() == 0 else { exit(2) }
-            try await Server(routes: uploadRoutes, port: 0).withServer { _ in }
+            try await retryingEINTR { try await Server(routes: uploadRoutes, port: 0).withServer { _ in } }
             exit(sigxfszHandlerBits() == 1 ? 0 : 3)
         }
     }

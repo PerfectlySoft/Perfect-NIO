@@ -56,9 +56,8 @@ public extension Routes {
     // Uses `pool.acquire()`/`pool.release(_:)`, not `pool.withConnection(_:)`:
     // `withConnection`'s body closure crosses the `DatabaseConnectionPool`
     // actor boundary as an `@Sendable` closure, which would require
-    // `OutType`/`NewOut: Sendable` -- but `OutType` here is commonly
-    // `HTTPRequest`, a non-`Sendable` protocol existential, when pooling is
-    // wired directly onto `root()`. Acquiring/releasing the connection
+    // `OutType`/`NewOut: Sendable` -- but `OutType` can be any type a route
+    // produces, Sendable or not. Acquiring/releasing the connection
     // (`C`, already `Sendable`) and running `call` in this method's own
     // async context instead avoids that constraint entirely.
     func db<C: DCP & Sendable, NewOut>(

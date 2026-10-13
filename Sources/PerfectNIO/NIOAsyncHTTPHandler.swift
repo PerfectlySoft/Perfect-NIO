@@ -22,6 +22,7 @@
 import NIO
 import NIOCore
 import NIOHTTP1
+import NIOConcurrencyHelpers
 import Foundation
 import Logging
 
@@ -33,10 +34,16 @@ private let logger = Logger(label: "perfect.nio.server")
 /// so `readContent()` / `readSomeContent()` serve from an in-memory byte buffer
 /// rather than pulling from the channel mid-handling.
 ///
-/// `@unchecked Sendable`: created and consumed within a single connection task.
-/// `uriVariables` is mutated only during route resolution (before the body runs),
-/// and `contentConsumed` is touched only by the owning task.
+/// `@unchecked Sendable`: the immutable parts are set at creation; the mutable state
+/// (`uriVariables`, `contentConsumed`, the decode-failure flag) is behind a lock, so a handler
+/// may use the request from several tasks at once (two `async let` decodes, say).
 final class NIOAsyncHTTPRequest: HTTPRequest, @unchecked Sendable {
+	private struct MutableState {
+		var uriVariables: [String: String] = [:]
+		var contentConsumed = 0
+	}
+	private let state = NIOLockedValueBox(MutableState())
+
 	let requestHead: HTTPRequestHead
 	private let bodyBytes: [UInt8]
 	private let channelRef: Channel?
@@ -45,13 +52,17 @@ final class NIOAsyncHTTPRequest: HTTPRequest, @unchecked Sendable {
 	var method: HTTPMethod { requestHead.method }
 	var uri: String { requestHead.uri }
 	var headers: HTTPHeaders { requestHead.headers }
-	var uriVariables: [String: String] = [:]
+	var uriVariables: [String: String] {
+		get { state.withLockedValue { $0.uriVariables } }
+		set { state.withLockedValue { $0.uriVariables = newValue } }
+	}
 	let path: String
 	let searchArgs: QueryDecoder?
 	let contentType: String?
 	let contentLength: Int
 	var contentRead: Int { bodyBytes.count }
-	private(set) var contentConsumed: Int = 0
+	var contentConsumed: Int { state.withLockedValue { $0.contentConsumed } }
+
 	var channel: Channel? { channelRef }
 	var localAddress: SocketAddress? { channelRef?.localAddress }
 	var remoteAddress: SocketAddress? { channelRef?.remoteAddress }
@@ -70,16 +81,21 @@ final class NIOAsyncHTTPRequest: HTTPRequest, @unchecked Sendable {
 	}
 
 	func readSomeContent() async throws -> [ByteBuffer] {
-		guard contentConsumed < bodyBytes.count else { return [] }
+		let count = bodyBytes.count
+		let alreadyRead = state.withLockedValue { state in
+			defer { state.contentConsumed = count }
+			return state.contentConsumed >= count
+		}
+		guard !alreadyRead else { return [] }
 		var buf = ByteBufferAllocator().buffer(capacity: bodyBytes.count)
 		buf.writeBytes(bodyBytes)
-		contentConsumed = bodyBytes.count
 		return [buf]
 	}
 
 	func readContent() async throws -> HTTPRequestContentType {
 		guard !bodyBytes.isEmpty else { return .none }
-		contentConsumed = bodyBytes.count
+		let count = bodyBytes.count
+		state.withLockedValue { $0.contentConsumed = count }
 		let ct = contentType ?? "application/octet-stream"
 		if ct.hasPrefix("multipart/form-data") {
 			return .multiPartForm(try MimeReader.parse(contentType: ct, body: bodyBytes))
@@ -101,12 +117,15 @@ enum NIOAsyncHTTPServer {
 		_ asyncChannel: NIOAsyncChannel<Inbound, Outbound>,
 		finder: any RouteFinder,
 		isTLS: Bool,
-		maxBodySize: Int?
+		maxBodySize: Int?,
+		handshake: HandshakeResolution? = nil
 	) async {
+		// Only the connection's first request can be the handshake that was resolved.
+		var handshake = handshake
 		do {
 			try await asyncChannel.executeThenClose { inbound, outbound in
 				var iterator = inbound.makeAsyncIterator()
-				while let assembled = try await assembleRequest(
+				requests: while let assembled = try await assembleRequest(
 					iterator: &iterator,
 					channel: asyncChannel.channel,
 					isTLS: isTLS,
@@ -119,10 +138,23 @@ enum NIOAsyncHTTPServer {
 					case .bodyTooLarge(let head, let bodyStarted):
 						try await rejectBodyTooLarge(head: head, bodyStarted: bodyStarted, iterator: &iterator,
 						                             channel: asyncChannel.channel, outbound: outbound)
-						return
+						break requests
+					case .badRequest(let head, let status):
+						try await rejectBadRequest(head: head, status: status, channel: asyncChannel.channel, outbound: outbound)
+						break requests
 					}
-					let (head, output) = await dispatch(request: request, finder: finder, isTLS: isTLS)
-					try await writeResponse(head: head, output: output, request: request, outbound: outbound)
+					let head: HTTPHead
+					let output: HTTPOutput
+					// The handshake's route already ran (with an empty body) while the upgrade was
+					// decided; serve that result rather than running it again. A handshake that
+					// carried a body runs the route again with the body.
+					if case .served(let outcome)? = handshake, request.contentRead == 0 {
+						(head, output) = respond(to: request, with: outcome, isTLS: isTLS)
+					} else {
+						(head, output) = await dispatch(request: request, finder: finder, isTLS: isTLS)
+					}
+					handshake = nil
+					let keepAlive = try await writeResponse(head: head, output: output, request: request, outbound: outbound)
 					output.closed()
 					// Keep-alive behavior confirmed (Phase 7):
 					//   1. HTTPRequestHead.isKeepAlive correctly returns false for HTTP/1.0 and for
@@ -130,11 +162,15 @@ enum NIOAsyncHTTPServer {
 					//   2. Client disconnect mid-keep-alive: iterator.next() returns nil (or throws),
 					//      causing assembleRequest to return nil and exit the loop cleanly — equivalent
 					//      to the legacy handler's explicit inputClosed ChannelEvent path.
-					//   3. Idle timeout: handled by IdleStateHandler in Server.serve() (Phase 5).
+					//   3. Idle timeout: handled by IdleTimeoutHandler (see Server.idleTimeout).
 					//      Future hardening: per-request receive deadline for slow-trickle slowloris
 					//      (read-idle timer resets on each byte; a whole-request deadline does not).
-					if !request.isKeepAlive { break }
+					if !keepAlive { break }
 				}
+				// Writes still queued in NIO are dropped when the channel closes, so wait for the
+				// last response to reach the socket before executeThenClose closes it. (If the
+				// client stops reading, the idle timeout closes the channel and this returns.)
+				await HTTPExchangeTracker.flushed(asyncChannel.channel)
 			}
 		} catch {
 			// Connection-level failure (client reset, write error, protocol error).
@@ -147,6 +183,8 @@ enum NIOAsyncHTTPServer {
 		case request(NIOAsyncHTTPRequest)
 		/// `bodyStarted`: some of the body had already arrived when it was refused.
 		case bodyTooLarge(HTTPRequestHead, bodyStarted: Bool)
+		/// A head NIO's parser accepted but HTTP forbids; answered 400 and the connection closed.
+		case badRequest(HTTPRequestHead, HTTPResponseStatus = .badRequest)
 	}
 
 	/// Reads inbound parts until a complete request (`.head` … `.end`) is framed.
@@ -166,6 +204,19 @@ enum NIOAsyncHTTPServer {
 		guard case .head(let head) = firstPart else {
 			// Body or end with no preceding head — malformed; abandon the connection.
 			return nil
+		}
+		if head.uri.utf8.count > RequestPath.maxRequestTargetLength {
+			return .badRequest(head, .uriTooLong)
+		}
+		// More than one Host header must be refused (RFC 9112 §3.2): front ends and the app could
+		// disagree on which host the request is for.
+		if head.headers[canonicalForm: "host"].count > 1 {
+			return .badRequest(head)
+		}
+		// A ".." segment (raw or percent-encoded) is refused before routing: wild and trailing
+		// would otherwise hand it to a handler, which might join it onto a file path.
+		if RequestPath.hasFragment(head.uri) || RequestPath.hasDotDotSegment(head.uri) {
+			return .badRequest(head)
 		}
 		if let maxBodySize,
 		   let declared = head.headers.first(name: "content-length").flatMap({ Int($0) }),
@@ -241,24 +292,60 @@ enum NIOAsyncHTTPServer {
 		}
 	}
 
+	/// Sends 400 with `Connection: close`. The body (if any) isn't read, so the connection can't
+	/// carry another request.
+	private static func rejectBadRequest(
+		head: HTTPRequestHead,
+		status: HTTPResponseStatus,
+		channel: Channel,
+		outbound: NIOAsyncChannelOutboundWriter<Outbound>
+	) async throws {
+		let body = Array((status == .badRequest ? "Bad request." : status.reasonPhrase + ".").utf8)
+		var headers = HTTPHeaders()
+		headers.add(name: "Content-Type", value: "text/plain")
+		headers.add(name: "Content-Length", value: "\(body.count)")
+		headers.add(name: "Connection", value: "close")
+		try await outbound.write(.head(HTTPResponseHead(version: head.version, status: status, headers: headers)))
+		var buffer = channel.allocator.buffer(capacity: body.count)
+		buffer.writeBytes(body)
+		try await outbound.write(.body(.byteBuffer(buffer)))
+		try await outbound.write(.end(nil))
+	}
+
 	/// Resolves the route and runs the async pipeline, mapping thrown errors to outputs.
 	private static func dispatch(
 		request: NIOAsyncHTTPRequest,
 		finder: any RouteFinder,
 		isTLS: Bool
 	) async -> (HTTPHead, HTTPOutput) {
-		let requestInfo = HTTPRequestInfo(head: request.requestHead, options: isTLS ? .isTLS : [])
 		guard let fnc = finder[request.method, request.path] else {
+			let requestInfo = HTTPRequestInfo(head: request.requestHead, options: isTLS ? .isTLS : [])
 			let error = ErrorOutput(status: .notFound, description: "No route for URI.")
 			let head = HTTPHead(headers: HTTPHeaders()).merged(with: error.head(request: requestInfo))
 			return (head, error)
 		}
 		let ctx = RouteContext(request: request, uri: request.path)
 		do {
-			let (finalCtx, output) = try await fnc(ctx, request)
+			return respond(to: request, with: .success(try await fnc(ctx, request)), isTLS: isTLS)
+		} catch {
+			return respond(to: request, with: .failure(error), isTLS: isTLS)
+		}
+	}
+
+	/// The response head and output for a route's result, mapping a thrown error to an output.
+	private static func respond(
+		to request: NIOAsyncHTTPRequest,
+		with outcome: Result<(RouteContext, HTTPOutput), any Error>,
+		isTLS: Bool
+	) -> (HTTPHead, HTTPOutput) {
+		let requestInfo = HTTPRequestInfo(head: request.requestHead, options: isTLS ? .isTLS : [])
+		switch outcome {
+		case .success(let (finalCtx, output)):
 			let head = finalCtx.responseHead.merged(with: output.head(request: requestInfo))
 			return (head, output)
-		} catch {
+		case .failure(let error):
+			// The context the route started with: an error carries none of its later changes.
+			let ctx = RouteContext(request: request, uri: request.path)
 			let output: HTTPOutput
 			switch error {
 			case let err as TerminationType:
@@ -272,6 +359,12 @@ enum NIOAsyncHTTPServer {
 				}
 			case let err as ErrorOutput:
 				output = err
+			case let decodingError as DecodingError where decodingError.isRequestDecodingFailure:
+				// Decoding the request failed and the handler let the error escape.
+				logger.notice("Could not decode request", metadata: [
+					"method": "\(request.method)", "path": "\(request.path)", "error": "\(error)",
+				])
+				output = ErrorOutput(status: .badRequest)
 			default:
 				// Any other error's description can name internal types, key paths, file paths or
 				// SQL; log it here and send the client only a generic message.
@@ -286,33 +379,117 @@ enum NIOAsyncHTTPServer {
 	}
 
 	/// Writes the response head, pulls the body via `nextChunk()`, and terminates with `.end`.
+	/// Returns whether the connection can carry another request.
+	///
+	/// The response encoder doesn't set framing headers (see `Server.configureUpgrade`), so they
+	/// are set here: no body, Content-Length or Transfer-Encoding goes with a 1xx, 204 or 304
+	/// (RFC 9110 §6.4.1, §8.6); a response to HEAD has no body but keeps the headers GET would
+	/// send, except Transfer-Encoding; a body of unknown length is chunked on HTTP/1.1 and on
+	/// HTTP/1.0 is ended by closing the connection.
 	private static func writeResponse(
 		head: HTTPHead,
 		output: HTTPOutput,
 		request: NIOAsyncHTTPRequest,
 		outbound: NIOAsyncChannelOutboundWriter<Outbound>
-	) async throws {
+	) async throws -> Bool {
 		let version = request.requestHead.version
+		var output = output
 		var responseHead = HTTPResponseHead(version: version,
 		                                    status: head.status ?? .ok,
 		                                    headers: head.headers)
-		if !request.headers.contains(name: "keep-alive") && !request.headers.contains(name: "close") {
-			switch (request.isKeepAlive, version.major, version.minor) {
-			case (true, 1, 0):
-				responseHead.headers.add(name: "Connection", value: "keep-alive")
-			case (false, 1, let n) where n >= 1:
-				responseHead.headers.add(name: "Connection", value: "close")
-			default:
-				()
+		if responseHead.status.code < 200 {
+			// A 1xx can't be a final response: 100/103 crashed the process in NIO's error handler
+			// and 101 left the connection in a state neither side agreed on. (WebSocket upgrades
+			// don't come through here.)
+			logger.error("Route returned an informational status as its final response", metadata: [
+				"method": "\(request.method)", "path": "\(request.path)", "status": "\(responseHead.status.code)",
+			])
+			let error = ErrorOutput(status: .internalServerError, description: "Internal server error.")
+			let errorHead = error.head(request: HTTPRequestInfo(head: request.requestHead, options: []))
+			responseHead = HTTPResponseHead(version: version, status: .internalServerError,
+			                                headers: errorHead?.headers ?? HTTPHeaders())
+			responseHead.headers.replaceOrAdd(name: "Connection", value: "close")
+			output = error
+		}
+		let status = responseHead.status
+		let statusAllowsBody = status.code >= 200 && status != .noContent && status != .notModified
+		let isHead = request.method == .HEAD
+		// An output (or route) that asks for "Connection: close" gets it.
+		var keepAlive = request.isKeepAlive &&
+			!responseHead.headers[canonicalForm: "connection"].contains { $0.lowercased() == "close" }
+		// The output's own Content-Length: one valid value is kept (duplicates of it collapsed);
+		// conflicting or invalid values are dropped, and the body is framed as if there were none.
+		var declaredLength: Int?
+		let lengths = responseHead.headers[canonicalForm: "content-length"].map { $0.trimmingCharacters(in: .whitespaces) }
+		if !lengths.isEmpty {
+			let values = Set(lengths)
+			if values.count == 1, let value = values.first, !value.isEmpty,
+			   value.utf8.allSatisfy({ $0 >= UInt8(ascii: "0") && $0 <= UInt8(ascii: "9") }), let length = Int(value) {
+				responseHead.headers.replaceOrAdd(name: "content-length", value: String(length))
+				declaredLength = length
+			} else {
+				logger.error("Output declared an invalid Content-Length; dropped", metadata: [
+					"method": "\(request.method)", "path": "\(request.path)", "content-length": "\(lengths)",
+				])
+				responseHead.headers.remove(name: "content-length")
 			}
 		}
+		if !statusAllowsBody {
+			if status != .notModified { responseHead.headers.remove(name: "content-length") }
+			responseHead.headers.remove(name: "transfer-encoding")
+		} else if responseHead.headers.contains(name: "content-length") {
+			responseHead.headers.remove(name: "transfer-encoding")
+		} else if isHead {
+			// Length unknown without producing the body; say nothing rather than "chunked".
+			responseHead.headers.remove(name: "transfer-encoding")
+		} else if version.major == 1 && version.minor >= 1 {
+			responseHead.headers.replaceOrAdd(name: "transfer-encoding", value: "chunked")
+		} else {
+			// HTTP/1.0 can only end a body of unknown length by closing the connection.
+			responseHead.headers.remove(name: "transfer-encoding")
+			keepAlive = false
+		}
+		responseHead.headers.remove(name: "connection")
+		if version.major == 1 && version.minor == 0 {
+			if keepAlive { responseHead.headers.add(name: "Connection", value: "keep-alive") }
+		} else if !keepAlive {
+			responseHead.headers.add(name: "Connection", value: "close")
+		}
 		try await outbound.write(.head(responseHead))
-		let allocator = ByteBufferAllocator()
-		while let chunk = try await output.nextChunk(allocator: allocator) {
-			if chunk.readableBytes > 0 {
-				try await outbound.write(.body(.byteBuffer(chunk)))
+		if statusAllowsBody && !isHead {
+			// A body that doesn't match the declared Content-Length would put the next response
+			// on this connection out of step, so on a mismatch the connection is closed after it
+			// (and a longer body is cut at the point it would overrun).
+			let allocator = ByteBufferAllocator()
+			var sent = 0
+			while let chunk = try await output.nextChunk(allocator: allocator) {
+				if let declaredLength, sent + chunk.readableBytes > declaredLength {
+					logger.error("Output body is longer than its Content-Length; connection closed", metadata: [
+						"method": "\(request.method)", "path": "\(request.path)", "content-length": "\(declaredLength)",
+					])
+					// Send what fits the declared length, then close.
+					var head = chunk
+					if let fits = head.readSlice(length: declaredLength - sent), fits.readableBytes > 0 {
+						try await outbound.write(.body(.byteBuffer(fits)))
+						sent += fits.readableBytes
+					}
+					keepAlive = false
+					break
+				}
+				if chunk.readableBytes > 0 {
+					try await outbound.write(.body(.byteBuffer(chunk)))
+					sent += chunk.readableBytes
+				}
+			}
+			if let declaredLength, keepAlive, sent < declaredLength {
+				logger.error("Output body is shorter than its Content-Length; connection closed", metadata: [
+					"method": "\(request.method)", "path": "\(request.path)", "content-length": "\(declaredLength)",
+					"sent": "\(sent)",
+				])
+				keepAlive = false
 			}
 		}
 		try await outbound.write(.end(nil))
+		return keepAlive
 	}
 }

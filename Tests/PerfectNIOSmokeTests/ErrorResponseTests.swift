@@ -81,6 +81,33 @@ struct ErrorResponseTests {
         #expect(!r.body.contains("db-primary"))
     }
 
+    /// A handler that calls HTTPRequest.decode itself and lets the DecodingError escape gets
+    /// 400, like the decode modifier (it used to be a 500: the client's input was at fault).
+    @Test func directRequestDecodeFailureIs400() async throws {
+        let routes = root().POST.path("d").request { (_: HTTPRequest, req: any HTTPRequest) -> String in
+            let content = try await req.readContent()
+            return try req.decode(Payload.self, content: content).label
+        }.text()
+        let r = try await exchange(routes, post("/d", contentType: "application/json", body: "{not json"))
+        #expect(r.status == 400)
+        for fragment in leakedFragments { #expect(!r.body.contains(fragment), "\(fragment)") }
+    }
+
+    /// A handler that catches a failed request decode and then fails to decode its own data:
+    /// the escaping error is the server's, so 500 (a per-request flag used to make it 400).
+    @Test func ownDecodingErrorAfterAHandledRequestDecodeFailureIs500() async throws {
+        let routes = root().POST.path("d").request { (_: HTTPRequest, req: any HTTPRequest) -> String in
+            let content = try await req.readContent()
+            if (try? req.decode(Payload.self, content: content)) == nil {
+                // Fall back to built-in data, which is itself broken.
+                return try JSONDecoder().decode(Payload.self, from: Data("{}".utf8)).label
+            }
+            return "decoded"
+        }.text()
+        let r = try await exchange(routes, post("/d", contentType: "application/json", body: "{\"z\": 1}"))
+        #expect(r.status == 500)
+    }
+
     /// A DecodingError that isn't from decoding the request (here, the handler decoding its own
     /// data) is a server fault, so it stays a 500, also without the detail.
     @Test func decodingErrorsFromHandlersAre500s() async throws {

@@ -18,7 +18,7 @@ public struct HTTPRequestOptions: OptionSet, Sendable {
 	public static let mayCompress = HTTPRequestOptions(rawValue: 1<<1)
 }
 
-public struct HTTPRequestInfo {
+public struct HTTPRequestInfo: Sendable {
 	public let head: HTTPRequestHead
 	public let options: HTTPRequestOptions
 	public init(head: HTTPRequestHead, options: HTTPRequestOptions) {

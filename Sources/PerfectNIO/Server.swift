@@ -36,9 +36,45 @@ typealias HTTPServerChannel = NIOAsyncChannel<EventLoopFuture<HTTPOrWebSocket>, 
 
 /// The outcome of the HTTP-upgrade negotiation for one connection.
 enum HTTPOrWebSocket: Sendable {
-	case http(HTTPConnectionChannel)
+	/// Plain HTTP. The box holds what resolving the first request's route produced, if that
+	/// request was a WebSocket handshake to a `webSocket(...)` route that didn't upgrade.
+	case http(HTTPConnectionChannel, HandshakeBox?)
 	case websocket(WebSocketConnectionChannel, WebSocketHandler, [WebSocketOption])
 }
+
+/// What running a `webSocket(...)` route for a handshake produced. Written by the pre-upgrade
+/// router and read by the upgrader and, when the connection isn't upgraded, by its first HTTP
+/// dispatch, which serves the result instead of running the route a second time.
+enum HandshakeResolution: Sendable {
+	/// The handler, its options, and the subprotocol the route declared.
+	case webSocket(WebSocketHandler, [WebSocketOption], String?)
+	/// The route threw (a refused handshake: statusCheck, an auth check) or produced an output
+	/// that isn't a WebSocket (a flagged parent `dir`'d into a plain child).
+	case served(Result<(RouteContext, HTTPOutput), any Error>)
+
+	var webSocket: (WebSocketHandler, [WebSocketOption])? {
+		if case .webSocket(let handler, let options, _) = self { return (handler, options) }
+		return nil
+	}
+
+	/// The extra 101 response headers for `request`, or nil to refuse the upgrade. Selects the
+	/// route's subprotocol when the client offers it (RFC 6455 §4.2.2); browsers fail a
+	/// connection whose 101 names none of the subprotocols they offered.
+	func upgradeHeaders(for request: HTTPRequestHead) -> HTTPHeaders? {
+		guard case .webSocket(_, _, let subprotocol) = self else { return nil }
+		var headers = HTTPHeaders()
+		let offered = request.headers[canonicalForm: "sec-websocket-protocol"].map {
+			$0.trimmingCharacters(in: .whitespaces)
+		}
+		if let subprotocol, offered.contains(subprotocol) {
+			headers.add(name: "Sec-WebSocket-Protocol", value: subprotocol)
+		}
+		return headers
+	}
+}
+
+/// One per connection; see `HandshakeResolution`.
+typealias HandshakeBox = NIOLockedValueBox<HandshakeResolution?>
 
 /// An HTTP(S) server for a set of routes.
 ///
@@ -64,13 +100,31 @@ public struct Server: Sendable {
 	/// each with its own cert, hot-swappable without restarting the server. When both `tls`
 	/// and `tlsManager` are set, `tlsManager` takes precedence.
 	public var tlsManager: TLSContextManager?
-	/// Closes a connection after this much time with no inbound read. `nil` disables the timeout.
+	/// Closes an idle connection after this long. `nil` disables the timeout.
 	///
-	/// This bounds idle keep-alive connections (resource-exhaustion / basic slowloris defense).
-	/// Note: it measures *reads*, so a route handler that takes longer than this to produce its
-	/// first byte on an otherwise-quiet connection will have the connection closed — give streaming
-	/// / long-poll endpoints a larger value or `nil`. Full slow-trickle slowloris mitigation
-	/// (a whole-request deadline) is a separate, later hardening step.
+	/// It runs from the moment a connection is accepted. While no response is pending (before
+	/// the first request, while a request head or body is arriving, between keep-alive
+	/// requests) the connection is idle when nothing has been read for this long; that covers a
+	/// client that sends nothing, a stalled TLS handshake and a request that never finishes.
+	///
+	/// While a response is pending (the route is working, or the body is being sent) the
+	/// connection is idle only when the client has stopped reading: the response is backed up
+	/// and neither a write has completed nor the kernel reported any of it leaving the send
+	/// buffer for this long. A slow but steady download, a long poll or a stream of events is
+	/// not cut off, as long as the client's own receive buffer drains within the timeout: TCP
+	/// reopens a reader's window only after it has read a good part of that buffer, so a client
+	/// with a 1 MB buffer reading 25 KB/s sends nothing back for some 40 s, and from the
+	/// server's side that is indistinguishable from a client that stopped (nginx's send_timeout
+	/// behaves the same). Keep the timeout generous for slow clients; the default is 60 s.
+	/// Once the client has closed its side, a connection whose response is pending is also
+	/// closed when nothing has been written for this long, so a client that disconnects from a
+	/// slow route doesn't pin the socket (a client that half-closes and then waits longer than
+	/// this for its response is cut too). A route that never returns keeps a connected client's
+	/// connection open. The timeout is removed when a connection upgrades to WebSocket.
+	///
+	/// It resets on every byte, so a client that trickles a request slowly isn't bounded by it;
+	/// there is no whole-request deadline. Checks run every quarter of the timeout, so a
+	/// connection closes between 1 and 1.25 times the timeout after it went idle.
 	public var idleTimeout: TimeAmount?
 	/// Number of server sockets to open on the same port via `SO_REUSEPORT` (kernel load-balances
 	/// accepts across them). 1 = a single socket with no `SO_REUSEPORT`.
@@ -133,6 +187,7 @@ public struct Server: Sendable {
 	/// structured-concurrency replacement for start/stop; teardown (including EventLoopGroup
 	/// shutdown) is automatic and awaited.
 	@discardableResult
+	nonisolated(nonsending)
 	public func withServer<R>(_ body: (_ boundPort: Int) async throws -> R) async throws -> R {
 		// Captured out of the serve task; only read after `body` runs (i.e. after binding).
 		let resultBox = NIOLockedValueBox<Result<R, Error>?>(nil)
@@ -153,6 +208,7 @@ public struct Server: Sendable {
 
 	/// Owns the full server lifecycle: bind N channels, run their accept loops, invoke `onReady`
 	/// once listening, and tear everything down (channels + EventLoopGroup) when `onReady` returns.
+	nonisolated(nonsending)
 	private func serve(onReady: (_ boundPort: Int) async throws -> Void) async throws {
 		_ = processGlobalInit
 		let finder = try RouteFinderDual(routes)
@@ -223,14 +279,33 @@ public struct Server: Sendable {
 				.childChannelOption(ChannelOptions.allowRemoteHalfClosure, value: true)
 			let channel = try await bootstrap.bind(host: host, port: port) { childChannel in
 				childChannel.eventLoop.makeCompletedFuture {
+					// The idle timeout runs from accept, ahead of TLS and HTTP, so a client that
+					// sends nothing or never finishes its request head is closed too. A WebSocket
+					// upgrade removes it (see IdleTimeout.remove).
+					let idleHandlers = try idle.map { try IdleTimeout.add(to: childChannel, timeout: $0) }
 					if let manager = tlsManager {
 						try childChannel.pipeline.syncOperations.addHandler(SNIPeekHandler(manager: manager))
 					}
+					let outcome: EventLoopFuture<HTTPOrWebSocket>
 					if #available(macOS 13, *) {
-						return try Server.configureUpgrade(channel: childChannel, finder: finder, isTLS: isTLS, idleTimeout: idle)
+						outcome = try Server.configureUpgrade(channel: childChannel, finder: finder, isTLS: isTLS, idleHandlers: idleHandlers)
 					} else {
-						return try Server.configureUpgradeFallback(channel: childChannel, finder: finder, isTLS: isTLS, idleTimeout: idle)
+						outcome = try Server.configureUpgradeFallback(channel: childChannel, finder: finder, isTLS: isTLS, idleHandlers: idleHandlers)
 					}
+					// Until the first request is routed nothing owns the channel, so an error there
+					// (a request the HTTP parser rejected, after NIO's 400; a TLS failure) closes
+					// it here. Such connections used to stay open indefinitely.
+					let closer = CloseOnErrorHandler()
+					try childChannel.pipeline.syncOperations.addHandler(closer)
+					outcome.whenComplete { result in
+						switch result {
+						case .success:
+							childChannel.pipeline.syncOperations.removeHandler(closer, promise: nil)
+						case .failure:
+							childChannel.close(promise: nil)
+						}
+					}
+					return outcome
 				}
 			}
 			channels.append(channel)
@@ -248,24 +323,26 @@ public struct Server: Sendable {
 	private static func configureUpgrade(channel: Channel,
 	                                     finder: any RouteFinder,
 	                                     isTLS: Bool,
-	                                     idleTimeout: TimeAmount?) throws -> EventLoopFuture<HTTPOrWebSocket> {
+	                                     idleHandlers: IdleTimeout.Handlers?) throws -> EventLoopFuture<HTTPOrWebSocket> {
 		// Populated by the pre-upgrade router (below) before the typed upgrader runs, so the
 		// upgrader and its pipeline handler can read the resolved handler synchronously.
-		let resolved = NIOLockedValueBox<(WebSocketHandler, [WebSocketOption])?>(nil)
+		let resolved = HandshakeBox(nil)
 
 		let upgrader = NIOTypedWebSocketServerUpgrader<HTTPOrWebSocket>(
-			shouldUpgrade: { channel, _ in
+			shouldUpgrade: { channel, head in
 				// The router only forwards a handshake here (Upgrade header intact) once it has
 				// confirmed the path is a WebSocket route and stored the handler — so accept iff
 				// that happened. The upgrader validates Sec-WebSocket-* and computes the accept key.
-				let accept = resolved.withLockedValue { $0 } != nil
-				return channel.eventLoop.makeSucceededFuture(accept ? HTTPHeaders() : nil)
+				let headers = resolved.withLockedValue { $0?.upgradeHeaders(for: head) }
+				return channel.eventLoop.makeSucceededFuture(headers)
 			},
 			upgradePipelineHandler: { channel, _ in
 				channel.eventLoop.makeCompletedFuture {
+					// WebSocket connections are long-lived and manage their own liveness.
+					if let idleHandlers { IdleTimeout.remove(idleHandlers, from: channel) }
 					let wsChannel = try WebSocketConnectionChannel(wrappingChannelSynchronously: channel)
 					let noop: WebSocketHandler = { _ in }
-					let (handler, options) = resolved.withLockedValue { $0 } ?? (noop, [])
+					let (handler, options) = resolved.withLockedValue { $0?.webSocket } ?? (noop, [])
 					return HTTPOrWebSocket.websocket(wsChannel, handler, options)
 				}
 			}
@@ -275,13 +352,7 @@ public struct Server: Sendable {
 			upgraders: [upgrader],
 			notUpgradingCompletionHandler: { channel in
 				channel.eventLoop.makeCompletedFuture {
-					// Idle timeout applies to plain HTTP only; WebSocket connections are
-					// long-lived and manage their own liveness.
-					if let idleTimeout = idleTimeout {
-						try channel.pipeline.syncOperations.addHandler(IdleStateHandler(readTimeout: idleTimeout))
-						try channel.pipeline.syncOperations.addHandler(IdleTimeoutHandler())
-					}
-					return HTTPOrWebSocket.http(try HTTPConnectionChannel(wrappingChannelSynchronously: channel))
+					HTTPOrWebSocket.http(try HTTPConnectionChannel(wrappingChannelSynchronously: channel), resolved)
 				}
 			}
 		)
@@ -293,11 +364,15 @@ public struct Server: Sendable {
 		// paths, so NIO serves the request as ordinary HTTP and the route's real status (e.g. 404)
 		// is returned, instead of the request being discarded by the upgrader.
 		let sync = channel.pipeline.syncOperations
-		let responseEncoder = HTTPResponseEncoder()
+		// Framing headers are set by NIOAsyncHTTPServer.writeResponse, which knows the request
+		// method: the encoder's automatic framing doesn't (configureHTTPServerPipeline feeds it
+		// that, a hand-built pipeline can't), so it chunked HEAD responses of unknown length.
+		let responseEncoder = HTTPResponseEncoder(configuration: .withoutAutomaticFraming)
 		let requestDecoder = ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes))
 		var extraHTTPHandlers: [RemovableChannelHandler] = [requestDecoder]
 		try sync.addHandler(responseEncoder)
 		try sync.addHandler(requestDecoder)
+		try IdleTimeout.addTracker(idleHandlers, after: requestDecoder, to: sync, extraHTTPHandlers: &extraHTTPHandlers)
 		let pipeliningHandler = HTTPServerPipelineHandler()
 		try sync.addHandler(pipeliningHandler)
 		extraHTTPHandlers.append(pipeliningHandler)
@@ -332,16 +407,20 @@ public struct Server: Sendable {
 	private static func configureUpgradeFallback(channel: Channel,
 	                                             finder: any RouteFinder,
 	                                             isTLS: Bool,
-	                                             idleTimeout: TimeAmount?) throws -> EventLoopFuture<HTTPOrWebSocket> {
-		let resolved = NIOLockedValueBox<(WebSocketHandler, [WebSocketOption])?>(nil)
+	                                             idleHandlers: IdleTimeout.Handlers?) throws -> EventLoopFuture<HTTPOrWebSocket> {
+		let resolved = HandshakeBox(nil)
 		let promise = channel.eventLoop.makePromise(of: HTTPOrWebSocket.self)
 
 		let sync = channel.pipeline.syncOperations
-		let responseEncoder = HTTPResponseEncoder()
+		// Framing headers are set by NIOAsyncHTTPServer.writeResponse, which knows the request
+		// method: the encoder's automatic framing doesn't (configureHTTPServerPipeline feeds it
+		// that, a hand-built pipeline can't), so it chunked HEAD responses of unknown length.
+		let responseEncoder = HTTPResponseEncoder(configuration: .withoutAutomaticFraming)
 		let requestDecoder = ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes))
 		var extraHTTPHandlers: [RemovableChannelHandler] = [requestDecoder]
 		try sync.addHandler(responseEncoder)
 		try sync.addHandler(requestDecoder)
+		try IdleTimeout.addTracker(idleHandlers, after: requestDecoder, to: sync, extraHTTPHandlers: &extraHTTPHandlers)
 		let pipeliningHandler = HTTPServerPipelineHandler()
 		try sync.addHandler(pipeliningHandler)
 		extraHTTPHandlers.append(pipeliningHandler)
@@ -357,12 +436,12 @@ public struct Server: Sendable {
 		// Constructed now (captured by wsUpgrader below) but added to the pipeline only after
 		// upgradeHandler, so it sits downstream and only ever sees data via HTTPServerUpgradeHandler's
 		// not-upgrading forwarding path (see its doc comment below).
-		let fallbackHandler = PlainHTTPFallbackHandler(idleTimeout: idleTimeout, promise: promise)
+		let fallbackHandler = PlainHTTPFallbackHandler(promise: promise, handshake: resolved)
 
 		let wsUpgrader = NIOWebSocketServerUpgrader(
-			shouldUpgrade: { channel, _ in
-				let accept = resolved.withLockedValue { $0 } != nil
-				return channel.eventLoop.makeSucceededFuture(accept ? HTTPHeaders() : nil)
+			shouldUpgrade: { channel, head in
+				let headers = resolved.withLockedValue { $0?.upgradeHeaders(for: head) }
+				return channel.eventLoop.makeSucceededFuture(headers)
 			},
 			upgradePipelineHandler: { channel, _ in
 				// Remove the still-present, never-triggered plain-HTTP tail handler first: it would
@@ -371,12 +450,13 @@ public struct Server: Sendable {
 				// its own handlerRemoved doesn't race a spurious failure against the real success
 				// below.
 				fallbackHandler.suppressResolution()
+				if let idleHandlers { IdleTimeout.remove(idleHandlers, from: channel) }
 				return channel.pipeline.syncOperations.removeHandler(fallbackHandler)
 					.flatMap {
 						channel.eventLoop.makeCompletedFuture {
 							let wsChannel = try WebSocketConnectionChannel(wrappingChannelSynchronously: channel)
 							let noop: WebSocketHandler = { _ in }
-							let (handler, options) = resolved.withLockedValue { $0 } ?? (noop, [])
+							let (handler, options) = resolved.withLockedValue { $0?.webSocket } ?? (noop, [])
 							promise.succeed(.websocket(wsChannel, handler, options))
 						}
 					}
@@ -401,16 +481,22 @@ public struct Server: Sendable {
 	/// Only routes flagged at registration as WebSocket endpoints are run here. Any other route is
 	/// left untouched so it runs exactly once, as plain HTTP with the real body, after the
 	/// Upgrade headers are stripped.
+	///
+	/// A WebSocket route that throws, or produces something other than a WebSocket, has its
+	/// result kept so the connection's first HTTP dispatch can serve it without running the
+	/// route again.
 	fileprivate static func resolveWebSocket(_ request: NIOAsyncHTTPRequest,
-	                                         finder: any RouteFinder) async -> (WebSocketHandler, [WebSocketOption])? {
+	                                         finder: any RouteFinder) async -> HandshakeResolution? {
 		guard let route = finder.route(request.method, request.path), route.isWebSocket else { return nil }
 		let ctx = RouteContext(request: request, uri: request.path)
 		do {
-			let (_, output) = try await route.handler(ctx, request)
-			guard let wsOutput = output as? WebSocketUpgradeHTTPOutput else { return nil }
-			return (wsOutput.handler, wsOutput.options)
+			let (finalCtx, output) = try await route.handler(ctx, request)
+			if let wsOutput = output as? WebSocketUpgradeHTTPOutput {
+				return .webSocket(wsOutput.handler, wsOutput.options, wsOutput.subprotocol)
+			}
+			return .served(.success((finalCtx, output)))
 		} catch {
-			return nil
+			return .served(.failure(error))
 		}
 	}
 
@@ -482,8 +568,9 @@ public struct Server: Sendable {
 	                                     maxBodySize: Int?) async {
 		do {
 			switch try await upgradeResult.get() {
-			case .http(let channel):
-				await NIOAsyncHTTPServer.handleConnection(channel, finder: finder, isTLS: isTLS, maxBodySize: maxBodySize)
+			case .http(let channel, let handshake):
+				await NIOAsyncHTTPServer.handleConnection(channel, finder: finder, isTLS: isTLS, maxBodySize: maxBodySize,
+				                                          handshake: handshake?.withLockedValue { $0 })
 			case .websocket(let channel, let handler, let options):
 				await WebSocketRunner.run(channel, handler: handler, options: options)
 			}
@@ -531,16 +618,306 @@ public struct ServerError: Error, CustomStringConvertible {
 	init(_ description: String) { self.description = description }
 }
 
-/// Closes a connection when `IdleStateHandler` reports it idle. Sits directly after the
-/// `IdleStateHandler` in the pipeline; constructed on the event loop, never shared.
-private final class IdleTimeoutHandler: ChannelInboundHandler {
+/// Closes the connection on any error that reaches the end of the pipeline before the first
+/// request has been routed. Removed once it has. `@unchecked Sendable`: only touched on its
+/// channel's event loop.
+final class CloseOnErrorHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
 	typealias InboundIn = NIOAny
-	func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
-		if event is IdleStateHandler.IdleStateEvent {
-			context.close(promise: nil)
-		} else {
-			context.fireUserInboundEventTriggered(event)
+	func errorCaught(context: ChannelHandlerContext, error: Error) {
+		context.close(promise: nil)
+		context.fireErrorCaught(error)
+	}
+}
+
+extension HTTPResponseEncoder.Configuration {
+	/// See `NIOAsyncHTTPServer.writeResponse`, which sets the framing headers instead.
+	static var withoutAutomaticFraming: Self {
+		var configuration = Self()
+		configuration.automaticallySetFramingHeaders = false
+		return configuration
+	}
+}
+
+/// The idle timeout installed on every accepted connection. See `Server.idleTimeout`.
+enum IdleTimeout {
+	/// `@unchecked Sendable`: created, and only used, on the channel's event loop.
+	final class Handlers: @unchecked Sendable {
+		let timer: IdleTimeoutHandler
+		init(timeout: TimeAmount) {
+			timer = IdleTimeoutHandler(timeout: timeout)
 		}
+	}
+
+	/// Adds the timer at the front of the pipeline, ahead of TLS and HTTP, so it measures raw
+	/// reads and writes. An `HTTPExchangeTracker` in the HTTP pipeline tells it about requests
+	/// and responses (see `addTracker`).
+	static func add(to channel: Channel, timeout: TimeAmount) throws -> Handlers {
+		let handlers = Handlers(timeout: timeout)
+		try channel.pipeline.syncOperations.addHandler(handlers.timer, position: .first)
+		return handlers
+	}
+
+	/// Adds an `HTTPExchangeTracker` right after the HTTP request decoder, so it sees request
+	/// and response parts. It is added with or without an idle timeout (the connection loop
+	/// also waits on it before closing) and is one of the upgrader's extra HTTP handlers,
+	/// removed on a WebSocket upgrade.
+	static func addTracker(_ handlers: Handlers?, after decoder: ChannelHandler,
+	                       to sync: ChannelPipeline.SynchronousOperations,
+	                       extraHTTPHandlers: inout [RemovableChannelHandler]) throws {
+		let tracker = HTTPExchangeTracker(timer: handlers?.timer)
+		try sync.addHandler(tracker, position: .after(decoder))
+		extraHTTPHandlers.append(tracker)
+	}
+
+	/// Called on the event loop when a connection is upgraded to WebSocket.
+	static func remove(_ handlers: Handlers, from channel: Channel) {
+		channel.pipeline.syncOperations.removeHandler(handlers.timer, promise: nil)
+	}
+}
+
+/// Closes an idle connection.
+///
+/// While no response is pending (before the first request, while a request arrives, between
+/// keep-alive requests) the connection is idle when nothing has been read for `timeout`.
+///
+/// While a response is pending the route is working or the response is being sent, which can
+/// take as long as it takes (a slow download, a long poll, server-sent events). The connection
+/// is then idle only when the response is backed up (the channel isn't writable) and has made
+/// no progress for `timeout`. Progress is a completed write (writes are passed on in slices of
+/// `sliceSize`, so a steady reader completes one often) or the kernel reporting that more of
+/// the response has left its send buffer, since the kernel can absorb a large part of a
+/// response and wake the server only in big batches. A client that has stopped reading makes
+/// neither, and is closed.
+///
+/// Once the client has closed its side (`inputClosed`), the connection is also closed when
+/// nothing has been written for `timeout`, writable or not: otherwise a client that sent a
+/// request to a slow route and went away would pin the socket until the route finished. (A
+/// client that only half-closes and waits longer than the timeout for its response is cut too.)
+///
+/// Sits first in the pipeline. `@unchecked Sendable`: only touched on its channel's event loop.
+final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @unchecked Sendable {
+	typealias InboundIn = NIOAny
+	typealias InboundOut = NIOAny
+	typealias OutboundIn = IOData
+	typealias OutboundOut = IOData
+
+	/// Writes larger than this are passed on in slices of this size, so a slow but steady
+	/// reader completes a write at least every `sliceSize` bytes rather than once per body chunk.
+	static let sliceSize = 16 * 1024
+	/// Kernel-reported progress smaller than this (a zero-window probe) doesn't count.
+	static let minimumKernelProgress: UInt64 = 1024
+
+	private let timeout: TimeAmount
+	private var lastRead = NIODeadline.now()
+	private var lastProgress = NIODeadline.now()
+	private var responsesPending = 0
+	private var inputClosed = false
+	private var kernelSent: UInt64?
+	private var check: RepeatedTask?
+
+	init(timeout: TimeAmount) {
+		self.timeout = timeout
+	}
+
+	/// A request has been fully received; its response is now pending.
+	func requestEnded() {
+		responsesPending += 1
+	}
+
+	/// A response has been written to the socket. With none pending, the read-idle clock restarts.
+	func responseEnded() {
+		responsesPending = max(0, responsesPending - 1)
+		if responsesPending == 0 {
+			lastRead = .now()
+		}
+	}
+
+	func handlerAdded(context: ChannelHandlerContext) {
+		lastRead = .now()
+		lastProgress = .now()
+		let interval = TimeAmount.nanoseconds(max(timeout.nanoseconds / 4, 1_000_000))
+		let bound = NIOLoopBound(context, eventLoop: context.eventLoop)
+		check = context.eventLoop.scheduleRepeatedTask(initialDelay: interval, delay: interval) { [weak self] _ in
+			self?.closeIfIdle(context: bound.value)
+		}
+	}
+
+	func handlerRemoved(context: ChannelHandlerContext) {
+		check?.cancel()
+		check = nil
+	}
+
+	func channelInactive(context: ChannelHandlerContext) {
+		check?.cancel()
+		check = nil
+		context.fireChannelInactive()
+	}
+
+	func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+		lastRead = .now()
+		context.fireChannelRead(data)
+	}
+
+	func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+		if let event = event as? ChannelEvent, event == .inputClosed {
+			peerClosed()
+		}
+		context.fireUserInboundEventTriggered(event)
+	}
+
+	func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+		guard case .byteBuffer(var buffer) = Self.unwrapOutboundIn(data), buffer.readableBytes > Self.sliceSize else {
+			context.write(data, promise: tracking(promise, context: context))
+			return
+		}
+		while buffer.readableBytes > Self.sliceSize, let slice = buffer.readSlice(length: Self.sliceSize) {
+			context.write(Self.wrapOutboundOut(.byteBuffer(slice)), promise: tracking(nil, context: context))
+		}
+		context.write(Self.wrapOutboundOut(.byteBuffer(buffer)), promise: tracking(promise, context: context))
+	}
+
+	/// A promise for a write that records its completion as progress, cascading to `promise`.
+	private func tracking(_ promise: EventLoopPromise<Void>?, context: ChannelHandlerContext) -> EventLoopPromise<Void> {
+		let written = promise ?? context.eventLoop.makePromise()
+		written.futureResult.assumeIsolated().whenSuccess { [weak self] in
+			self?.lastProgress = .now()
+		}
+		return written
+	}
+
+	private func closeIfIdle(context: ChannelHandlerContext) {
+		let now = NIODeadline.now()
+		let idle: Bool
+		if responsesPending > 0 {
+			sampleKernel(context: context)
+			idle = (inputClosed || !context.channel.isWritable) && now - lastProgress >= timeout
+		} else {
+			idle = now - lastRead >= timeout
+		}
+		if idle {
+			check?.cancel()
+			check = nil
+			context.close(promise: nil)
+		}
+	}
+
+	/// Notes that the client has closed its side: from then on, only written progress keeps a
+	/// connection whose response is pending.
+	private func peerClosed() {
+		guard !inputClosed else { return }
+		inputClosed = true
+		lastProgress = .now()
+	}
+
+	/// Asks the kernel how much of the connection's output has left its send buffer (an advance
+	/// counts as progress) and whether the client has closed its side. The latter matters on
+	/// Darwin: while a response is pending NIO's pipelining handler doesn't read, so kqueue
+	/// never reports the client's FIN and `inputClosed` never arrives; the TCP state does show
+	/// CLOSE_WAIT.
+	private func sampleKernel(context: ChannelHandlerContext) {
+		guard let provider = context.channel as? SocketOptionProvider else { return }
+		let loop = context.eventLoop
+		Self.kernelSample(provider).hop(to: loop).assumeIsolated().whenSuccess { [weak self] sample in
+			guard let self, let sample else { return }
+			if sample.peerClosed {
+				self.peerClosed()
+			}
+			guard let sent = sample.sent else { return }
+			if let previous = self.kernelSent, sent >= previous + Self.minimumKernelProgress {
+				self.lastProgress = .now()
+			}
+			if self.kernelSent.map({ sent >= $0 + Self.minimumKernelProgress || sent < $0 }) ?? true {
+				self.kernelSent = sent
+			}
+		}
+	}
+
+	struct KernelSample: Sendable {
+		/// A counter of output that has left the kernel: bytes acknowledged by the peer on
+		/// Linux, bytes transmitted (less retransmissions) on Darwin. Nil if unavailable.
+		var sent: UInt64?
+		/// The connection is no longer ESTABLISHED: the client has closed its side (CLOSE_WAIT)
+		/// or reset the connection (CLOSED).
+		var peerClosed: Bool
+	}
+
+	private static func kernelSample(_ provider: SocketOptionProvider) -> EventLoopFuture<KernelSample?> {
+		#if canImport(Darwin)
+		let info: EventLoopFuture<tcp_connection_info> = provider.unsafeGetSocketOption(
+			level: SocketOptionLevel(IPPROTO_TCP), name: SocketOptionName(TCP_CONNECTION_INFO))
+		// TCPS_ESTABLISHED is 4 in Darwin's netinet/tcp_fsm.h; anything else here (CLOSE_WAIT
+		// after a FIN, CLOSED after an RST) means the client is gone or done sending.
+		return info.map { KernelSample(sent: $0.tcpi_txbytes &- $0.tcpi_txretransmitbytes, peerClosed: $0.tcpi_state != 4) }
+			.recover { _ in nil }
+		#elseif os(Linux)
+		// The kernel's struct tcp_info up to tcpi_bytes_acked (Linux 4.1+), which sits after 8
+		// one-byte fields, 24 UInt32s and two UInt64s (offset 120). Glibc's declaration stops
+		// earlier. An older kernel fills less, leaving the field 0, so no kernel progress is seen.
+		// tcpi_state is the first byte (TCP_ESTABLISHED is 1); Linux targets are little-endian.
+		struct TCPInfoPrefix: Sendable {
+			var leading: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64,
+			              UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64) =
+				(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+			var bytesAcked: UInt64 = 0
+		}
+		let info: EventLoopFuture<TCPInfoPrefix> = provider.unsafeGetSocketOption(
+			level: SocketOptionLevel(IPPROTO_TCP), name: SocketOptionName(TCP_INFO))
+		return info.map { KernelSample(sent: $0.bytesAcked == 0 ? nil : $0.bytesAcked,
+		                               peerClosed: $0.leading.0 & 0xff != 1) }
+			.recover { _ in nil }
+		#else
+		return provider.eventLoop.makeSucceededFuture(nil)
+		#endif
+	}
+}
+
+/// Tells the `IdleTimeoutHandler` (if there is one) when a request has been received and when
+/// its response has been written to the socket, and lets the connection loop wait for that
+/// before it closes. `@unchecked Sendable`: only touched on its channel's event loop.
+final class HTTPExchangeTracker: ChannelDuplexHandler, RemovableChannelHandler, @unchecked Sendable {
+	typealias InboundIn = HTTPServerRequestPart
+	typealias InboundOut = HTTPServerRequestPart
+	typealias OutboundIn = HTTPServerResponsePart
+	typealias OutboundOut = HTTPServerResponsePart
+
+	private let timer: IdleTimeoutHandler?
+	/// Completes when the last response's end has been written to the socket.
+	private var lastEnd: EventLoopFuture<Void>?
+
+	init(timer: IdleTimeoutHandler?) {
+		self.timer = timer
+	}
+
+	/// Waits until every response part written so far has reached the socket (or failed).
+	/// Closing a channel drops writes still queued in NIO, so a large response on a connection
+	/// that closes after it (Connection: close, HTTP/1.0) lost its tail to a slow reader.
+	static func flushed(_ channel: Channel) async {
+		guard let tracker = try? await channel.pipeline.handler(type: HTTPExchangeTracker.self).get() else { return }
+		let pending: EventLoopFuture<Void>?? = try? await channel.eventLoop.submit { tracker.lastEnd }.get()
+		_ = try? await pending??.get()
+	}
+
+	func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+		if case .end = Self.unwrapInboundIn(data) {
+			timer?.requestEnded()
+		}
+		context.fireChannelRead(data)
+	}
+
+	func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+		guard case .end = Self.unwrapOutboundIn(data) else {
+			context.write(data, promise: promise)
+			return
+		}
+		// The response is over once its last bytes have been written to the socket, not when
+		// they were queued: until then the client is still reading it.
+		let written = promise ?? context.eventLoop.makePromise()
+		let timer = self.timer
+		written.futureResult.assumeIsolated().whenComplete { _ in
+			timer?.responseEnded()
+		}
+		lastEnd = written.futureResult
+		context.write(data, promise: written)
 	}
 }
 
@@ -552,8 +929,7 @@ private final class IdleTimeoutHandler: ChannelInboundHandler {
 /// `upgradePipelineHandler` removes this handler first (see `configureUpgradeFallback`).
 ///
 /// The first inbound part it ever sees is therefore always the start of a genuine plain-HTTP request:
-/// it adds the idle-timeout handlers (matching `configureUpgrade`'s `notUpgradingCompletionHandler`),
-/// wraps the channel, fulfills the promise, forwards the part into the new wrap, and removes itself.
+/// it wraps the channel, fulfills the promise, forwards the part into the new wrap, and removes itself.
 ///
 /// If the connection closes before either outcome happens (e.g. a health-check probe or TLS-handshake
 /// failure that never sends a request), `HTTPServerUpgradeHandler` never forwards anything here and
@@ -565,13 +941,13 @@ final class PlainHTTPFallbackHandler: ChannelInboundHandler, RemovableChannelHan
 	typealias InboundIn = HTTPServerRequestPart
 	typealias InboundOut = HTTPServerRequestPart
 
-	private let idleTimeout: TimeAmount?
 	private let promise: EventLoopPromise<HTTPOrWebSocket>
+	private let handshake: HandshakeBox?
 	private var resolved = false
 
-	init(idleTimeout: TimeAmount?, promise: EventLoopPromise<HTTPOrWebSocket>) {
-		self.idleTimeout = idleTimeout
+	init(promise: EventLoopPromise<HTTPOrWebSocket>, handshake: HandshakeBox? = nil) {
 		self.promise = promise
+		self.handshake = handshake
 	}
 
 	/// Called by `configureUpgradeFallback` right before it removes this handler as part of a
@@ -589,12 +965,8 @@ final class PlainHTTPFallbackHandler: ChannelInboundHandler, RemovableChannelHan
 		}
 		resolved = true
 		do {
-			if let idleTimeout {
-				try context.pipeline.syncOperations.addHandler(IdleStateHandler(readTimeout: idleTimeout))
-				try context.pipeline.syncOperations.addHandler(IdleTimeoutHandler())
-			}
 			let httpChannel = try HTTPConnectionChannel(wrappingChannelSynchronously: context.channel)
-			promise.succeed(.http(httpChannel))
+			promise.succeed(.http(httpChannel, handshake))
 		} catch {
 			promise.fail(error)
 		}
@@ -639,9 +1011,9 @@ private final class WebSocketUpgradeRouter: ChannelDuplexHandler, RemovableChann
 	private var readPending = false
 	private let finder: any RouteFinder
 	private let isTLS: Bool
-	private let resolved: NIOLockedValueBox<(WebSocketHandler, [WebSocketOption])?>
+	private let resolved: HandshakeBox
 
-	init(finder: any RouteFinder, isTLS: Bool, resolved: NIOLockedValueBox<(WebSocketHandler, [WebSocketOption])?>) {
+	init(finder: any RouteFinder, isTLS: Bool, resolved: HandshakeBox) {
 		self.finder = finder
 		self.isTLS = isTLS
 		self.resolved = resolved
@@ -655,10 +1027,31 @@ private final class WebSocketUpgradeRouter: ChannelDuplexHandler, RemovableChann
 			buffered.append(Self.unwrapInboundIn(data))
 		case .awaitingHead:
 			let part = Self.unwrapInboundIn(data)
-			guard case .head(let head) = part, Self.isWebSocketUpgrade(head) else {
+			guard case .head(var head) = part, Self.isWebSocketUpgrade(head) else {
 				// Not a WebSocket handshake; this connection is plain HTTP from here on.
 				state = .passthrough
+				if case .head(var head) = part, head.headers.contains(name: "upgrade") {
+					// Another protocol (h2c, …): NIO's upgrader has no upgrader for it and closed
+					// the connection with no response. Serve the request as plain HTTP instead,
+					// ignoring the offer (RFC 9110 §7.8 lets a server do that); it is the
+					// connection's last, since NIO's parser stops after an upgrade request.
+					Self.removeWebSocketHeaders(&head)
+					context.fireChannelRead(Self.wrapInboundOut(.head(head)))
+					return
+				}
 				context.fireChannelRead(data)
+				return
+			}
+			guard Self.hasValidHandshakeFields(head), head.uri.utf8.count <= RequestPath.maxRequestTargetLength,
+			      !RequestPath.hasFragment(head.uri), !RequestPath.hasDotDotSegment(head.uri) else {
+				// (A ".." path is answered 400 by the HTTP side, before any route runs.)
+				// A handshake NIO's upgrader would refuse by closing the connection without a
+				// word (no Sec-WebSocket-Key, a version other than 13). Serve it as plain HTTP
+				// instead: a webSocket route answers 426 with Sec-WebSocket-Version: 13, any
+				// other route its usual response. Either way the connection then closes.
+				Self.removeWebSocketHeaders(&head)
+				state = .passthrough
+				context.fireChannelRead(Self.wrapInboundOut(.head(head)))
 				return
 			}
 			state = .resolving
@@ -681,10 +1074,10 @@ private final class WebSocketUpgradeRouter: ChannelDuplexHandler, RemovableChann
 		let finder = self.finder
 		let resolved = self.resolved
 		Task {
-			let ws = await Server.resolveWebSocket(request, finder: finder)
+			let resolution = await Server.resolveWebSocket(request, finder: finder)
 			boundContext.eventLoop.execute {
-				if let ws = ws { resolved.withLockedValue { $0 = ws } }
-				self.flush(context: boundContext.value, stripUpgrade: ws == nil)
+				resolved.withLockedValue { $0 = resolution }
+				self.flush(context: boundContext.value, stripUpgrade: resolution?.webSocket == nil)
 			}
 		}
 	}
@@ -709,6 +1102,13 @@ private final class WebSocketUpgradeRouter: ChannelDuplexHandler, RemovableChann
 		context.pipeline.syncOperations.removeHandler(self, promise: nil)
 	}
 
+	/// One Sec-WebSocket-Key and Sec-WebSocket-Version 13, as NIO's upgrader requires.
+	private static func hasValidHandshakeFields(_ head: HTTPRequestHead) -> Bool {
+		let keys = head.headers[canonicalForm: "sec-websocket-key"]
+		let versions = head.headers[canonicalForm: "sec-websocket-version"]
+		return keys.count == 1 && !keys[0].isEmpty && versions.count == 1 && versions[0] == "13"
+	}
+
 	private static func isWebSocketUpgrade(_ head: HTTPRequestHead) -> Bool {
 		head.headers[canonicalForm: "upgrade"].contains { $0.lowercased() == "websocket" }
 	}
@@ -718,10 +1118,18 @@ private final class WebSocketUpgradeRouter: ChannelDuplexHandler, RemovableChann
 		             "Sec-WebSocket-Protocol", "Sec-WebSocket-Extensions"] {
 			head.headers.remove(name: name)
 		}
-		// Drop only the "upgrade" token from Connection, preserving any others (e.g. keep-alive).
-		let remaining = head.headers[canonicalForm: "connection"].filter { $0.lowercased() != "upgrade" }
+		// NIO's HTTP decoder has already stopped parsing this connection: it does that after any
+		// request asking to upgrade, upgraded or not. So the request is served as the
+		// connection's last: "close" replaces the "upgrade" token (and any keep-alive), the
+		// response says "Connection: close" and the connection is closed after it. Keeping it
+		// open used to drop the client's next request on the floor.
+		let remaining = head.headers[canonicalForm: "connection"].filter {
+			let token = $0.lowercased()
+			return token != "upgrade" && token != "keep-alive"
+		}
 		head.headers.remove(name: "Connection")
 		for value in remaining { head.headers.add(name: "Connection", value: String(value)) }
+		head.headers.add(name: "Connection", value: "close")
 	}
 }
 

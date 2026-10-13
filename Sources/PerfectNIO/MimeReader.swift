@@ -132,17 +132,58 @@ public final class MimeReader {
 		tempDirectory = tempDir
 		if contentType.hasPrefix(kMultiPartForm) {
 			multi = true
-			if let range = contentType.range(of: kBoundary) {
-				
-				let startIndex = contentType.index(range.lowerBound, offsetBy: kBoundary.count+1)
-				let endIndex = contentType.endIndex
-				
-				let boundaryString = String(contentType[startIndex..<endIndex])
+			// No boundary, or an empty one, leaves the state at .stateNone: the body is refused
+			// as incomplete rather than split on a guess.
+			if let boundaryString = Self.parameter(kBoundary, in: contentType), !boundaryString.isEmpty {
 				boundary.append("--")
 				boundary.append(boundaryString)
 				state = .stateBoundary
 			}
 		}
+	}
+	
+	/// The value of parameter `name` (matched case-insensitively) in a header value such as
+	/// `form-data; name="field"; filename="a;b.txt"`, with quotes and backslash escapes removed.
+	/// Nil if the parameter isn't there. The header is client input; nothing here assumes it is
+	/// well formed.
+	static func parameter(_ name: String, in header: String) -> String? {
+		let scalars = Array(header.unicodeScalars)
+		var i = 0
+		// Skip the leading type/disposition token.
+		while i < scalars.count && scalars[i] != ";" { i += 1 }
+		while i < scalars.count {
+			i += 1 // past ";"
+			var key = ""
+			while i < scalars.count && scalars[i] != "=" && scalars[i] != ";" {
+				key.unicodeScalars.append(scalars[i])
+				i += 1
+			}
+			var value = ""
+			if i < scalars.count && scalars[i] == "=" {
+				i += 1
+				while i < scalars.count && scalars[i] == " " { i += 1 }
+				if i < scalars.count && scalars[i] == "\"" {
+					i += 1
+					while i < scalars.count && scalars[i] != "\"" {
+						if scalars[i] == "\\" && i + 1 < scalars.count { i += 1 }
+						value.unicodeScalars.append(scalars[i])
+						i += 1
+					}
+					// Past the closing quote, then on to the next ";".
+					while i < scalars.count && scalars[i] != ";" { i += 1 }
+				} else {
+					while i < scalars.count && scalars[i] != ";" {
+						value.unicodeScalars.append(scalars[i])
+						i += 1
+					}
+					value = value.trimmingCharacters(in: .whitespaces)
+				}
+			}
+			if key.trimmingCharacters(in: .whitespaces).lowercased() == name.lowercased() {
+				return value
+			}
+		}
+		return nil
 	}
 	
 	/// Returns false, having called `fail`, if the file couldn't be created.
@@ -212,49 +253,33 @@ public final class MimeReader {
 		return next == nil // got to the end is success
 	}
 	
+	/// If the header line at `start` is field `nam` (case-insensitive), the index of its ":".
+	/// Otherwise `bytes.endIndex`.
 	func isField(name nam: String, bytes: [UInt8], start: Array<UInt8>.Index) -> Array<UInt8>.Index {
-		var check = start
 		let end = bytes.endIndex
-		var gen = nam.utf8.makeIterator()
-		while check != end {
-			if bytes[check] == 58 { // :
-				return check
+		var check = start
+		for char in nam.utf8 {
+			guard check != end, tolower(Int32(char)) == tolower(Int32(bytes[check])) else {
+				return end
 			}
-			let gened = gen.next()
-			
-			if gened == nil {
-				break
-			}
-			
-			if tolower(Int32(gened!)) != tolower(Int32(bytes[check])) {
-				break
-			}
-			
 			check = check.advanced(by: 1)
 		}
-		return end
+		return check != end && bytes[check] == 58 ? check : end // 58 is ":"
+	}
+	
+	/// The value of the header line whose ":" is at `colon` and which ends at `eolPos`, with
+	/// leading spaces and tabs removed. Empty if there is nothing after the ":".
+	func fieldValue(bytes: [UInt8], colon: Array<UInt8>.Index, eolPos: Array<UInt8>.Index) -> String {
+		var start = colon.advanced(by: 1)
+		while start < eolPos && (bytes[start] == 32 || bytes[start] == 9) {
+			start = start.advanced(by: 1)
+		}
+		guard start < eolPos else { return "" }
+		return String(bytes: bytes[start..<eolPos], encoding: .utf8) ?? ""
 	}
 	
 	func pullValue(name nam: String, from: String) -> String {
-		var accum = ""
-		let option = String.CompareOptions.caseInsensitive
-		if let nameRange = from.range(of: nam + "=", options: option) {
-			var start = nameRange.upperBound
-			let end = from.endIndex
-			
-			if from[start] == "\"" {
-				start = from.index(after: start)
-			}
-			
-			while start < end {
-				if from[start] == "\"" || from[start] == ";" {
-					break;
-				}
-				accum.append(from[start])
-				start = from.index(after: start)
-			}
-		}
-		return accum
+		Self.parameter(nam, in: from) ?? ""
 	}
 	
 	@discardableResult
@@ -310,8 +335,7 @@ public final class MimeReader {
 					if eolPos != position {
 						let check = isField(name: kContentDisposition, bytes: byts, start: position)
 						if check != end { // yes, content-disposition
-							let lineRange = Array(byts[check.advanced(by: 2)..<eolPos])
-							let line = String(bytes: lineRange, encoding: .utf8) ?? ""
+							let line = fieldValue(bytes: byts, colon: check, eolPos: eolPos)
 							let name = pullValue(name: "name", from: line)
 							let fileName = pullValue(name: "filename", from: line)
 							spec.fieldName = name
@@ -319,9 +343,7 @@ public final class MimeReader {
 						} else {
 							let check = isField(name: kContentType, bytes: byts, start: position)
 							if check != end { // yes, content-type
-								let lineRange = Array(byts[check.advanced(by: 2)..<eolPos])
-								let line = String(bytes: lineRange, encoding: .utf8) ?? ""
-								spec.contentType = line
+								spec.contentType = fieldValue(bytes: byts, colon: check, eolPos: eolPos)
 								
 							}
 						}

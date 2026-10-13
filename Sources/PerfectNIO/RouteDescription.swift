@@ -13,8 +13,9 @@ extension Routes: CustomStringConvertible {
 	}
 }
 
-public struct RouteDescription {
-	let uri: String
+public struct RouteDescription: Sendable {
+	/// The route's key: its path, prefixed with "METHOD://" when the route is method-specific.
+	public let uri: String
 }
 
 extension RouteDescription: CustomStringConvertible {

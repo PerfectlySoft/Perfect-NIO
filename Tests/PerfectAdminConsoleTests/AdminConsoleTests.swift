@@ -412,6 +412,29 @@ final class AdminWebUITests: XCTestCase {
         XCTAssertFalse(html.contains(#"path with "quotes""#), "Path not JSON-escaped in HTML")
     }
 
+    /// Names from the delegate and the log (datasource, action and job names, log subsystems,
+    /// TLS domains) are put inside onclick="f('…')" handlers. Escaping them with esc() plus a
+    /// ' → \\' replace let a " end the attribute and a \\ end the JS string, so a crafted name
+    /// ran script in the page that holds the admin token. Each such argument now goes through
+    /// jsArg(), which escapes for JS and then for the attribute. (Behaviour checked in node
+    /// with names containing ", \\', \\ and <img>; this pins the page's source.)
+    func testResponse_onclickArgumentsAreEscapedForJSAndAttribute() async throws {
+        let output = AdminWebUI.response(tokenFilePath: "/tmp/tok.token")
+        var body: [UInt8] = []
+        let alloc = ByteBufferAllocator()
+        while let buf = try await output.nextChunk(allocator: alloc) {
+            body.append(contentsOf: buf.readableBytesView)
+        }
+        let html = String(decoding: body, as: UTF8.self)
+        XCTAssertNil(html.range(of: #"esc\([^)]*\)\.replace\(/'/g"#, options: .regularExpression),
+                     "an onclick argument is still escaped with esc() plus a quote replace")
+        XCTAssertTrue(html.contains("function jsArg(s)"))
+        XCTAssertTrue(html.contains(#".replace(/\\/g, '\\\\').replace(/'/g, "\\'")"#),
+                      "jsArg must escape backslashes before quotes")
+        // esc() covers quoted attribute values too.
+        XCTAssertTrue(html.contains(#".replace(/"/g,'&quot;').replace(/'/g,'&#39;')"#))
+    }
+
     func testResponse_cacheControlNoStore() {
         let output = AdminWebUI.response(tokenFilePath: "/tmp/tok.token")
         let head = output.head(request: HTTPRequestInfo(head: .init(version: .http1_1, method: .GET, uri: "/"), options: []))
@@ -2060,6 +2083,50 @@ final class AdminJSONBodyTests: XCTestCase {
                 XCTAssertEqual(output?.head(request: HTTPRequestInfo(head: .init(version: .http1_1, method: .POST, uri: "/"), options: []))?.status, .badRequest)
                 XCTAssertEqual(output?.description, "Bad Request")
             }
+        }
+    }
+}
+
+
+// MARK: - PerfectNIO public API (imported without @testable)
+
+/// The smallest outside-the-module HTTPRequest.
+private final class StubRequest: HTTPRequest, @unchecked Sendable {
+    var channel: Channel? { nil }
+    var method: HTTPMethod { .POST }
+    var uri: String { "/" }
+    var headers: HTTPHeaders { [:] }
+    var uriVariables: [String: String] = [:]
+    var path: String { "/" }
+    var searchArgs: QueryDecoder? { nil }
+    var contentType: String? { "application/json" }
+    var contentLength: Int { 0 }
+    var contentRead: Int { 0 }
+    var contentConsumed: Int { 0 }
+    var localAddress: SocketAddress? { nil }
+    var remoteAddress: SocketAddress? { nil }
+    func readSomeContent() async throws -> [ByteBuffer] { [] }
+    func readContent() async throws -> HTTPRequestContentType { .none }
+}
+
+final class RequestDecodingFailureAPITests: XCTestCase {
+    private struct Payload: Decodable { let a: Int }
+
+    /// A handler can tell a request-decoding failure apart and still reach the decoder's own
+    /// underlying error through public API.
+    func testRequestDecodingFailureIsPublic() throws {
+        let request = StubRequest()
+        do {
+            _ = try request.decode(Payload.self, content: .other(Array("{not json".utf8)))
+            XCTFail("expected a DecodingError")
+        } catch let error as DecodingError {
+            XCTAssertTrue(error.isRequestDecodingFailure)
+            // The decoder's own underlying error (Foundation on Darwin gives one for bad JSON,
+            // swift-corelibs on Linux doesn't), never the mark itself.
+            XCTAssertFalse(error.originalUnderlyingError is RequestDecodingFailure)
+            #if canImport(Darwin)
+            XCTAssertNotNil(error.originalUnderlyingError)
+            #endif
         }
     }
 }

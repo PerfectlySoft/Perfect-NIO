@@ -21,7 +21,11 @@ public enum HTTPRequestContentType {
 	case other([UInt8])
 }
 
-public protocol HTTPRequest: AnyObject {
+/// The request a route handles. `Sendable` so it can be passed to and captured by the
+/// `@Sendable` route closures. The server's own implementation buffers the whole body before
+/// the route runs and is used by one connection task at a time; `uriVariables` is set only
+/// while the route pipeline runs, in that task.
+public protocol HTTPRequest: AnyObject, Sendable {
 	var channel: Channel? { get }
 	var method: HTTPMethod { get }
 	var uri: String { get }

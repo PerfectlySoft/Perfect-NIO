@@ -9,6 +9,7 @@
 //
 
 import Foundation
+import NIOCore
 #if canImport(Darwin)
 import Darwin
 #else
@@ -48,7 +49,11 @@ struct RawHTTPResponse {
 
 /// Connects to 127.0.0.1:`port`, sends each of `parts` in order (stopping quietly if the server
 /// closes first), then reads until the server closes or `timeout` seconds pass without data.
-func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5) -> RawHTTPResponse {
+/// `partDelay` waits between parts (a slow upload); `readDelay` waits before reading anything
+/// (a client that isn't reading).
+func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5, partDelay: Double = 0,
+             readDelay: Double = 0, halfClose: Bool = false, halfCloseDelay: Double = 0,
+             resetAfter: Double? = nil) -> RawHTTPResponse {
     let start = Date()
     #if canImport(Darwin)
     let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -77,7 +82,8 @@ func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5) -> RawHTTPRespo
     precondition(connected == 0, "connect() failed: \(errno)")
 
     var sent = 0
-    sending: for part in parts {
+    sending: for (index, part) in parts.enumerated() {
+        if index > 0 && partDelay > 0 { Thread.sleep(forTimeInterval: partDelay) }
         var offset = 0
         while offset < part.count {
             let n = part.withUnsafeBytes { send(fd, $0.baseAddress! + offset, part.count - offset, sendFlags) }
@@ -88,6 +94,18 @@ func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5) -> RawHTTPRespo
         }
     }
 
+    if let resetAfter {
+        // Abort the connection: with SO_LINGER 0, closing sends RST instead of FIN.
+        Thread.sleep(forTimeInterval: resetAfter)
+        var linger = linger(l_onoff: 1, l_linger: 0)
+        setsockopt(fd, SOL_SOCKET, SO_LINGER, &linger, socklen_t(MemoryLayout<linger>.size))
+        return RawHTTPResponse(text: "", closed: true, elapsed: Date().timeIntervalSince(start), sent: sent)
+    }
+    if halfClose {
+        if halfCloseDelay > 0 { Thread.sleep(forTimeInterval: halfCloseDelay) }
+        shutdown(fd, Int32(SHUT_WR))
+    }
+    if readDelay > 0 { Thread.sleep(forTimeInterval: readDelay) }
     var received: [UInt8] = []
     var closed = false
     var buf = [UInt8](repeating: 0, count: 64 * 1024)
@@ -124,10 +142,98 @@ let rawLastChunk: [UInt8] = Array("0\r\n\r\n".utf8)
 /// `rawHTTP` on a thread of its own, so its blocking reads don't hold a thread the server's
 /// connection tasks need. (Not a Dispatch queue: on Linux the global concurrent queues and
 /// Swift's global executor share one thread pool.)
-func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5) async -> RawHTTPResponse {
+func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5, partDelay: Double = 0,
+             readDelay: Double = 0, halfClose: Bool = false, halfCloseDelay: Double = 0,
+             resetAfter: Double? = nil) async -> RawHTTPResponse {
     await withCheckedContinuation { continuation in
         Thread {
-            continuation.resume(returning: rawHTTP(port: port, parts, timeout: timeout) as RawHTTPResponse)
+            continuation.resume(returning: rawHTTP(port: port, parts, timeout: timeout, partDelay: partDelay,
+                                                   readDelay: readDelay, halfClose: halfClose,
+                                                   halfCloseDelay: halfCloseDelay, resetAfter: resetAfter) as RawHTTPResponse)
         }.start()
     }
+}
+
+/// Sends each request on one connection only after the previous response has fully arrived
+/// (head plus Content-Length body), unlike `rawHTTP`, which pipelines. Returns each response's
+/// text; a response that doesn't arrive within `timeout` seconds ends the exchange.
+func rawSequential(port: Int, _ requests: [[UInt8]], timeout: Int = 3) async -> [String] {
+    await withCheckedContinuation { continuation in
+        Thread {
+            continuation.resume(returning: rawSequentialBlocking(port: port, requests, timeout: timeout))
+        }.start()
+    }
+}
+
+private func rawSequentialBlocking(port: Int, _ requests: [[UInt8]], timeout: Int) -> [String] {
+    #if canImport(Darwin)
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    var one: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+    let sendFlags: Int32 = 0
+    #else
+    let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+    let sendFlags = Int32(MSG_NOSIGNAL)
+    #endif
+    guard fd >= 0 else { return [] }
+    defer { close(fd) }
+    var tv = timeval(tv_sec: timeout, tv_usec: 0)
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    var addr = sockaddr_in()
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = in_port_t(UInt16(port).bigEndian)
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let connected = withUnsafePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard connected == 0 else { return [] }
+
+    var responses: [String] = []
+    var pending: [UInt8] = []
+    var buf = [UInt8](repeating: 0, count: 64 * 1024)
+    for request in requests {
+        let sent = request.withUnsafeBytes { send(fd, $0.baseAddress!, request.count, sendFlags) }
+        guard sent == request.count else { break }
+        // Read until a whole response (head, then Content-Length bytes) is buffered.
+        var complete: Int?
+        while complete == nil {
+            let text = String(decoding: pending, as: UTF8.self)
+            if let headEnd = text.range(of: "\r\n\r\n") {
+                let head = text[..<headEnd.lowerBound].lowercased()
+                let length = head.split(separator: "\r\n")
+                    .first { $0.hasPrefix("content-length:") }
+                    .flatMap { Int($0.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) } ?? 0
+                let headBytes = text[..<headEnd.upperBound].utf8.count
+                if pending.count >= headBytes + length { complete = headBytes + length; break }
+            }
+            let n = buf.withUnsafeMutableBytes { recv(fd, $0.baseAddress!, $0.count, 0) }
+            if n > 0 { pending += buf[0..<n] } else if n < 0 && errno == EINTR { continue } else { break }
+        }
+        guard let complete else { break }
+        responses.append(String(decoding: pending[..<complete], as: UTF8.self))
+        pending.removeSubrange(..<complete)
+    }
+    return responses
+}
+
+/// Runs `body`, retrying (up to 3 times) when it fails with EINTR. Under emulation a signal
+/// sometimes interrupted a system call while an exit test started its server. Used by the
+/// exit tests that start servers (SIGXFSZTests, MimeReaderTests).
+func retryingEINTR<R>(_ body: () async throws -> R) async throws -> R {
+    for attempt in 1... {
+        do {
+            return try await body()
+        } catch where attempt < 3 && isEINTR(error) {
+            continue
+        }
+    }
+    fatalError("unreachable")
+}
+
+func isEINTR(_ error: any Error) -> Bool {
+    if let error = error as? IOError { return error.errnoCode == EINTR }
+    if let error = error as? POSIXError { return error.code == .EINTR }
+    return String(describing: error).contains("Interrupted system call")
 }

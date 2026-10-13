@@ -342,20 +342,22 @@ final class PerfectNIOSmokeTests: XCTestCase {
             }
         }
         try await withServer(routes) {
-            let task = session.webSocketTask(with: URL(string: "ws://localhost:\(port)/echo")!)
-            task.resume()
-            defer { task.cancel(with: .normalClosure, reason: nil) }
-
-            try await task.send(.string("hello ws"))
-            let first = try await task.receive()
-            guard case .string(let s1) = first else { return XCTFail("expected text frame, got \(first)") }
-            XCTAssertEqual(s1, "hello ws")
-
-            // A second round-trip confirms the connection stays open and keeps echoing.
-            try await task.send(.string("again"))
-            let second = try await task.receive()
-            guard case .string(let s2) = second else { return XCTFail("expected text frame, got \(second)") }
-            XCTAssertEqual(s2, "again")
+            // A raw client rather than URLSessionWebSocketTask, which fails on Linux (see
+            // RawWebSocket.swift).
+            let echoes = try await withRawWebSocket(port: port, path: "/echo", protocol: "echo") { ws in
+                try ws.sendText("hello ws")
+                let first = try ws.receiveFrame()
+                // A second round-trip confirms the connection stays open and keeps echoing.
+                try ws.sendFrame(opcode: 0x2, payload: [0, 1, 2, 255])
+                let second = try ws.receiveFrame()
+                // Close; the handler echoes the close and returns.
+                try ws.sendFrame(opcode: 0x8, payload: [0x03, 0xe8])
+                let close = try ws.receiveFrame()
+                return [first, second, close]
+            }
+            XCTAssertEqual(echoes[0], .init(opcode: 0x1, payload: Array("hello ws".utf8)))
+            XCTAssertEqual(echoes[1], .init(opcode: 0x2, payload: [0, 1, 2, 255]))
+            XCTAssertEqual(echoes[2].opcode, 0x8)
         }
     }
 

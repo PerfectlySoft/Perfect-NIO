@@ -131,7 +131,7 @@ public extension Routes {
 	func map<NewOut>(_ call: @Sendable @escaping () async throws -> NewOut) -> Routes<InType, NewOut> {
 		applyFuncs { ctx, _ in (ctx, try await call()) }
 	}
-	func map<NewOut>(_ call: @Sendable @escaping (OutType.Element) async throws -> NewOut) -> Routes<InType, [NewOut]> where OutType: Collection {
+	func map<NewOut>(_ call: @Sendable @escaping (OutType.Element) async throws -> NewOut) -> Routes<InType, [NewOut]> where OutType: Collection & SendableMetatype {
 		applyFuncs { ctx, output in
 			var results: [NewOut] = []
 			results.reserveCapacity(output.underestimatedCount)
@@ -205,6 +205,11 @@ public extension Routes {
 // MARK: - wild / trailing
 
 public extension Routes {
+	/// Matches any single path segment and passes it to `call` with the current value.
+	///
+	/// The segment is the request's raw path text, not percent-decoded. It is never `..`: the
+	/// server refuses a request with a `..` segment (raw or encoded) with 400 before routing.
+	/// Still validate it before using it as a file name.
 	func wild<NewOut>(_ call: @Sendable @escaping (OutType, String) async throws -> NewOut) -> Routes<InType, NewOut> {
 		apply(paths: { $0.appending(component: "*") }) { ctx, output in
 			let component = ctx.currentComponent ?? "-error-"
@@ -212,6 +217,10 @@ public extension Routes {
 			return (newCtx, try await call(output, component))
 		}
 	}
+	/// Matches any single path segment and stores it in `uriVariables[name]`.
+	///
+	/// The value is the request's raw path text, not percent-decoded. It is never `..`: the
+	/// server refuses a request with a `..` segment (raw or encoded) with 400 before routing.
 	func wild(name: String) -> Routes {
 		apply(paths: { $0.appending(component: "*") }) { ctx, output in
 			var newCtx = ctx
@@ -222,6 +231,13 @@ public extension Routes {
 			return (newCtx, output)
 		}
 	}
+	/// Matches the rest of the path (any number of segments) and passes it, without a leading
+	/// slash, to `call` with the current value.
+	///
+	/// The text is the request's raw path, not percent-decoded. It never contains a `..`
+	/// segment: the server refuses such requests (`/files/../x`, `/files/%2e%2e/x`, …) with 400
+	/// before routing. It can still name hidden files or carry encoded characters, so validate it
+	/// before joining it onto a directory for `FileOutput(localPath:)`.
 	func trailing<NewOut>(_ call: @Sendable @escaping (OutType, String) async throws -> NewOut) -> Routes<InType, NewOut> {
 		apply(paths: { $0.appending(component: "**") }) { ctx, output in
 			let trailing = ctx.trailingComponents
@@ -276,7 +292,7 @@ public extension Routes {
 // MARK: - decode
 
 public extension Routes {
-	func decode<Type: Decodable, NewOut>(_ type: Type.Type,
+	func decode<Type: Decodable & SendableMetatype, NewOut>(_ type: Type.Type,
 	                                    _ handler: @Sendable @escaping (OutType, Type) async throws -> NewOut) -> Routes<InType, NewOut> {
 		applyFuncs { ctx, output in
 			var newCtx = ctx
@@ -291,11 +307,11 @@ public extension Routes {
 			return (newCtx, try await handler(output, decoded))
 		}
 	}
-	func decode<Type: Decodable, NewOut>(_ type: Type.Type,
+	func decode<Type: Decodable & SendableMetatype, NewOut>(_ type: Type.Type,
 	                                    _ handler: @Sendable @escaping (Type) async throws -> NewOut) -> Routes<InType, NewOut> {
 		decode(type) { try await handler($1) }
 	}
-	func decode<Type: Decodable>(_ type: Type.Type) -> Routes<InType, Type> {
+	func decode<Type: Decodable & SendableMetatype>(_ type: Type.Type) -> Routes<InType, Type> {
 		decode(type) { $1 }
 	}
 }

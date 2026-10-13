@@ -14,6 +14,9 @@
 //    MYSQL_TEST_DATABASE           default test (created if missing)
 //    MYSQL_TEST_ADMIN_DATABASE     default mysql (used to create the above)
 //
+//    MYSQL_REQUIRE_LIVE=1          fail (LiveServerRequirementTests) instead of skipping
+//                                  when the server is unconfigured or unreachable
+//
 //  Live tests are skipped unless MYSQL_TESTS=1, MYSQL_TEST_PORT is a valid
 //  port and the host isn't "localhost". Falling back to the client's default
 //  port (3306, which libmysql also uses for port 0) would point drop-and-

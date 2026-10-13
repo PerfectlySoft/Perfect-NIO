@@ -23,7 +23,7 @@ func +(lhs: HTTPHeaders, rhs: HTTPHeaders) -> HTTPHeaders {
 	return HTTPHeaders(lhs.map {$0} + rhs.map {$0})
 }
 
-public struct HTTPHead {
+public struct HTTPHead: Sendable {
 	/// Optional HTTP status
 	public var status: HTTPResponseStatus?
 	/// HTTP headers
@@ -36,11 +36,14 @@ public struct HTTPHead {
 		guard let with = with else {
 			return self
 		}
+		// The other head's status wins unless it has none or is plain 200, so a status already
+		// set here (such as a route context's 201 from statusCheck) isn't lost to an output that
+		// doesn't set one. A nil used to count as "not 200" and replaced it.
 		let status: HTTPResponseStatus?
-		if with.status != .ok {
-			status = with.status
+		if let withStatus = with.status, withStatus != .ok {
+			status = withStatus
 		} else {
-			status = self.status
+			status = self.status ?? with.status
 		}
 		let headers = self.headers + with.headers
 		return HTTPHead(status: status, headers: headers)

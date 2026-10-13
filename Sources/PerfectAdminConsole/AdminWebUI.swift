@@ -456,8 +456,21 @@ let reportFilter = 'all';
 
 function hdr() { return { 'Authorization': 'Bearer ' + token }; }
 
+// HTML-escapes text for element content or a quoted attribute value.
 function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// The inside of a single-quoted JS string literal in a double-quoted HTML attribute, as in
+// onclick="f('…')": backslash and quote are escaped for JS first, then the result is
+// HTML-escaped for the attribute (the browser undoes that before the JS runs). Escaping
+// only ' after esc(), as this used to, let a name containing " or \ break out of the
+// attribute or the string and run script with the admin token in reach.
+function jsArg(s) {
+  return String(s)
+    .replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function row(label, value) {
@@ -560,7 +573,7 @@ function renderTLS(t) {
     return;
   }
   let h = t.domains.map(d => {
-    const safe = esc(d).replace(/'/g, "\\'");
+    const safe = jsArg(d);
     return '<div class="row">' +
       '<span class="rl" style="font-family:var(--font-mono);font-size:12px">' + esc(d) + '</span>' +
       '<span class="rv" style="display:flex;gap:4px">' +
@@ -642,7 +655,7 @@ function renderFilterChips(el, counts, active, total) {
   let h = '<span class="' + (active === 'all' ? 'tag-outline' : 'tag-neutral') + '" onclick="setLogSubsystem(\'all\')">all ' + total + '</span>';
   for (const [name, count] of counts) {
     const cls = active === name ? 'tag-outline' : 'tag-neutral';
-    const safe = esc(name).replace(/'/g, "\\'");
+    const safe = jsArg(name);
     h += '<span class="' + cls + '" onclick="setLogSubsystem(\'' + safe + '\')">' + esc(name) + ' ' + count + '</span>';
   }
   el.innerHTML = h;
@@ -825,7 +838,7 @@ function renderAttentionCard(datasources, jobRuns, actions) {
   const items = [];
   for (const ds of datasources) {
     if (ds.status !== 'failing') continue;
-    const safeName = esc(ds.name).replace(/'/g, "\\'");
+    const safeName = jsArg(ds.name);
     items.push({
       title: "Datasource '" + (ds.alias || ds.name) + "' failing",
       time: ds.lastAttempt ? fmtClock(ds.lastAttempt.ts) : '',
@@ -836,7 +849,7 @@ function renderAttentionCard(datasources, jobRuns, actions) {
   }
   for (const run of jobRuns) {
     if (run.succeeded) continue;
-    const safeName = esc(run.name).replace(/'/g, "\\'");
+    const safeName = jsArg(run.name);
     items.push({
       title: "'" + run.name + "' failed",
       time: fmtClock(run.finishedAt),
@@ -886,7 +899,7 @@ function renderActivityRows() {
   const rows = [];
   if (lastCurrentJob) {
     const pct = lastCurrentJob.total > 0 ? Math.min(100, Math.round(lastCurrentJob.completed / lastCurrentJob.total * 100)) : 0;
-    const safeName = esc(lastCurrentJob.name).replace(/'/g, "\\'");
+    const safeName = jsArg(lastCurrentJob.name);
     rows.push(activityRowHTML(
       lastCurrentJob.name,
       '<span class="job-bar"><span class="job-bar-fill" style="width:' + pct + '%"></span></span>',
@@ -896,7 +909,7 @@ function renderActivityRows() {
   }
   const shown = activityExpanded ? lastJobRuns : lastJobRuns.slice(0, 3);
   for (const run of shown) {
-    const safeName = esc(run.name).replace(/'/g, "\\'");
+    const safeName = jsArg(run.name);
     const tag = run.succeeded
       ? '<span class="action-tag" style="border:1px solid var(--color-accent);color:var(--color-accent-700)">done</span>'
       : '<span class="action-tag action-tag-destructive">failed</span>';
@@ -991,7 +1004,7 @@ function renderDataRail() {
   const el = document.getElementById('data-rail-list');
   if (!dataState.datasources.length) { el.innerHTML = ''; return; }
   el.innerHTML = dataState.datasources.map(ds => {
-    const safeName = esc(ds.name).replace(/'/g, "\\'");
+    const safeName = jsArg(ds.name);
     const selected = ds.name === dataState.selected ? ' selected' : '';
     const sqClass = ds.status === 'failing' ? 'failing' : ds.status === 'not-tested' ? 'not-tested' : '';
     let sub = esc(ds.driver) + ' · ' + esc(ds.schema);
@@ -1013,7 +1026,7 @@ function renderDataDetail() {
   const el = document.getElementById('data-detail');
   const ds = dataState.datasources.find(d => d.name === dataState.selected);
   if (!ds) { el.innerHTML = '<div class="placeholder">No datasources registered</div>'; return; }
-  const safeName = esc(ds.name).replace(/'/g, "\\'");
+  const safeName = jsArg(ds.name);
   const tagClass = ds.status === 'failing' ? 'data-tag-failing' : ds.status === 'not-tested' ? 'data-tag-not-tested' : 'data-tag-ok';
   let h = '<div class="data-detail-head">';
   h += '<div><span class="data-alias-name">' + esc(ds.alias || ds.name) + '</span>' +
@@ -1041,7 +1054,7 @@ function renderFailureBanner(ds) {
 function renderConnectionProfiles(ds) {
   const configs = ds.configs || [];
   if (!configs.length) return '';
-  const safeName = esc(ds.name).replace(/'/g, "\\'");
+  const safeName = jsArg(ds.name);
   const history = ds.history || [];
   let h = '<div class="data-profiles"><h6>Connection profile</h6>';
   h += configs.map(c => {
@@ -1050,7 +1063,7 @@ function renderConnectionProfiles(ds) {
     const statusLine = lastForProfile
       ? (lastForProfile.success ? 'ok' : 'failing') + (lastForProfile.latencyMs != null ? ' · ' + Math.round(lastForProfile.latencyMs) + 'ms' : '')
       : 'not tested';
-    const safeId = esc(c.id).replace(/'/g, "\\'");
+    const safeId = jsArg(c.id);
     const switchBtn = c.isActive ? '' :
       '<button class="mini-btn" onclick="switchDS(\'' + safeName + '\',\'' + safeId + '\')">Switch</button>';
     return '<div class="data-profile-card' + activeCls + '">' +
@@ -1237,13 +1250,11 @@ function titleCaseCategory(s) {
 // attribute: escapes backslashes/single-quotes for the JS literal delimiter,
 // and &/</>/" for the surrounding HTML attribute delimiter.
 function attrJsString(s) {
-  return "'" + String(s)
-    .replace(/\\/g, '\\\\').replace(/'/g, "\\'")
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') + "'";
+  return "'" + jsArg(s) + "'";
 }
 
 function actionButtonHTML(a) {
-  const escapedName = esc(a.name).replace(/'/g, "\\'");
+  const escapedName = jsArg(a.name);
   if (a.isInert) {
     const reason = a.name === 'reload-tls' ? 'No TLS configured' : 'Not available';
     return '<button class="action-btn" disabled>' + esc(reason) + '</button>';
@@ -1334,7 +1345,7 @@ function renderReportFilterChips(report) {
   let h = '<span class="' + (reportFilter === 'all' ? 'tag-outline' : 'tag-neutral') + '" onclick="setReportFilter(\'all\')">all ' + total + '</span>';
   for (const [status, count] of counts) {
     const cls = reportFilter === status ? 'tag-outline' : 'tag-neutral';
-    const safe = esc(status).replace(/'/g, "\\'");
+    const safe = jsArg(status);
     h += '<span class="' + cls + '" onclick="setReportFilter(\'' + safe + '\')">' + esc(status) + ' ' + count + '</span>';
   }
   return h;
@@ -1353,7 +1364,7 @@ function renderActionReportOverlay(report, actionName) {
     return;
   }
   const when = new Date(report.generatedAt * 1000).toLocaleString();
-  const safeName = esc(actionName).replace(/'/g, "\\'");
+  const safeName = jsArg(actionName);
   let h = '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:14px">';
   h += '<div><span class="action-ghost" onclick="showTab(\'actions\')">Actions</span> / ' +
     '<span style="font-family:var(--font-heading);font-weight:600;text-transform:uppercase;letter-spacing:.04em">' +

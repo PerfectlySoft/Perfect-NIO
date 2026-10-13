@@ -16,7 +16,16 @@ A Swift 6 HTTP(S) server library built on SwiftNIO. Routes are a composable, str
 
 **Role:** PerfectNIO is the core HTTP/server layer here — depended on directly by `FMTestApp` and `PerfectTemplate`, and includes multi-tenant TLS, an admin console, and graceful restart support. Logging is done via `import Logging` (apple/swift-log) directly — there is no dependency on Perfect-Logger.
 
-The pre-Swift-6 version of this package is preserved on the [`legacy`](../../tree/legacy) branch.
+The pre-Swift-6 version of this package is preserved on the [`legacy`](../../tree/legacy) branch. It was never tagged; see [Migrating from the legacy branch](#migrating-from-the-legacy-branch).
+
+> **Version 0.x: the API may change between minor versions.** PerfectNIO starts at 0.1.0 and stays on 0.x until its API settles. Under semantic versioning a 0.x minor release (0.1 → 0.2) may contain breaking changes. `from: "0.1.0"` (as below) accepts any 0.x release; use `.upToNextMinor(from: "0.1.0")` to take only 0.1.x fixes. Release notes list every breaking change.
+
+## Requirements
+
+- Swift 6.2 or later (swift-tools-version 6.2). CI builds with Swift 6.2 and 6.4 on Linux and Xcode 26.0.1 and 26.6 on macOS.
+- macOS 12 or later, or Linux (CI: Ubuntu 24.04). No iOS, tvOS or watchOS support.
+- Linux: `zlib1g-dev` (and `pkg-config`) for the `CZlib` system library. macOS needs nothing extra.
+- `PerfectNIOCRUD` depends on Perfect-CRUD 3 (`from: "3.0.1"`). Perfect-MySQL 4 is used only by this package's own MySQL tests; building the library products doesn't need a MySQL client library.
 
 - [Quick start](#quick-start)
 - [Package.swift](#packageswift)
@@ -31,6 +40,9 @@ The pre-Swift-6 version of this package is preserved on the [`legacy`](../../tre
 - [PerfectNIOCRUD](#perfectniocrud)
 - [Reference](#reference)
 - [Linux support](#linux-support)
+- [Security notes](#security-notes)
+- [Upgrading from `main` before 0.1.0](#upgrading-from-main-before-010)
+- [Migrating from the legacy branch](#migrating-from-the-legacy-branch)
 
 ---
 
@@ -69,7 +81,7 @@ try await Server(routes: routes, port: 8080).withServer { boundPort in
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", branch: "main"),
+    .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", from: "0.1.0"),
 ],
 targets: [
     .target(
@@ -83,7 +95,7 @@ targets: [
 
 Your code will typically `import PerfectNIO`. The library re-exports `NIO`, `NIOHTTP1`, and `NIOSSL`, so you usually do not need to import those separately.
 
-**In-ecosystem consumers** (Perfect-Lasso, `FMTestApp`, `PerfectTemplate`) use the same GitHub URL above — no local sibling checkout is needed. This package's own `Package.swift` likewise resolves `PerfectNIOCRUD` and the `PerfectNIOMySQLTests` test target's `Perfect-CRUD`/`Perfect-MySQL` dependencies via `.package(url:, branch: "main")`, not a local path. Cloning this repo on its own and running `swift build`/`swift test` works standalone; fast local cross-repo iteration during development uses a gitignored SwiftPM mirror (`swift package config set-mirror`) instead of editing `Package.swift`.
+This package depends on its Perfect siblings by released version (Perfect-CRUD `from: "3.0.1"`, Perfect-MySQL `from: "4.0.0"`), so a version-pinned consumer resolves cleanly. Cloning this repo on its own and running `swift build`/`swift test` works standalone; for cross-repo work on unreleased sibling changes, use a SwiftPM mirror (`swift package config set-mirror`) rather than editing `Package.swift`.
 
 There is no `PerfectNIOMustache` target — an earlier version of this package had one, but it was deliberately removed (dead weight pulling in an unresurrected `PerfectLib`). Mustache template output is not currently available.
 
@@ -131,14 +143,14 @@ try await Server(routes: routes, port: 8080).run()
 // serves /hello and /bye
 ```
 
-Closure form — the argument `$0` is a stand-in for the parent route:
+Builder form: the closure's argument `$0` stands in for the parent route, and each line is one child route:
 
 ```swift
-let routes = try root().v1.dir {[
-    $0.foo1 { "OK1" },
-    $0.foo2 { "OK2" },
-    $0.foo3 { "OK3" },
-]}.text()
+let routes = try root().v1.dir {
+    $0.foo1 { "OK1" }
+    $0.foo2 { "OK2" }
+    $0.foo3 { "OK3" }
+}.text()
 // serves /v1/foo1, /v1/foo2, /v1/foo3
 ```
 
@@ -155,11 +167,14 @@ All route closures are `async throws`. Return a value to pass it to the next ope
 Transform the current output value into something new.
 
 ```swift
-// Routes<HTTPRequest, [String]>
-let routes = try root().dir {[
-    $0.a { 1 }.map { "\($0)" },            // Int → String
-    $0.b { [1, 2, 3] }.map { "\($0)" },    // each Int → String
-]}.text()
+// The whole value: Int → String
+let label = root().a { 1 }.map { (n: Int) in "Item \(n)" }.text()
+
+// On a collection, map with an element closure maps each element: [Int] → [String]
+let labels = root().b { [1, 2, 3] }.map { (n: Int) in "Item \(n)" }.json()
+
+// …and with a closure over the whole collection, the collection: [Int] → Int
+let total = root().c { [1, 2, 3] }.map { (all: [Int]) in all.reduce(0, +) }.text()
 ```
 
 ### ext
@@ -182,6 +197,8 @@ let routes = try root().dir(
 
 Match a single path segment as a wildcard.
 
+> The segment is raw request text, not percent-decoded. It is never `..`: a request with a `..` path segment, raw or encoded, is refused with 400 before routing (see [Security notes](#security-notes)). Still validate it before using it as a file name.
+
 ```swift
 // /*/suffix — captures the first segment
 root().wild { $1 }.suffix.text()
@@ -195,6 +212,8 @@ root().v1.wild(name: "id").info
 ### trailing
 
 Match all remaining path segments.
+
+> The remainder is raw request text, not percent-decoded. It never contains a `..` segment: `/files/../secret.txt`, `/files/%2e%2e/secret.txt` and the like are refused with 400 before routing (see [Security notes](#security-notes)). It can still name hidden files or contain encoded characters, so validate it before joining it onto a directory for `FileOutput`.
 
 ```swift
 // /files/** — captures everything after /files/
@@ -248,7 +267,7 @@ Uploads are also subject to the process's file-size limit (`RLIMIT_FSIZE`, e.g. 
 Read and decode the request body as a `Decodable` type. If the body (or the query and path values) can't be decoded into the type, the client gets **400 Bad Request**; the decoding error itself is logged, not sent back.
 
 ```swift
-struct CreateUser: Decodable { let name: String; let email: String }
+struct CreateUser: Codable { let name: String; let email: String }
 
 // Decoded value replaces the pipeline value
 root().POST.users.decode(CreateUser.self) { user in
@@ -313,11 +332,12 @@ let routes = protected.request { session, _ in session.userId }.text()
 Without a method constraint, a route answers any HTTP method. Constrain with a property:
 
 ```swift
-let routes = try root().dir {[
-    $0.GET.users   { listUsers()   }.json(),
-    $0.POST.users  { createUser()  }.json(),
-    $0.DELETE.users { deleteUsers() }.text(),
-]}.text()
+// Each child is already an HTTPOutput route (json()/text()), so dir needs no text() after it.
+let routes = try root().dir {
+    $0.GET.users    { listUsers()   }.json()
+    $0.POST.users   { createUser()  }.json()
+    $0.DELETE.users { deleteUsers() }.text()
+}
 ```
 
 Accept multiple methods with `method(_:)`:
@@ -351,7 +371,7 @@ root().user { User(id: 1, name: "Alice") }.json()
 
 ### compressed()
 
-Wraps any `HTTPOutput` with gzip/deflate compression. Content shorter than ~14 KB or with an image/video/audio content type is passed through uncompressed.
+Wraps any `HTTPOutput` with gzip/deflate compression, chosen from the request's `Accept-Encoding` (a coding refused with `q=0` is never used). Content shorter than ~14 KB or with an image/video/audio content type is passed through uncompressed. Partial (206) responses are never compressed. Every response carries `Vary: Accept-Encoding`, compressed or not.
 
 ```swift
 root { BytesOutput(body: largeBytes) as HTTPOutput }.compressed()
@@ -366,6 +386,8 @@ root().logo {
     try FileOutput(localPath: "/var/www/logo.png") as HTTPOutput
 }.ext("png")
 ```
+
+A directory path serves its `index.html` (404 if there is none). Responses carry a quoted `ETag` (covering the file's path, size, inode and modification time to the nanosecond) and `Last-Modified`; `If-None-Match` (lists, weak tags, `*`) gets 304. A `Range: bytes=…` request is answered with 206 and the first satisfiable range, unless `If-Range` names a validator that no longer matches, in which case the whole file is sent; an unsatisfiable or malformed range gets the whole file. The file is read in chunks of up to 64 KiB. `localPath` is used as given: see [Security notes](#security-notes) before building it from request input.
 
 ---
 
@@ -440,7 +462,9 @@ let echoRoute = root().echo.webSocket(protocol: "echo") { _ -> WebSocketHandler 
 }
 ```
 
-A WebSocket handshake to a path that does not have a `webSocket()` route is served as ordinary HTTP (returning the route's natural status, typically 404) — per RFC 6455 §4.2.2. Only `webSocket()` routes run during the handshake; any other route runs once, as plain HTTP. A route that returns a hand-built `WebSocketUpgradeHTTPOutput` (its initializer is deprecated) does not upgrade and answers 426 Upgrade Required.
+A WebSocket handshake to a path that does not have a `webSocket()` route is served as ordinary HTTP (returning the route's natural status, typically 404) — per RFC 6455 §4.2.2. Only `webSocket()` routes run during the handshake; any other route runs once, as plain HTTP. A `webSocket()` route whose pipeline refuses the handshake (a `statusCheck` returning 403, a thrown `ErrorOutput`) also runs once: its result is the response. A handshake that isn't upgraded is answered with `Connection: close` and the connection is closed, because the HTTP parser can't continue on a connection that asked to upgrade. A route that returns a hand-built `WebSocketUpgradeHTTPOutput` (its initializer is deprecated) does not upgrade and answers 426 Upgrade Required.
+
+The `protocol` argument is the subprotocol the endpoint speaks. When the client offers it in `Sec-WebSocket-Protocol`, the 101 response selects it (browsers fail a connection whose 101 selects none of the subprotocols they offered). A client that offers none, or only others, is still upgraded, without the header.
 
 ### WebSocketOption
 
@@ -458,10 +482,10 @@ Pass a `TLSConfiguration` to `Server`. The private key and certificate can be lo
 ```swift
 import NIOSSL
 
-let cert = try NIOSSLCertificate(file: "/etc/ssl/cert.pem", format: .pem)
-let key  = try NIOSSLPrivateKey(file: "/etc/ssl/key.pem",  format: .pem)
-let tls  = TLSConfiguration.makeServerConfiguration(
-    certificateChain: [.certificate(cert)],
+let chain = try NIOSSLCertificate.fromPEMFile("/etc/ssl/cert.pem")   // leaf first, then intermediates
+let key   = try NIOSSLPrivateKey(file: "/etc/ssl/key.pem", format: .pem)
+let tls   = TLSConfiguration.makeServerConfiguration(
+    certificateChain: chain.map { .certificate($0) },
     privateKey: .privateKey(key)
 )
 
@@ -489,7 +513,7 @@ Beyond the single static `TLSConfiguration` shown above, `Sources/PerfectNIO` al
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", branch: "main"),
+    .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", from: "0.1.0"),
 ],
 targets: [
     .target(
@@ -722,11 +746,15 @@ Implement this protocol (all methods have default implementations) to expose hos
 ```swift
 import PerfectAdminConsole
 
+// pool, cache, certManager, certWatchers, lassoPool, loadCert() and AdminError stand for
+// your app's own state and helpers.
 actor MyServer: AdminConsoleDelegate {
-    // Phase 1 — status
-    var serverPort: Int { 9090 }
-    var serverStartTime: Date { startedAt }
-    var registeredRoutes: [RouteInfo] { routes.map { RouteInfo(uri: $0.key) } }
+    private var currentConfig = "production"
+
+    // Phase 1 — status. The synchronous requirements must be nonisolated on an actor.
+    nonisolated var serverPort: Int { 9090 }
+    nonisolated let serverStartTime = Date()
+    nonisolated var registeredRoutes: [RouteInfo] { appRoutes.describe.map { RouteInfo(uri: $0.uri) } }
     func additionalStatusSections() async -> [AdminStatusSection] {
         [AdminStatusSection(title: "Database", items: [("pool", "\(pool.count)")])]
     }
@@ -841,7 +869,7 @@ await capture.capture("2026-07-14 10:00:00 [INFO] Server started")
 
 ## PerfectNIOCRUD
 
-`PerfectNIOCRUD` is a thin bridge target (`Sources/PerfectNIOCRUD/RouteCRUD.swift`) that adds two route operators, `.db(_:_:)` and `.table(_:_:_:)`, exposing a Perfect-CRUD `Database`/`Table` into the route pipeline so handlers can query/mutate through Perfect-CRUD without hand-wiring a connection per request. It depends on the local `../Perfect-CRUD` package (see [Package.swift](#packageswift)), and is exercised by the `PerfectNIOMySQLTests` test target against Perfect-MySQL.
+`PerfectNIOCRUD` is a thin bridge target (`Sources/PerfectNIOCRUD/RouteCRUD.swift`) that adds two route operators, `.db(_:_:)` and `.table(_:_:_:)`, exposing a Perfect-CRUD `Database`/`Table` into the route pipeline so handlers can query/mutate through Perfect-CRUD without hand-wiring a connection per request. It depends on Perfect-CRUD 3 (see [Requirements](#requirements)), and is exercised by the `PerfectNIOMySQLTests` test target against Perfect-MySQL.
 
 ```swift
 dependencies: [
@@ -856,13 +884,13 @@ import PerfectNIOCRUD
 struct User: Codable, Sendable { let id: Int; let name: String }
 
 // .db — hand the raw Database through to your own closure
-let routes = root().users.db(makeDatabase()) { _, db in
-    try db.table(User.self).select()
+let routes = root().users.db(try makeDatabase()) { _, db in
+    try db.table(User.self).select().map { $0 }
 }.json()
 
 // .table — go straight to a Table<User, Database<C>>
-let routes2 = root().users.table(makeDatabase(), User.self) { _, table in
-    try table.select()
+let routes2 = root().users.table(try makeDatabase(), User.self) { _, table in
+    try table.select().map { $0 }
 }.json()
 ```
 
@@ -877,15 +905,15 @@ let pool = try DatabaseConnectionPool(
 )
 
 let routes = root().users.db(pool: pool) { _, db in
-    try db.table(User.self).select()
+    try db.table(User.self).select().map { $0 }
 }.json()
 
 let routes2 = root().users.table(pool: pool, User.self) { _, table in
-    try table.select()
+    try table.select().map { $0 }
 }.json()
 ```
 
-Both internally acquire a connection, run your closure, and release it back to the pool afterward — even on throw. They use the pool's manual `acquire()`/`release(_:)` pairing rather than `withConnection(_:)`, since `OutType` at this point in a route chain is commonly `HTTPRequest`, a non-`Sendable` protocol existential that can't cross `withConnection`'s `Sendable`-body boundary.
+Both internally acquire a connection, run your closure, and release it back to the pool afterward — even on throw. They use the pool's manual `acquire()`/`release(_:)` pairing rather than `withConnection(_:)`, since `OutType` at this point in a route chain is any type, not necessarily `Sendable`, and `withConnection`'s body is `@Sendable`.
 
 ---
 
@@ -919,15 +947,17 @@ public struct Server: Sendable {
 
     /// Bind, run body, then shut down (structured-concurrency lifecycle).
     @discardableResult
+    /// Runs in the caller's isolation (nonisolated(nonsending)), so it can be called from the main actor.
+    nonisolated(nonsending)
     public func withServer<R>(_ body: (_ boundPort: Int) async throws -> R) async throws -> R
 }
 ```
 
 `maxRequestBodySize` caps how large a request body the server will read into memory. **The 10 MiB default applies to file uploads too**; raise it if your app accepts bigger ones. See [Request body size limit](#request-body-size-limit).
 
-Errors thrown from a route: an `ErrorOutput` (or `TerminationType.error`) is sent as-is, with its status and text. Any other error becomes **500 Internal server error.** with a generic body; the error itself is logged (label `perfect.nio.server`), never sent to the client.
+Errors thrown from a route: an `ErrorOutput` (or `TerminationType.error`) is sent as-is, with its status and text. A failure to decode the request becomes **400 Bad Request** with a generic body. Any other error becomes **500 Internal server error.** with a generic body; the error itself is logged (label `perfect.nio.server`), never sent to the client.
 
-`idleTimeout` closes connections that have no inbound reads for the specified duration. It is a defense against idle keep-alive connections and basic slowloris. Note: it measures *reads*, so streaming endpoints that take longer than the timeout to produce their first byte should use a larger value or `nil`.
+`idleTimeout` closes idle connections. It runs from the moment a connection is accepted. While no response is pending (before the first request, while a request arrives, between keep-alive requests), a connection is idle when nothing has been read for the timeout, which covers a client that sends nothing, a stalled TLS handshake and a request head that never finishes. While a response is pending, a connection is idle only when the client has stopped reading: the response is backed up and nothing more of it has been written or has left the kernel's send buffer for the timeout. Slow but steady downloads, long polls and event streams are not cut off, as long as the client's own receive buffer drains within the timeout: TCP reopens a slow reader's window only after it has read a good part of its buffer, so a client with a 1 MB buffer reading 25 KB/s is silent for some 40 s, which the server can't tell from a stalled client (nginx's `send_timeout` works the same way). Keep the timeout generous if you serve slow clients; the default is 60 s. If the client closes its side while a response is pending, the connection is closed once nothing has been written for the timeout, so a client that disconnects from a slow route doesn't pin the socket; a route that never returns keeps a still-connected client's connection open. The timeout is removed when a connection upgrades to WebSocket. It resets on every byte, so a client trickling a request slowly is not bounded by it.
 
 ### root()
 
@@ -950,7 +980,7 @@ public struct Routes<InType, OutType>: Sendable {
 ### HTTPRequest
 
 ```swift
-public protocol HTTPRequest: AnyObject {
+public protocol HTTPRequest: AnyObject, Sendable {
     var method: HTTPMethod { get }
     var uri: String { get }
     var headers: HTTPHeaders { get }
@@ -1082,17 +1112,16 @@ for desc in routes.describe {
 
 ## Linux support
 
-The PerfectNIO library is expected to compile and run on Linux — SwiftNIO is fully cross-platform, and the `CZlib` system library target includes an `apt` provider (`zlib1g-dev`).
+PerfectNIO builds and runs on Linux. CI builds every target with warnings as errors and runs the whole test suite on Ubuntu 24.04 with Swift 6.2 and 6.4, debug and release, the live MySQL tests included.
 
-The `platforms: [.macOS(.v26)]` entry in `Package.swift` specifies the minimum **macOS** deployment target only — `.v26` is a very new (leading-edge) macOS requirement, not a typo; if you're targeting an older macOS you'll need to fork/pin an earlier commit. Linux support is always implicit in SwiftPM and is not restricted by that entry, and no explicit Linux platform entry is declared.
-
-> **Research needed:** Linux support has not been CI-verified as part of this resurrection. `URLSessionWebSocketTask` availability in `swift-corelibs-foundation` on Linux needs confirmation before the test suite can be declared Linux-clean. The `LinuxMain.swift` file was intentionally removed — Swift 5.4+ auto-discovers tests on Linux via `swift test` without it. Separately, `swift build`/`swift test` for this repo currently requires the sibling `../Perfect-CRUD` and `../Perfect-MySQL` checkouts to be present regardless of platform (see [Package.swift](#packageswift)).
+The `platforms: [.macOS(.v12)]` entry in `Package.swift` sets the minimum **macOS** deployment target only; Linux needs no platform entry.
 
 To build and test on Linux:
 
 ```bash
-# Install system dependencies (Ubuntu/Debian)
-apt-get install libssl-dev zlib1g-dev
+# System dependencies (Ubuntu/Debian). libmysqlclient-dev is needed only for this
+# package's own PerfectNIOMySQLTests target.
+apt-get install pkg-config zlib1g-dev libmysqlclient-dev
 
 swift build
 swift test
@@ -1100,12 +1129,60 @@ swift test
 
 ### macOS
 
-`swift build` / `swift run` / `swift test` work the same way locally on macOS — see [Quick start](#quick-start). No extra system packages are required; `CZlib`/libz ships with the OS.
+`swift build` / `swift run` / `swift test` work the same way locally on macOS — see [Quick start](#quick-start). The library needs no extra system packages (zlib ships with the OS). Building this package's tests needs a MySQL client library for Perfect-MySQL: `brew install mysql-client pkgconf` and `export PKG_CONFIG_PATH="$(brew --prefix mysql-client)/lib/pkgconfig"`.
 
 ### Live MySQL integration tests
 
-`Tests/PerfectNIOMySQLTests/MySQLIntegrationTests.swift` exercises `PerfectNIOCRUD` against a real MySQL instance and is skipped by default. Set `MYSQL_TESTS=1` in the environment to run it:
+`Tests/PerfectNIOMySQLTests` exercises `PerfectNIOCRUD` against a real MySQL server. The live tests are skipped unless `MYSQL_TESTS=1` and `MYSQL_TEST_PORT` name a test server; port 3306 is never assumed, and host `localhost` is refused because libmysql would use the Unix socket and ignore the port (see `MySQLTestEnvironment.swift` for every variable). The tests drop and recreate tables, so point them at a throwaway server:
 
 ```bash
-MYSQL_TESTS=1 swift test
+container run -d --rm --name nio-mysql-test --publish 127.0.0.1:3307:3306 \
+    --env MYSQL_ALLOW_EMPTY_PASSWORD=yes docker.io/library/mysql:8.4
+MYSQL_TESTS=1 MYSQL_TEST_PORT=3307 swift test
 ```
+
+With `MYSQL_REQUIRE_LIVE=1` (as in CI), an unconfigured or unreachable server fails the run instead of skipping.
+
+---
+
+## Security notes
+
+- **Request bodies** are capped at 10 MiB by default (`maxRequestBodySize`); see [Request body size limit](#request-body-size-limit). The limit is per request, so total memory also scales with the number of connections.
+- **Errors**: only an `ErrorOutput`'s text reaches the client. A `DecodingError` from decoding the request (the `decode` modifier, or an `HTTPRequest.decode(_:content:)` call whose error the handler lets escape; test for these with `error.isRequestDecodingFailure`; `error.originalUnderlyingError` gives the decoder's own underlying error) is answered 400 with a generic message. Any other error, including a `DecodingError` from the handler decoding its own data, is logged at error level and answered with a generic 500.
+- **`..` segments are rejected.** A request whose path (everything before the first `?`) has a `..` segment, as sent or after percent-decoding (`%2e%2e`, `.%2e`, nested `%25` encodings up to 7 layers; deeper nesting is refused too), with `/`, `%2f`, `\\` or `%5c` as separators, or a `..` segment followed by `;` or a NUL (`..;`, `..%00`), gets 400 before any route runs, WebSocket handshakes included. So does any request target containing `#` (clients never send a fragment). A request target longer than 8 KiB gets 414. The strings `wild` and `trailing` hand you therefore never contain a `..` segment. Other dots (`a..b`, `.hidden`) are allowed. Paths are otherwise used as sent: not percent-decoded and not otherwise normalized, so still validate `wild`/`trailing` values before using them as file names (for example for `FileOutput(localPath:)`). PerfectNIO has no built-in static file route.
+- **Response headers**: a header value containing CR or LF is refused by NIO's header validator; the connection is closed without a response rather than the header being split.
+- **HTTP/1 framing**: requests with ambiguous framing (Content-Length with Transfer-Encoding, conflicting Content-Lengths, unknown transfer codings, obs-fold, bare LF) or two `Host` headers get 400 and the connection is closed. Responses are framed by the server: a body of unknown length is chunked on HTTP/1.1 and ends the connection on HTTP/1.0; HEAD, 204 and 304 responses carry no body. A route that returns an informational (1xx) status as its final response gets 500 and the connection is closed. An output's own `Content-Length` is checked: duplicates of one value are collapsed, conflicting or invalid values dropped, and a body that doesn't match it closes the connection after the response.
+- **Upgrades**: WebSocket handshakes that aren't upgraded (wrong path, a refusing route, a missing key or a version other than 13) are answered as HTTP, then the connection is closed. A `webSocket` route answers a plain or malformed request with 426 and `Sec-WebSocket-Version: 13`. An offer to upgrade to anything else (`h2c`, …) is ignored and the request served as HTTP/1.1, then the connection is closed. There is no HTTP/2.
+
+---
+
+## Upgrading from `main` before 0.1.0
+
+Two changes made for Swift 6.4 can stop code that built against `main` from compiling:
+
+- **`SendableMetatype` on generic helpers.** `decode(_:)`, `json()`, `text()` and the element-wise `map` capture their type in `@Sendable` closures, so it must be `SendableMetatype`. Every concrete, non-isolated type already is, so ordinary call sites are unaffected, but a generic helper must add the constraint, and a type isolated to a global actor (a `@MainActor` class) can't be used:
+
+  ```swift
+  func decodeEndpoint<T: Decodable & SendableMetatype>(_: T.Type) -> Routes<HTTPRequest, T> {
+      root().decode(T.self)
+  }
+  func jsonEndpoint<T: Encodable & SendableMetatype>(
+      _ load: @Sendable @escaping () async throws -> T
+  ) -> Routes<HTTPRequest, HTTPOutput> {
+      root(load).json()
+  }
+  ```
+
+  The same goes for `CustomStringConvertible & SendableMetatype` with `text()`, and `Collection & SendableMetatype` for `map` over elements.
+- **`HTTPMethod` is no longer `Hashable`** through this package (it declared a public retroactive conformance of NIO's type). `Set<HTTPMethod>`, dictionaries keyed by `HTTPMethod`, and generics that require `Hashable` of it no longer compile. Key by `method.name`, or declare the conformance in your own module: `extension HTTPMethod: @retroactive Hashable { public func hash(into hasher: inout Hasher) { hasher.combine(name) } }`.
+
+## Migrating from the legacy branch
+
+The [`legacy`](../../tree/legacy) branch is the Swift 5 "Perfect 4 NIO" package (swift-tools-version 5.1, never tagged). 0.1.0 is a rewrite on Swift 6 concurrency that keeps the route-building style but is not source compatible. The main differences, not an exhaustive list:
+
+- **Serving.** `routes.bind(port:).listen().wait()` is gone. Use `try await Server(routes: routes, port: 8080).run()` for a long-running server, or `withServer { port in … }` for a scoped one (tests). TLS, idle timeout, `SO_REUSEPORT` and the body size limit are `Server` properties.
+- **Handlers are async and `@Sendable`.** Every route closure (`map`, `path`, `readBody`, `decode`, `statusCheck`, …) is `@Sendable` and may be `async`; captured state must be `Sendable`.
+- **Custom outputs** subclass `HTTPOutput` and produce the body with `nextChunk(allocator:) async throws -> ByteBuffer?`, returning nil at the end.
+- **WebSockets** are declared with `webSocket(protocol:options:_:)`, whose callback returns an async `WebSocketHandler` that reads and writes with `readMessage()`/`writeMessage(_:)`.
+- **Dependencies.** PerfectLib, Perfect-Mustache, Perfect-MIME, Perfect-CZlib-src and Perfect-CURL are no longer used; there is no Mustache output. Logging uses apple/swift-log. Database routes moved to the separate `PerfectNIOCRUD` product, on Perfect-CRUD 3.
+- **Platforms.** macOS 12+ (was 10.15) and Linux; Swift 6.2+.

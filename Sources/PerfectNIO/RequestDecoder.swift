@@ -20,7 +20,7 @@ import Foundation
 import NIOHTTP1
 import Logging
 
-public struct FileUpload: Codable {
+public struct FileUpload: Codable, Sendable {
 	public let contentType: MIMEType
 	public let fileName: String
 	public let fileSize: Int
@@ -37,12 +37,19 @@ typealias RequestTuples = (String, RequestParamValue)
 public extension HTTPRequest {
 	/// Decode the request body into the desired type, or throw an error.
 	///
-	/// Decoding failures are thrown as `DecodingError`. A `DecodingError` that escapes a route
-	/// handler becomes a generic 500; the `decode` route modifier instead turns it into a 400.
-	/// To get the same from a handler that calls this directly, catch it and throw
-	/// `ErrorOutput(status: .badRequest)`. Don't put the error's description in the response:
-	/// it names Swift types and key paths.
+	/// Decoding failures are thrown as `DecodingError`. If it escapes the route, the server
+	/// answers 400 with a generic message (the client sent something that doesn't fit `A`); the
+	/// detail, which names Swift types and key paths, is only logged. A `DecodingError` the
+	/// handler gets from decoding its own data is still a 500.
 	func decode<A: Decodable>(_ type: A.Type, content: HTTPRequestContentType) throws -> A {
+		do {
+			return try decodeContent(type, content: content)
+		} catch let error as DecodingError {
+			throw error.markedAsRequestDecodingFailure
+		}
+	}
+
+	private func decodeContent<A: Decodable>(_ type: A.Type, content: HTTPRequestContentType) throws -> A {
 		let postTuples: [RequestTuples]
 		switch content {
 		case .none:
@@ -126,8 +133,11 @@ class RequestReader<K : CodingKey>: KeyedDecodingContainerProtocol {
 		switch str {
 		case .string(let string):
 			finalStr = string
-		case .file(let file):
-			finalStr = "\(file.tmpFileName);\(file.contentType);\(file.fileName);\(file.fileSize)"
+		case .file:
+			// A file part decodes only as FileUpload. Read as text it used to give
+			// "<server temp path>;<type>;<name>;<size>", which an app could echo to the client.
+			throw DecodingError.typeMismatch(T.self, .init(codingPath: codingPath + [key],
+				debugDescription: "A file upload can only be decoded as FileUpload."))
 		}
 		guard let ret = T.init(finalStr) else {
 			throw DecodingError.dataCorruptedError(forKey: key, in: self, debugDescription: "Could not convert to \(T.self).")
@@ -212,17 +222,25 @@ class RequestReader<K : CodingKey>: KeyedDecodingContainerProtocol {
 		throw DecodingError.keyNotFound(key, .init(codingPath: codingPath,
 												   debugDescription: "The data type \(t) is not supported for GET requests."))
 	}
+	// Form and query values are flat name/value pairs, so there is nothing to nest. These threw
+	// fatalError, which took the server down whenever a type with a custom init(from:) used
+	// them; a DecodingError becomes a 400 from the `decode` route modifier instead.
 	func nestedContainer<NestedKey>(keyedBy type: NestedKey.Type, forKey key: Key) throws -> KeyedDecodingContainer<NestedKey> where NestedKey : CodingKey {
-		fatalError("Unimplimented")
+		throw unsupported(type, key)
 	}
 	func nestedUnkeyedContainer(forKey key: Key) throws -> UnkeyedDecodingContainer {
-		fatalError("Unimplimented")
+		throw unsupported(UnkeyedDecodingContainer.self, key)
 	}
 	func superDecoder() throws -> Decoder {
-		fatalError("Unimplimented")
+		throw DecodingError.typeMismatch(Decoder.self, .init(codingPath: codingPath,
+			debugDescription: "Form and query parameters don't support superDecoder()."))
 	}
 	func superDecoder(forKey key: Key) throws -> Decoder {
-		fatalError("Unimplimented")
+		throw unsupported(Decoder.self, key)
+	}
+	private func unsupported(_ type: Any.Type, _ key: Key) -> DecodingError {
+		.typeMismatch(type, .init(codingPath: codingPath + [key],
+			debugDescription: "Form and query parameters are flat; nested values aren't supported."))
 	}
 }
 
@@ -305,10 +323,12 @@ class RequestUnkeyedReader: UnkeyedDecodingContainer, SingleValueDecodingContain
 		return try T(from: parent)
 	}
 	func nestedContainer<NestedKey>(keyedBy type: NestedKey.Type) throws -> KeyedDecodingContainer<NestedKey> where NestedKey : CodingKey {
-		fatalError("Unimplimented")
+		throw DecodingError.typeMismatch(type, .init(codingPath: codingPath,
+			debugDescription: "Form and query parameters are flat; nested values aren't supported."))
 	}
 	func nestedUnkeyedContainer() throws -> UnkeyedDecodingContainer {
-		fatalError("Unimplimented")
+		throw DecodingError.typeMismatch(UnkeyedDecodingContainer.self, .init(codingPath: codingPath,
+			debugDescription: "Form and query parameters are flat; nested values aren't supported."))
 	}
 	func superDecoder() throws -> Decoder {
 		currentIndex += 1
@@ -351,3 +371,63 @@ extension HTTPRequest {
 }
 
 private let requestDecodingLogger = Logger(label: "perfect.nio.decode")
+
+/// Marks a `DecodingError` thrown by `HTTPRequest.decode(_:content:)`: it becomes the error's
+/// context's `underlyingError`, wrapping the original one. A marked error escaping a route is
+/// the client's fault (400); any other `DecodingError`, such as one from the handler decoding
+/// its own data, is the server's (500). The mark travels with the error itself, so a handler
+/// that catches a request-decode failure and then fails on its own data still gets a 500.
+///
+/// Use `DecodingError.isRequestDecodingFailure` to test for the mark and
+/// `DecodingError.originalUnderlyingError` for the error the decoder itself reported.
+public struct RequestDecodingFailure: Error, CustomStringConvertible {
+	/// The decoder's own `underlyingError`, if it had one.
+	public let underlying: (any Error)?
+	public var description: String {
+		underlying.map { "\(String(reflecting: $0)) (decoding the request)" } ?? "decoding the request"
+	}
+}
+
+public extension DecodingError {
+	/// True if `HTTPRequest.decode(_:content:)` (which the `decode` route modifier also uses)
+	/// threw this error: the client's data didn't fit the type, and the server answers 400 if
+	/// it escapes a route.
+	var isRequestDecodingFailure: Bool {
+		context?.underlyingError is RequestDecodingFailure
+	}
+
+	/// The context's `underlyingError` as the decoder reported it, looking through the
+	/// `RequestDecodingFailure` mark.
+	var originalUnderlyingError: (any Error)? {
+		guard let underlying = context?.underlyingError else { return nil }
+		if let mark = underlying as? RequestDecodingFailure {
+			return mark.underlying
+		}
+		return underlying
+	}
+}
+
+extension DecodingError {
+	var markedAsRequestDecodingFailure: DecodingError {
+		guard !isRequestDecodingFailure, let context else { return self }
+		let marked = Context(codingPath: context.codingPath, debugDescription: context.debugDescription,
+		                     underlyingError: RequestDecodingFailure(underlying: context.underlyingError))
+		switch self {
+		case .typeMismatch(let type, _): return .typeMismatch(type, marked)
+		case .valueNotFound(let type, _): return .valueNotFound(type, marked)
+		case .keyNotFound(let key, _): return .keyNotFound(key, marked)
+		case .dataCorrupted: return .dataCorrupted(marked)
+		@unknown default: return self
+		}
+	}
+
+	private var context: Context? {
+		switch self {
+		case .typeMismatch(_, let context), .valueNotFound(_, let context),
+		     .keyNotFound(_, let context), .dataCorrupted(let context):
+			return context
+		@unknown default:
+			return nil
+		}
+	}
+}

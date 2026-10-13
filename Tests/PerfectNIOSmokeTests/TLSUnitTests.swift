@@ -66,7 +66,7 @@ final class SNIParserTests: XCTestCase {
 		buf.writeInteger(UInt8(0))
 
 		// Extensions
-		if let hostname {
+		if hostname != nil {
 			buf.writeInteger(UInt16(sniExtLen))   // extensions_total_length
 			buf.writeInteger(UInt16(0x0000))      // ext_type = server_name
 			buf.writeInteger(UInt16(sniDataLen))  // ext data length
@@ -109,7 +109,7 @@ final class SNIParserTests: XCTestCase {
 
 	func testExtractSNI_incomplete_recordTruncated() {
 		// Build the full buffer but slice off the last byte so recordLen > available bytes
-		var full = clientHello(sni: "example.com")
+		let full = clientHello(sni: "example.com")
 		let truncated = full.getSlice(at: 0, length: full.readableBytes - 1)!
 		let result = SNIPeekHandler.extractSNI(from: truncated)
 		XCTAssertEqual(result, .incomplete)

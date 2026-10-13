@@ -37,18 +37,21 @@ internal extension String {
 	}
 }
 
-/// Given a header value, extracts the q value if there is one present. If one is not present,
-/// returns the default q value, 1.0.
+/// Given one Accept-Encoding element (e.g. `gzip;q=0.5`), returns its q value: 1 when there is
+/// no `q` parameter, 0 when the value is missing or isn't a number in 0...1. Parameters other
+/// than `q`, with or without a value, are ignored. The header is client input, so nothing here
+/// assumes it is well formed.
 private func qValueFromHeader(_ text: String) -> Float {
-	let headerParts = text.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
-	guard headerParts.count > 1 && headerParts[1].count > 0 else {
-		return 1
+	for parameter in text.split(separator: ";").dropFirst() {
+		let pair = parameter.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+		guard pair[0].trimmingCharacters(in: .whitespaces).lowercased() == "q" else { continue }
+		guard pair.count == 2, let qValue = Float(pair[1].trimmingCharacters(in: .whitespaces)),
+		      qValue >= 0, qValue <= 1 else {
+			return 0
+		}
+		return qValue
 	}
-	let qValue = Float(headerParts[1].split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)[1]) ?? 0
-	if qValue < 0 || qValue > 1 || qValue.isNaN {
-		return 0
-	}
-	return qValue
+	return 1
 }
 
 public class CompressedOutput: HTTPOutput, @unchecked Sendable {
@@ -73,7 +76,17 @@ public class CompressedOutput: HTTPOutput, @unchecked Sendable {
 		deinitializeEncoder()
 	}
 
+	/// Every response from a compressed() route depends on Accept-Encoding, compressed or not,
+	/// so caches must key on it.
 	public override func head(request: HTTPRequestInfo) -> HTTPHead? {
+		var head = negotiatedHead(request: request) ?? HTTPHead(headers: HTTPHeaders())
+		if !head.headers[canonicalForm: "vary"].contains(where: { $0.lowercased() == "accept-encoding" }) {
+			head.headers.add(name: "Vary", value: "Accept-Encoding")
+		}
+		return head
+	}
+
+	private func negotiatedHead(request: HTTPRequestInfo) -> HTTPHead? {
 		guard let algo = compressionAlgorithm(request.head) else {
 			return sourceContent.head(request: request)
 		}
@@ -82,6 +95,11 @@ public class CompressedOutput: HTTPOutput, @unchecked Sendable {
 		if let contentLengthStr = sourceHead?.headers["content-length"].first,
 		   let contentLength = Int(contentLengthStr),
 		   contentLength < minCompressLength {
+			return sourceHead
+		}
+		// A partial response (206, Content-Range) is sent as is: Content-Range counts identity
+		// bytes, and gzip and identity bodies would share one strong ETag.
+		if sourceHead?.status == .partialContent || sourceHead?.headers.contains(name: "content-range") == true {
 			return sourceHead
 		}
 		if let contentTypeStr = sourceHead?.headers["content-type"].first,
@@ -103,14 +121,18 @@ public class CompressedOutput: HTTPOutput, @unchecked Sendable {
 		}
 		guard !done else { return nil }
 
-		guard let chunk = try await sourceContent.nextChunk(allocator: allocator) else {
-			// Source exhausted — flush the compressor and mark done.
-			done = true
-			let flushed = compress(nil, allocator: allocator)
-			return flushed.readableBytes > 0 ? flushed : nil
+		// zlib may hold back a chunk's output (Z_NO_FLUSH). Returning that empty result would
+		// read as the end of the body, so keep feeding the compressor until it emits something.
+		while let chunk = try await sourceContent.nextChunk(allocator: allocator) {
+			let compressed = compress(chunk, allocator: allocator)
+			if compressed.readableBytes > 0 {
+				return compressed
+			}
 		}
-		let compressed = compress(chunk, allocator: allocator)
-		return compressed.readableBytes > 0 ? compressed : nil
+		// Source exhausted — flush the compressor and mark done.
+		done = true
+		let flushed = compress(nil, allocator: allocator)
+		return flushed.readableBytes > 0 ? flushed : nil
 	}
 
 	private func compressionAlgorithm(_ head: HTTPRequestHead) -> CompressionAlgorithm? {
@@ -132,7 +154,9 @@ public class CompressedOutput: HTTPOutput, @unchecked Sendable {
 		if gzipQValue > 0 || deflateQValue > 0 {
 			return gzipQValue >= deflateQValue ? .gzip : .deflate
 		} else if anyQValue > 0 {
-			return .gzip
+			// "*" covers only codings not listed: an explicit q=0 refuses that coding.
+			if gzipQValue < 0 { return .gzip }
+			if deflateQValue < 0 { return .deflate }
 		}
 		return nil
 	}

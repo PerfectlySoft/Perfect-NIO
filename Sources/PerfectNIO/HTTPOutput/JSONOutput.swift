@@ -29,7 +29,7 @@ public class JSONOutput<E: Encodable>: BytesOutput, @unchecked Sendable {
 }
 
 /// Convert Encodable to JSON output
-public extension Routes where OutType: Encodable {
+public extension Routes where OutType: Encodable & SendableMetatype {
 	func json() -> Routes<InType, HTTPOutput> {
 		return map { try JSONOutput($0) }
 	}
