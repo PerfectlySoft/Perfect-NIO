@@ -133,4 +133,19 @@ struct WebSocketHandshakeTests {
             #expect(r.closed)
         }
     }
+
+    /// An Upgrade to another protocol (h2c, anything) used to get an empty reply: NIO's
+    /// upgrader closed the connection. The offer is now ignored and the request served.
+    @Test("A non-WebSocket Upgrade is served as plain HTTP", arguments: ["h2c", "foo", "TLS/1.2"])
+    func otherUpgradeIsIgnored(_ proto: String) async throws {
+        let routes = root().path("ten").map { BytesOutput(body: Array("0123456789".utf8)) as HTTPOutput }
+        try await Server(routes: routes, port: 0).withServer { port in
+            let request = "GET /ten HTTP/1.1\r\nHost: x\r\nConnection: Upgrade, HTTP2-Settings\r\nUpgrade: \(proto)\r\n" +
+                "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n\r\n"
+            let r = await rawHTTP(port: port, [Array(request.utf8)], timeout: 20)
+            #expect(r.status == 200, "\(r.text.debugDescription)")
+            #expect(r.text.hasSuffix("0123456789"))
+            #expect(r.closed)
+        }
+    }
 }

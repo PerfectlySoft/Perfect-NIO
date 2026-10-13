@@ -995,6 +995,15 @@ private final class WebSocketUpgradeRouter: ChannelDuplexHandler, RemovableChann
 			guard case .head(var head) = part, Self.isWebSocketUpgrade(head) else {
 				// Not a WebSocket handshake; this connection is plain HTTP from here on.
 				state = .passthrough
+				if case .head(var head) = part, head.headers.contains(name: "upgrade") {
+					// Another protocol (h2c, …): NIO's upgrader has no upgrader for it and closed
+					// the connection with no response. Serve the request as plain HTTP instead,
+					// ignoring the offer (RFC 9110 §7.8 lets a server do that); it is the
+					// connection's last, since NIO's parser stops after an upgrade request.
+					Self.removeWebSocketHeaders(&head)
+					context.fireChannelRead(Self.wrapInboundOut(.head(head)))
+					return
+				}
 				context.fireChannelRead(data)
 				return
 			}
