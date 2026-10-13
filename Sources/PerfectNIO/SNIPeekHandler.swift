@@ -94,21 +94,21 @@ final class SNIPeekHandler: ChannelInboundHandler, RemovableChannelHandler, @unc
 			return
 		}
 		let sslHandler = NIOSSLServerHandler(context: sslCtx)
-		// NIOLoopBound wraps context (non-Sendable) safely for the @Sendable whenComplete closure.
-		// whenComplete fires on the event loop, so .value access is always valid.
-		let loopBoundCtx = NIOLoopBound(context, eventLoop: context.eventLoop)
-		// Insert NIOSSLServerHandler after us — it sits between us and the HTTP codec.
-		// fireChannelRead from our context goes forward to NIOSSLServerHandler. ✅
-		context.pipeline.addHandler(sslHandler, position: .after(self)).whenComplete { [weak self] _ in
-			guard let self else { return }
-			self.state = .passthrough
-			let ctx = loopBoundCtx.value
-			if let buf = self.accumulated {
-				ctx.fireChannelRead(Self.wrapInboundOut(buf))
-				ctx.fireChannelReadComplete()
-			}
-			ctx.pipeline.removeHandler(self, promise: nil)
+		// install() runs on the event loop, so the pipeline can be changed synchronously.
+		// Insert NIOSSLServerHandler after us: it sits between us and the HTTP codec.
+		do {
+			try context.pipeline.syncOperations.addHandler(sslHandler, position: .after(self))
+		} catch {
+			context.close(promise: nil)
+			return
 		}
+		state = .passthrough
+		if let buf = accumulated {
+			accumulated = nil
+			context.fireChannelRead(Self.wrapInboundOut(buf))
+			context.fireChannelReadComplete()
+		}
+		context.pipeline.syncOperations.removeHandler(context: context, promise: nil)
 	}
 
 	// MARK: - TLS ClientHello SNI parser

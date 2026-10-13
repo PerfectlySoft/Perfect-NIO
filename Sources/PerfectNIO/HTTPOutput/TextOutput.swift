@@ -29,7 +29,7 @@ public class TextOutput<C: CustomStringConvertible>: BytesOutput, @unchecked Sen
 }
 
 /// Converts CustomStringConvertible to plain text output
-public extension Routes where OutType: CustomStringConvertible {
+public extension Routes where OutType: CustomStringConvertible & SendableMetatype {
 	func text() -> Routes<InType, HTTPOutput> {
 		return map { TextOutput($0) }
 	}

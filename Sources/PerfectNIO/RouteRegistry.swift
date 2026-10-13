@@ -131,7 +131,7 @@ public extension Routes {
 	func map<NewOut>(_ call: @Sendable @escaping () async throws -> NewOut) -> Routes<InType, NewOut> {
 		applyFuncs { ctx, _ in (ctx, try await call()) }
 	}
-	func map<NewOut>(_ call: @Sendable @escaping (OutType.Element) async throws -> NewOut) -> Routes<InType, [NewOut]> where OutType: Collection {
+	func map<NewOut>(_ call: @Sendable @escaping (OutType.Element) async throws -> NewOut) -> Routes<InType, [NewOut]> where OutType: Collection & SendableMetatype {
 		applyFuncs { ctx, output in
 			var results: [NewOut] = []
 			results.reserveCapacity(output.underestimatedCount)
@@ -276,7 +276,7 @@ public extension Routes {
 // MARK: - decode
 
 public extension Routes {
-	func decode<Type: Decodable, NewOut>(_ type: Type.Type,
+	func decode<Type: Decodable & SendableMetatype, NewOut>(_ type: Type.Type,
 	                                    _ handler: @Sendable @escaping (OutType, Type) async throws -> NewOut) -> Routes<InType, NewOut> {
 		applyFuncs { ctx, output in
 			var newCtx = ctx
@@ -291,11 +291,11 @@ public extension Routes {
 			return (newCtx, try await handler(output, decoded))
 		}
 	}
-	func decode<Type: Decodable, NewOut>(_ type: Type.Type,
+	func decode<Type: Decodable & SendableMetatype, NewOut>(_ type: Type.Type,
 	                                    _ handler: @Sendable @escaping (Type) async throws -> NewOut) -> Routes<InType, NewOut> {
 		decode(type) { try await handler($1) }
 	}
-	func decode<Type: Decodable>(_ type: Type.Type) -> Routes<InType, Type> {
+	func decode<Type: Decodable & SendableMetatype>(_ type: Type.Type) -> Routes<InType, Type> {
 		decode(type) { $1 }
 	}
 }

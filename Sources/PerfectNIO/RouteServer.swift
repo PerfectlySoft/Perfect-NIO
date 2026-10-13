@@ -108,12 +108,6 @@ extension HTTPMethod {
 	}
 }
 
-extension HTTPMethod: Hashable {
-	public func hash(into hasher: inout Hasher) {
-		hasher.combine(name.hashValue)
-	}
-}
-
 extension String {
 	var method: HTTPMethod {
 		switch self {

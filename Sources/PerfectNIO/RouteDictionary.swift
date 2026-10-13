@@ -52,21 +52,21 @@ extension Routes {
 
 class RouteFinderRegExp: RouteFinder, @unchecked Sendable {
 	typealias Matcher = (NSRegularExpression, ResolvedRoute)
-	let matchers: [HTTPMethod: [Matcher]]
+	/// Keyed by `HTTPMethod.name`, so `HTTPMethod` needn't be `Hashable`.
+	let matchers: [String: [Matcher]]
 	required init(_ registry: Routes<HTTPRequest, HTTPOutput>) throws {
 		let full = registry.withMethods
-		var m = [HTTPMethod: [Matcher]]()
+		var m = [String: [Matcher]]()
 		try full.forEach { key, route in
 			let (meth, path) = key.splitMethod
 			let method = meth ?? .GET
 			let matcher: Matcher = (try RouteFinderRegExp.regExp(for: path), route)
-			let existing = m[method] ?? []
-			m[method] = existing + [matcher]
+			m[method.name, default: []].append(matcher)
 		}
 		matchers = m
 	}
 	func route(_ method: HTTPMethod, _ uri: String) -> ResolvedRoute? {
-		guard let matchers = self.matchers[method] else { return nil }
+		guard let matchers = self.matchers[method.name] else { return nil }
 		let uriRange = NSRange(location: 0, length: uri.count)
 		for matcher in matchers {
 			guard matcher.0.firstMatch(in: uri, range: uriRange) != nil else { continue }
