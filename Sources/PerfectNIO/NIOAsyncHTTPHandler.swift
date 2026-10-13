@@ -306,11 +306,24 @@ enum NIOAsyncHTTPServer {
 				()
 			}
 		}
+		// No body goes with a response to HEAD, a 1xx, 204 or 304 (RFC 9110 §6.4.1). Writing one
+		// anyway puts bytes on the wire that a keep-alive client or proxy reads as the start of
+		// the next response. A HEAD response keeps the headers, Content-Length included, that
+		// GET would send. A 204 has no Content-Length either.
+		let status = responseHead.status
+		let sendsBody = request.method != .HEAD && status.code >= 200 &&
+			status != .noContent && status != .notModified
+		if status == .noContent {
+			responseHead.headers.remove(name: "content-length")
+			responseHead.headers.remove(name: "transfer-encoding")
+		}
 		try await outbound.write(.head(responseHead))
-		let allocator = ByteBufferAllocator()
-		while let chunk = try await output.nextChunk(allocator: allocator) {
-			if chunk.readableBytes > 0 {
-				try await outbound.write(.body(.byteBuffer(chunk)))
+		if sendsBody {
+			let allocator = ByteBufferAllocator()
+			while let chunk = try await output.nextChunk(allocator: allocator) {
+				if chunk.readableBytes > 0 {
+					try await outbound.write(.body(.byteBuffer(chunk)))
+				}
 			}
 		}
 		try await outbound.write(.end(nil))

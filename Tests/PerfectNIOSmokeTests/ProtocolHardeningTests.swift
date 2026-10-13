@@ -64,4 +64,37 @@ struct ProtocolHardeningTests {
             #expect(echo == .init(opcode: 0x1, payload: Array("still here".utf8)))
         }
     }
+
+    // MARK: Response framing
+
+    /// A response to HEAD has no body (RFC 9110 §9.3.2). The body used to be sent anyway, so a
+    /// keep-alive client or proxy read it as the start of the next response.
+    @Test func headResponseHasNoBody() async throws {
+        try await Server(routes: tenBytes, port: 0).withServer { port in
+            let r = await rawHTTP(port: port, [raw("HEAD /ten HTTP/1.1\r\nHost: x\r\n\r\n" +
+                                              "GET /ten HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")])
+            let responses = r.text.components(separatedBy: "HTTP/1.1 ")
+            #expect(responses.count == 3, "\(r.text.debugDescription)")
+            // The HEAD response keeps the GET's Content-Length but ends with its head.
+            #expect(responses[1].lowercased().contains("content-length: 10"))
+            #expect(responses[1].hasSuffix("\r\n\r\n"), "\(responses[1].debugDescription)")
+            #expect(responses[2].hasSuffix("0123456789"))
+        }
+    }
+
+    @Test func noBodyFor204And304() async throws {
+        let p = root(path: "/", HTTPRequest.self)
+        let routes = try root().dir(
+            p.empty.map { BytesOutput(head: HTTPHead(status: .noContent, headers: [:]), body: Array("x".utf8)) as HTTPOutput },
+            p.same.map { BytesOutput(head: HTTPHead(status: .notModified, headers: [:]), body: Array("x".utf8)) as HTTPOutput }
+        )
+        try await Server(routes: routes, port: 0).withServer { port in
+            for path in ["/empty", "/same"] {
+                let r = await rawHTTP(port: port, [raw("GET \(path) HTTP/1.1\r\nHost: x\r\n\r\n" +
+                                                  "GET /ten HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")])
+                let first = r.text.components(separatedBy: "HTTP/1.1 ").dropFirst().first ?? ""
+                #expect(first.hasSuffix("\r\n\r\n"), "\(path): \(first.debugDescription)")
+            }
+        }
+    }
 }
