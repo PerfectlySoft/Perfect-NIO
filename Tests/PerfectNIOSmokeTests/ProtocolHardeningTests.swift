@@ -104,9 +104,15 @@ struct ProtocolHardeningTests {
             return "late"
         }.text()
         try await Server(routes: routes, port: 0, idleTimeout: .seconds(1)).withServer { port in
-            let r = await rawHTTP(port: port, [rawHead("GET", "/hang")], timeout: 20, halfClose: true)
-            #expect(r.closed)
-            #expect(r.elapsed < 10, "the connection stayed open for \(r.elapsed) s")
+            // FIN with the request, and FIN arriving on its own after the request was read
+            // (on macOS NIO doesn't read further while a response is pending, so the FIN was
+            // never seen there and the socket stayed in CLOSE_WAIT).
+            for delay in [0, 0.5] {
+                let r = await rawHTTP(port: port, [rawHead("GET", "/hang")], timeout: 20, halfClose: true,
+                                      halfCloseDelay: delay)
+                #expect(r.closed, "FIN after \(delay) s")
+                #expect(r.elapsed < 10, "FIN after \(delay) s: the connection stayed open for \(r.elapsed) s")
+            }
         }
     }
 

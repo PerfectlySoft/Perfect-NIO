@@ -51,7 +51,7 @@ struct RawHTTPResponse {
 /// `partDelay` waits between parts (a slow upload); `readDelay` waits before reading anything
 /// (a client that isn't reading).
 func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5, partDelay: Double = 0,
-             readDelay: Double = 0, halfClose: Bool = false) -> RawHTTPResponse {
+             readDelay: Double = 0, halfClose: Bool = false, halfCloseDelay: Double = 0) -> RawHTTPResponse {
     let start = Date()
     #if canImport(Darwin)
     let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -92,7 +92,10 @@ func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5, partDelay: Doub
         }
     }
 
-    if halfClose { shutdown(fd, Int32(SHUT_WR)) }
+    if halfClose {
+        if halfCloseDelay > 0 { Thread.sleep(forTimeInterval: halfCloseDelay) }
+        shutdown(fd, Int32(SHUT_WR))
+    }
     if readDelay > 0 { Thread.sleep(forTimeInterval: readDelay) }
     var received: [UInt8] = []
     var closed = false
@@ -131,11 +134,12 @@ let rawLastChunk: [UInt8] = Array("0\r\n\r\n".utf8)
 /// connection tasks need. (Not a Dispatch queue: on Linux the global concurrent queues and
 /// Swift's global executor share one thread pool.)
 func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5, partDelay: Double = 0,
-             readDelay: Double = 0, halfClose: Bool = false) async -> RawHTTPResponse {
+             readDelay: Double = 0, halfClose: Bool = false, halfCloseDelay: Double = 0) async -> RawHTTPResponse {
     await withCheckedContinuation { continuation in
         Thread {
             continuation.resume(returning: rawHTTP(port: port, parts, timeout: timeout, partDelay: partDelay,
-                                                   readDelay: readDelay, halfClose: halfClose) as RawHTTPResponse)
+                                                   readDelay: readDelay, halfClose: halfClose,
+                                                   halfCloseDelay: halfCloseDelay) as RawHTTPResponse)
         }.start()
     }
 }
