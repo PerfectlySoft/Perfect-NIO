@@ -87,11 +87,20 @@ struct PathTraversalTests {
     /// of nested encodings cost seconds of CPU (30 of them stalled other connections). Decoding
     /// is now capped at a few passes, and a path still changing after them is refused.
     @Test func nestedEncodingIsBoundedAndRefused() {
-        let layers = 30_000
-        let path = "/seg/%" + String(repeating: "25", count: layers) + "2e%2e/x"
-        let start = Date()
-        #expect(RequestPath.hasDotDotSegment(path))
-        #expect(Date().timeIntervalSince(start) < 1, "took \(Date().timeIntervalSince(start)) s")
+        func path(_ layers: Int) -> String { "/seg/%" + String(repeating: "25", count: layers) + "2e%2e/x" }
+        // Linear, not quadratic: four times the input may take about four times as long, not
+        // sixteen. (Relative timing, best of three, so a slow or loaded machine, or Guard
+        // Malloc, doesn't matter.)
+        func seconds(_ layers: Int) -> Double {
+            let input = path(layers)
+            return (0..<3).map { _ in
+                let start = Date()
+                #expect(RequestPath.hasDotDotSegment(input))
+                return Date().timeIntervalSince(start)
+            }.min()!
+        }
+        let small = seconds(8_000), large = seconds(32_000)
+        #expect(large < small * 8 + 0.05, "\(small) s for 16 KB, \(large) s for 64 KB")
         // Nine layers is past the cap: refused even though it isn't (yet) a "..".
         #expect(RequestPath.hasDotDotSegment("/seg/%" + String(repeating: "25", count: 9) + "41/x"))
         // Two layers decodes to "A": fine.
