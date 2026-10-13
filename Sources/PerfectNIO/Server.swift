@@ -106,10 +106,18 @@ public struct Server: Sendable {
 	/// the first request, while a request head or body is arriving, between keep-alive
 	/// requests) the connection is idle when nothing has been read for this long; that covers a
 	/// client that sends nothing, a stalled TLS handshake and a request that never finishes.
+	///
 	/// While a response is pending (the route is working, or the body is being sent) the
-	/// connection is idle only when the client has stopped reading: writes are backed up and
-	/// none has completed for this long. A slow download, a long poll or a stream of events is
-	/// not cut off. The timeout is removed when a connection upgrades to WebSocket.
+	/// connection is idle only when the client has stopped reading: the response is backed up
+	/// and neither a write has completed nor the kernel reported any of it leaving the send
+	/// buffer for this long. A slow but steady download, a long poll or a stream of events is
+	/// not cut off. TCP delivers in bursts (a receiver reopens its window only after reading a
+	/// good part of its buffer), so keep the timeout well above a few seconds; the default 60 s
+	/// is. Once the client has closed its side, a connection whose response is pending is also
+	/// closed when nothing has been written for this long, so a client that disconnects from a
+	/// slow route doesn't pin the socket (a client that half-closes and then waits longer than
+	/// this for its response is cut too). A route that never returns keeps a connected client's
+	/// connection open. The timeout is removed when a connection upgrades to WebSocket.
 	///
 	/// It resets on every byte, so a client that trickles a request slowly isn't bounded by it;
 	/// there is no whole-request deadline. Checks run every quarter of the timeout, so a
