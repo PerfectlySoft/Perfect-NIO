@@ -257,6 +257,29 @@ struct MalformedInputTests {
 		#expect(head?.status == .ok)
 	}
 
+	/// The ETag used whole-second mtime and size, so a same-size rewrite within the same second
+	/// kept the tag, and If-Range with the old tag got a range of the new content spliced in.
+	@Test func eTagChangesOnSameSecondSameSizeRewrite() throws {
+		let path = NSTemporaryDirectory() + "perfect-nio-etag-\(UUID().uuidString)"
+		defer { try? FileManager.default.removeItem(atPath: path) }
+		func eTag() throws -> String? {
+			try FileOutput(localPath: path).head(request: requestInfo([]))?.headers.first(name: "etag")
+		}
+		try Data("AAAAA".utf8).write(to: URL(fileURLWithPath: path))
+		let first = try eTag()
+		// Rewritten in place, same size, at once.
+		let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+		try handle.write(contentsOf: Data("BBBBB".utf8))
+		try handle.close()
+		let second = try eTag()
+		#expect(first != second)
+		// Replaced by another file of the same size (a new inode).
+		let other = path + ".new"
+		try Data("CCCCC".utf8).write(to: URL(fileURLWithPath: other))
+		_ = rename(other, path)
+		#expect(try eTag() != second)
+	}
+
 	// MARK: FileOutput errors
 
 	@Test func fileOutputErrorDoesNotNameTheLocalPath() async throws {

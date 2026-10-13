@@ -39,6 +39,9 @@ public class FileOutput: HTTPOutput, @unchecked Sendable {
 	let path: String
 	let size: Int
 	let modDate: Int
+	/// The file's identity for the ETag: inode plus modification time in nanoseconds, so a
+	/// rewrite within the same second (same size) or a replacement still changes the tag.
+	private let identity: String
 	// Set during head(request:) to the byte range that should be served.
 	private var byteRange: Range<Int>?
 	// Open while the body is being read.
@@ -70,6 +73,17 @@ public class FileOutput: HTTPOutput, @unchecked Sendable {
 		size = Int(fileSize)
 		modDate = Int(date.timeIntervalSince1970)
 		path = localPath
+		var st = stat()
+		if stat(localPath, &st) == 0 {
+			#if canImport(Darwin)
+			let mtime = st.st_mtimespec
+			#else
+			let mtime = st.st_mtim
+			#endif
+			identity = "\(st.st_dev)-\(st.st_ino)-\(mtime.tv_sec).\(mtime.tv_nsec)"
+		} else {
+			identity = "\(date.timeIntervalSince1970)"
+		}
 		super.init()
 	}
 
@@ -175,7 +189,7 @@ public class FileOutput: HTTPOutput, @unchecked Sendable {
 
 	/// A strong entity tag, quoted as RFC 9110 §8.8.3 requires (it used to be bare hex).
 	func getETag() -> String {
-		let eTag = (path + "\(modDate)\(size)").utf8.sha1
+		let eTag = (path + "|\(identity)|\(size)").utf8.sha1
 		return "\"" + eTag.map { $0.hexString }.joined() + "\""
 	}
 
