@@ -111,9 +111,12 @@ public struct Server: Sendable {
 	/// connection is idle only when the client has stopped reading: the response is backed up
 	/// and neither a write has completed nor the kernel reported any of it leaving the send
 	/// buffer for this long. A slow but steady download, a long poll or a stream of events is
-	/// not cut off. TCP delivers in bursts (a receiver reopens its window only after reading a
-	/// good part of its buffer), so keep the timeout well above a few seconds; the default 60 s
-	/// is. Once the client has closed its side, a connection whose response is pending is also
+	/// not cut off, as long as the client's own receive buffer drains within the timeout: TCP
+	/// reopens a reader's window only after it has read a good part of that buffer, so a client
+	/// with a 1 MB buffer reading 25 KB/s sends nothing back for some 40 s, and from the
+	/// server's side that is indistinguishable from a client that stopped (nginx's send_timeout
+	/// behaves the same). Keep the timeout generous for slow clients; the default is 60 s.
+	/// Once the client has closed its side, a connection whose response is pending is also
 	/// closed when nothing has been written for this long, so a client that disconnects from a
 	/// slow route doesn't pin the socket (a client that half-closes and then waits longer than
 	/// this for its response is cut too). A route that never returns keeps a connected client's
