@@ -37,12 +37,20 @@ typealias RequestTuples = (String, RequestParamValue)
 public extension HTTPRequest {
 	/// Decode the request body into the desired type, or throw an error.
 	///
-	/// Decoding failures are thrown as `DecodingError`. A `DecodingError` that escapes a route
-	/// handler becomes a generic 500; the `decode` route modifier instead turns it into a 400.
-	/// To get the same from a handler that calls this directly, catch it and throw
-	/// `ErrorOutput(status: .badRequest)`. Don't put the error's description in the response:
-	/// it names Swift types and key paths.
+	/// Decoding failures are thrown as `DecodingError`. If it escapes the route, the server
+	/// answers 400 with a generic message (the client sent something that doesn't fit `A`); the
+	/// detail, which names Swift types and key paths, is only logged. A `DecodingError` the
+	/// handler gets from decoding its own data is still a 500.
 	func decode<A: Decodable>(_ type: A.Type, content: HTTPRequestContentType) throws -> A {
+		do {
+			return try decodeContent(type, content: content)
+		} catch let error as DecodingError {
+			(self as? NIOAsyncHTTPRequest)?.requestDecodingFailed = true
+			throw error
+		}
+	}
+
+	private func decodeContent<A: Decodable>(_ type: A.Type, content: HTTPRequestContentType) throws -> A {
 		let postTuples: [RequestTuples]
 		switch content {
 		case .none:

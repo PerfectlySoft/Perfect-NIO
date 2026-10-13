@@ -52,6 +52,9 @@ final class NIOAsyncHTTPRequest: HTTPRequest, @unchecked Sendable {
 	let contentLength: Int
 	var contentRead: Int { bodyBytes.count }
 	private(set) var contentConsumed: Int = 0
+	/// Set when `HTTPRequest.decode(_:content:)` failed on this request, so a `DecodingError`
+	/// escaping the route is answered as the client's fault (400), not the server's.
+	var requestDecodingFailed = false
 	var channel: Channel? { channelRef }
 	var localAddress: SocketAddress? { channelRef?.localAddress }
 	var remoteAddress: SocketAddress? { channelRef?.remoteAddress }
@@ -335,6 +338,12 @@ enum NIOAsyncHTTPServer {
 				}
 			case let err as ErrorOutput:
 				output = err
+			case is DecodingError where request.requestDecodingFailed:
+				// Decoding the request failed and the handler let the error escape.
+				logger.notice("Could not decode request", metadata: [
+					"method": "\(request.method)", "path": "\(request.path)", "error": "\(error)",
+				])
+				output = ErrorOutput(status: .badRequest)
 			default:
 				// Any other error's description can name internal types, key paths, file paths or
 				// SQL; log it here and send the client only a generic message.
