@@ -412,6 +412,29 @@ final class AdminWebUITests: XCTestCase {
         XCTAssertFalse(html.contains(#"path with "quotes""#), "Path not JSON-escaped in HTML")
     }
 
+    /// Names from the delegate and the log (datasource, action and job names, log subsystems,
+    /// TLS domains) are put inside onclick="f('…')" handlers. Escaping them with esc() plus a
+    /// ' → \\' replace let a " end the attribute and a \\ end the JS string, so a crafted name
+    /// ran script in the page that holds the admin token. Each such argument now goes through
+    /// jsArg(), which escapes for JS and then for the attribute. (Behaviour checked in node
+    /// with names containing ", \\', \\ and <img>; this pins the page's source.)
+    func testResponse_onclickArgumentsAreEscapedForJSAndAttribute() async throws {
+        let output = AdminWebUI.response(tokenFilePath: "/tmp/tok.token")
+        var body: [UInt8] = []
+        let alloc = ByteBufferAllocator()
+        while let buf = try await output.nextChunk(allocator: alloc) {
+            body.append(contentsOf: buf.readableBytesView)
+        }
+        let html = String(decoding: body, as: UTF8.self)
+        XCTAssertNil(html.range(of: #"esc\([^)]*\)\.replace\(/'/g"#, options: .regularExpression),
+                     "an onclick argument is still escaped with esc() plus a quote replace")
+        XCTAssertTrue(html.contains("function jsArg(s)"))
+        XCTAssertTrue(html.contains(#".replace(/\\/g, '\\\\').replace(/'/g, "\\'")"#),
+                      "jsArg must escape backslashes before quotes")
+        // esc() covers quoted attribute values too.
+        XCTAssertTrue(html.contains(#".replace(/"/g,'&quot;').replace(/'/g,'&#39;')"#))
+    }
+
     func testResponse_cacheControlNoStore() {
         let output = AdminWebUI.response(tokenFilePath: "/tmp/tok.token")
         let head = output.head(request: HTTPRequestInfo(head: .init(version: .http1_1, method: .GET, uri: "/"), options: []))
