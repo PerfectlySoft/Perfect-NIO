@@ -66,7 +66,9 @@ public struct Server: Sendable {
 	public var tlsManager: TLSContextManager?
 	/// Closes a connection after this much time with no inbound read. `nil` disables the timeout.
 	///
-	/// This bounds idle keep-alive connections (resource-exhaustion / basic slowloris defense).
+	/// It runs from the moment a connection is accepted (TLS handshake and first request head
+	/// included) and is removed when a connection upgrades to WebSocket. This bounds idle and
+	/// keep-alive connections (resource-exhaustion / basic slowloris defense).
 	/// Note: it measures *reads*, so a route handler that takes longer than this to produce its
 	/// first byte on an otherwise-quiet connection will have the connection closed — give streaming
 	/// / long-poll endpoints a larger value or `nil`. Full slow-trickle slowloris mitigation
@@ -223,14 +225,33 @@ public struct Server: Sendable {
 				.childChannelOption(ChannelOptions.allowRemoteHalfClosure, value: true)
 			let channel = try await bootstrap.bind(host: host, port: port) { childChannel in
 				childChannel.eventLoop.makeCompletedFuture {
+					// The idle timeout runs from accept, ahead of TLS and HTTP, so a client that
+					// sends nothing or never finishes its request head is closed too. A WebSocket
+					// upgrade removes it (see IdleTimeout.remove).
+					let idleHandlers = try idle.map { try IdleTimeout.add(to: childChannel, timeout: $0) }
 					if let manager = tlsManager {
 						try childChannel.pipeline.syncOperations.addHandler(SNIPeekHandler(manager: manager))
 					}
+					let outcome: EventLoopFuture<HTTPOrWebSocket>
 					if #available(macOS 13, *) {
-						return try Server.configureUpgrade(channel: childChannel, finder: finder, isTLS: isTLS, idleTimeout: idle)
+						outcome = try Server.configureUpgrade(channel: childChannel, finder: finder, isTLS: isTLS, idleHandlers: idleHandlers)
 					} else {
-						return try Server.configureUpgradeFallback(channel: childChannel, finder: finder, isTLS: isTLS, idleTimeout: idle)
+						outcome = try Server.configureUpgradeFallback(channel: childChannel, finder: finder, isTLS: isTLS, idleHandlers: idleHandlers)
 					}
+					// Until the first request is routed nothing owns the channel, so an error there
+					// (a request the HTTP parser rejected, after NIO's 400; a TLS failure) closes
+					// it here. Such connections used to stay open indefinitely.
+					let closer = CloseOnErrorHandler()
+					try childChannel.pipeline.syncOperations.addHandler(closer)
+					outcome.whenComplete { result in
+						switch result {
+						case .success:
+							childChannel.pipeline.syncOperations.removeHandler(closer, promise: nil)
+						case .failure:
+							childChannel.close(promise: nil)
+						}
+					}
+					return outcome
 				}
 			}
 			channels.append(channel)
@@ -248,7 +269,7 @@ public struct Server: Sendable {
 	private static func configureUpgrade(channel: Channel,
 	                                     finder: any RouteFinder,
 	                                     isTLS: Bool,
-	                                     idleTimeout: TimeAmount?) throws -> EventLoopFuture<HTTPOrWebSocket> {
+	                                     idleHandlers: IdleTimeout.Handlers?) throws -> EventLoopFuture<HTTPOrWebSocket> {
 		// Populated by the pre-upgrade router (below) before the typed upgrader runs, so the
 		// upgrader and its pipeline handler can read the resolved handler synchronously.
 		let resolved = NIOLockedValueBox<(WebSocketHandler, [WebSocketOption])?>(nil)
@@ -263,6 +284,8 @@ public struct Server: Sendable {
 			},
 			upgradePipelineHandler: { channel, _ in
 				channel.eventLoop.makeCompletedFuture {
+					// WebSocket connections are long-lived and manage their own liveness.
+					if let idleHandlers { IdleTimeout.remove(idleHandlers, from: channel) }
 					let wsChannel = try WebSocketConnectionChannel(wrappingChannelSynchronously: channel)
 					let noop: WebSocketHandler = { _ in }
 					let (handler, options) = resolved.withLockedValue { $0 } ?? (noop, [])
@@ -275,13 +298,7 @@ public struct Server: Sendable {
 			upgraders: [upgrader],
 			notUpgradingCompletionHandler: { channel in
 				channel.eventLoop.makeCompletedFuture {
-					// Idle timeout applies to plain HTTP only; WebSocket connections are
-					// long-lived and manage their own liveness.
-					if let idleTimeout = idleTimeout {
-						try channel.pipeline.syncOperations.addHandler(IdleStateHandler(readTimeout: idleTimeout))
-						try channel.pipeline.syncOperations.addHandler(IdleTimeoutHandler())
-					}
-					return HTTPOrWebSocket.http(try HTTPConnectionChannel(wrappingChannelSynchronously: channel))
+					HTTPOrWebSocket.http(try HTTPConnectionChannel(wrappingChannelSynchronously: channel))
 				}
 			}
 		)
@@ -332,7 +349,7 @@ public struct Server: Sendable {
 	private static func configureUpgradeFallback(channel: Channel,
 	                                             finder: any RouteFinder,
 	                                             isTLS: Bool,
-	                                             idleTimeout: TimeAmount?) throws -> EventLoopFuture<HTTPOrWebSocket> {
+	                                             idleHandlers: IdleTimeout.Handlers?) throws -> EventLoopFuture<HTTPOrWebSocket> {
 		let resolved = NIOLockedValueBox<(WebSocketHandler, [WebSocketOption])?>(nil)
 		let promise = channel.eventLoop.makePromise(of: HTTPOrWebSocket.self)
 
@@ -357,7 +374,7 @@ public struct Server: Sendable {
 		// Constructed now (captured by wsUpgrader below) but added to the pipeline only after
 		// upgradeHandler, so it sits downstream and only ever sees data via HTTPServerUpgradeHandler's
 		// not-upgrading forwarding path (see its doc comment below).
-		let fallbackHandler = PlainHTTPFallbackHandler(idleTimeout: idleTimeout, promise: promise)
+		let fallbackHandler = PlainHTTPFallbackHandler(promise: promise)
 
 		let wsUpgrader = NIOWebSocketServerUpgrader(
 			shouldUpgrade: { channel, _ in
@@ -371,6 +388,7 @@ public struct Server: Sendable {
 				// its own handlerRemoved doesn't race a spurious failure against the real success
 				// below.
 				fallbackHandler.suppressResolution()
+				if let idleHandlers { IdleTimeout.remove(idleHandlers, from: channel) }
 				return channel.pipeline.syncOperations.removeHandler(fallbackHandler)
 					.flatMap {
 						channel.eventLoop.makeCompletedFuture {
@@ -531,9 +549,44 @@ public struct ServerError: Error, CustomStringConvertible {
 	init(_ description: String) { self.description = description }
 }
 
+/// Closes the connection on any error that reaches the end of the pipeline before the first
+/// request has been routed. Removed once it has. `@unchecked Sendable`: only touched on its
+/// channel's event loop.
+final class CloseOnErrorHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
+	typealias InboundIn = NIOAny
+	func errorCaught(context: ChannelHandlerContext, error: Error) {
+		context.close(promise: nil)
+		context.fireErrorCaught(error)
+	}
+}
+
+/// The read-idle timeout installed on every accepted connection.
+enum IdleTimeout {
+	/// `@unchecked Sendable`: created, and only used, on the channel's event loop.
+	final class Handlers: @unchecked Sendable {
+		let state: IdleStateHandler
+		let closer = IdleTimeoutHandler()
+		init(timeout: TimeAmount) { state = IdleStateHandler(readTimeout: timeout) }
+	}
+
+	static func add(to channel: Channel, timeout: TimeAmount) throws -> Handlers {
+		let handlers = Handlers(timeout: timeout)
+		try channel.pipeline.syncOperations.addHandler(handlers.state, position: .first)
+		try channel.pipeline.syncOperations.addHandler(handlers.closer, position: .after(handlers.state))
+		return handlers
+	}
+
+	/// Called on the event loop when a connection is upgraded to WebSocket.
+	static func remove(_ handlers: Handlers, from channel: Channel) {
+		channel.pipeline.syncOperations.removeHandler(handlers.closer, promise: nil)
+		channel.pipeline.syncOperations.removeHandler(handlers.state, promise: nil)
+	}
+}
+
 /// Closes a connection when `IdleStateHandler` reports it idle. Sits directly after the
 /// `IdleStateHandler` in the pipeline; constructed on the event loop, never shared.
-private final class IdleTimeoutHandler: ChannelInboundHandler {
+/// `@unchecked Sendable`: only touched on its channel's event loop.
+final class IdleTimeoutHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
 	typealias InboundIn = NIOAny
 	func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
 		if event is IdleStateHandler.IdleStateEvent {
@@ -552,8 +605,7 @@ private final class IdleTimeoutHandler: ChannelInboundHandler {
 /// `upgradePipelineHandler` removes this handler first (see `configureUpgradeFallback`).
 ///
 /// The first inbound part it ever sees is therefore always the start of a genuine plain-HTTP request:
-/// it adds the idle-timeout handlers (matching `configureUpgrade`'s `notUpgradingCompletionHandler`),
-/// wraps the channel, fulfills the promise, forwards the part into the new wrap, and removes itself.
+/// it wraps the channel, fulfills the promise, forwards the part into the new wrap, and removes itself.
 ///
 /// If the connection closes before either outcome happens (e.g. a health-check probe or TLS-handshake
 /// failure that never sends a request), `HTTPServerUpgradeHandler` never forwards anything here and
@@ -565,12 +617,10 @@ final class PlainHTTPFallbackHandler: ChannelInboundHandler, RemovableChannelHan
 	typealias InboundIn = HTTPServerRequestPart
 	typealias InboundOut = HTTPServerRequestPart
 
-	private let idleTimeout: TimeAmount?
 	private let promise: EventLoopPromise<HTTPOrWebSocket>
 	private var resolved = false
 
-	init(idleTimeout: TimeAmount?, promise: EventLoopPromise<HTTPOrWebSocket>) {
-		self.idleTimeout = idleTimeout
+	init(promise: EventLoopPromise<HTTPOrWebSocket>) {
 		self.promise = promise
 	}
 
@@ -589,10 +639,6 @@ final class PlainHTTPFallbackHandler: ChannelInboundHandler, RemovableChannelHan
 		}
 		resolved = true
 		do {
-			if let idleTimeout {
-				try context.pipeline.syncOperations.addHandler(IdleStateHandler(readTimeout: idleTimeout))
-				try context.pipeline.syncOperations.addHandler(IdleTimeoutHandler())
-			}
 			let httpChannel = try HTTPConnectionChannel(wrappingChannelSynchronously: context.channel)
 			promise.succeed(.http(httpChannel))
 		} catch {

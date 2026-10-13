@@ -32,7 +32,7 @@ final class PlainHTTPFallbackHandlerTests: XCTestCase {
 		let result = NIOLockedValueBox<Result<HTTPOrWebSocket, Error>?>(nil)
 		promise.futureResult.whenComplete { outcome in result.withLockedValue { $0 = outcome } }
 
-		try channel.pipeline.syncOperations.addHandler(PlainHTTPFallbackHandler(idleTimeout: nil, promise: promise))
+		try channel.pipeline.syncOperations.addHandler(PlainHTTPFallbackHandler(promise: promise))
 
 		// Simulate the connection being torn down before any request part ever arrived.
 		// EmbeddedChannel's close0 succeeds the close future immediately but defers
@@ -59,7 +59,7 @@ final class PlainHTTPFallbackHandlerTests: XCTestCase {
 		let result = NIOLockedValueBox<Result<HTTPOrWebSocket, Error>?>(nil)
 		promise.futureResult.whenComplete { outcome in result.withLockedValue { $0 = outcome } }
 
-		let handler = PlainHTTPFallbackHandler(idleTimeout: nil, promise: promise)
+		let handler = PlainHTTPFallbackHandler(promise: promise)
 		try channel.pipeline.syncOperations.addHandler(handler)
 
 		handler.suppressResolution()
@@ -88,7 +88,7 @@ final class PlainHTTPFallbackHandlerTests: XCTestCase {
 		let result = NIOLockedValueBox<Result<HTTPOrWebSocket, Error>?>(nil)
 		promise.futureResult.whenComplete { outcome in result.withLockedValue { $0 = outcome } }
 
-		try channel.pipeline.syncOperations.addHandler(PlainHTTPFallbackHandler(idleTimeout: nil, promise: promise))
+		try channel.pipeline.syncOperations.addHandler(PlainHTTPFallbackHandler(promise: promise))
 
 		let head = HTTPRequestHead(version: .http1_1, method: .GET, uri: "/")
 		try channel.writeInbound(HTTPServerRequestPart.head(head))
