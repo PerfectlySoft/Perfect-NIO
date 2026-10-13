@@ -377,6 +377,11 @@ struct MalformedInputTests {
 
 /// Compile-time checks: these public value types can cross concurrency domains, and
 /// RouteDescription's uri is readable outside the module (the README uses it).
+private struct ReadmeSession: Sendable { let userId: String }
+private func readmeSession(from req: any HTTPRequest) -> ReadmeSession? {
+	req.headers["Authorization"].first.map { ReadmeSession(userId: $0) }
+}
+
 @Suite("Public API")
 struct PublicAPITests {
 	private func requireSendable<T: Sendable>(_: T.Type) {}
@@ -388,6 +393,16 @@ struct PublicAPITests {
 		requireSendable(FileUpload.self)
 		requireSendable(RouteDescription.self)
 		requireSendable(Server.self)
+	}
+
+	/// The README's auth pattern: a plain function taking `any HTTPRequest` passed to `root`.
+	/// Before HTTPRequest was Sendable, Swift 6.2 warned that converting it to the route's
+	/// async closure crossed an isolation boundary (an error with warnings as errors).
+	@Test func authPatternBuilds() {
+		requireSendable((any HTTPRequest).self)
+		let routes = root(readmeSession(from:)).statusCheck { $0 == nil ? .unauthorized : .ok }
+			.unwrap { $0.userId }.text()
+		#expect(!routes.describe.isEmpty)
 	}
 
 	@Test func routeDescriptionsExposeTheirURI() {
