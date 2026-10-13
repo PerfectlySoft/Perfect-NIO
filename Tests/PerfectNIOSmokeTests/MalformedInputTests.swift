@@ -172,4 +172,22 @@ struct MalformedInputTests {
 		try await check("bytes=-3", "0123456789", contentRange: nil)
 		try await check("items=0-1", "0123456789", contentRange: nil)
 	}
+
+	// MARK: FileOutput errors
+
+	@Test func fileOutputErrorDoesNotNameTheLocalPath() async throws {
+		let path = NSTemporaryDirectory() + "perfect-nio-secret-\(UUID().uuidString)"
+		try Data("0123456789".utf8).write(to: URL(fileURLWithPath: path))
+		let output = try FileOutput(localPath: path)
+		_ = output.head(request: requestInfo([]))
+		try FileManager.default.removeItem(atPath: path)
+		do {
+			_ = try await drain(output)
+			Issue.record("expected an error for a file removed after the head was sent")
+		} catch let error as ErrorOutput {
+			#expect(!error.description.contains("perfect-nio-secret"), "\(error.description)")
+			let body = try await drain(error)
+			#expect(!String(decoding: body, as: UTF8.self).contains("perfect-nio-secret"))
+		}
+	}
 }

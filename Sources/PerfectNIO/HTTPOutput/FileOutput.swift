@@ -18,6 +18,9 @@ import Foundation
 import Crypto
 import NIO
 import NIOHTTP1
+import Logging
+
+private let logger = Logger(label: "perfect.nio.fileoutput")
 
 extension String.UTF8View {
 	var sha1: [UInt8] {
@@ -86,7 +89,9 @@ public class FileOutput: HTTPOutput, @unchecked Sendable {
 		byteRange = nil
 		guard !range.isEmpty else { return nil }
 		guard let fh = FileHandle(forReadingAtPath: path) else {
-			throw ErrorOutput(status: .internalServerError, description: "Could not open file: \(path)")
+			// The response goes to the client; the local path stays in the log.
+			logger.error("Could not open file", metadata: ["path": "\(path)"])
+			throw ErrorOutput(status: .internalServerError, description: "Could not read the file.")
 		}
 		defer { fh.closeFile() }
 		fh.seek(toFileOffset: UInt64(range.lowerBound))
