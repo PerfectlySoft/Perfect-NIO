@@ -413,6 +413,23 @@ enum NIOAsyncHTTPServer {
 		// An output (or route) that asks for "Connection: close" gets it.
 		var keepAlive = request.isKeepAlive &&
 			!responseHead.headers[canonicalForm: "connection"].contains { $0.lowercased() == "close" }
+		// The output's own Content-Length: one valid value is kept (duplicates of it collapsed);
+		// conflicting or invalid values are dropped, and the body is framed as if there were none.
+		var declaredLength: Int?
+		let lengths = responseHead.headers[canonicalForm: "content-length"].map { $0.trimmingCharacters(in: .whitespaces) }
+		if !lengths.isEmpty {
+			let values = Set(lengths)
+			if values.count == 1, let value = values.first, !value.isEmpty,
+			   value.utf8.allSatisfy({ $0 >= UInt8(ascii: "0") && $0 <= UInt8(ascii: "9") }), let length = Int(value) {
+				responseHead.headers.replaceOrAdd(name: "content-length", value: String(length))
+				declaredLength = length
+			} else {
+				logger.error("Output declared an invalid Content-Length; dropped", metadata: [
+					"method": "\(request.method)", "path": "\(request.path)", "content-length": "\(lengths)",
+				])
+				responseHead.headers.remove(name: "content-length")
+			}
+		}
 		if !statusAllowsBody {
 			if status != .notModified { responseHead.headers.remove(name: "content-length") }
 			responseHead.headers.remove(name: "transfer-encoding")
@@ -436,11 +453,30 @@ enum NIOAsyncHTTPServer {
 		}
 		try await outbound.write(.head(responseHead))
 		if statusAllowsBody && !isHead {
+			// A body that doesn't match the declared Content-Length would put the next response
+			// on this connection out of step, so on a mismatch the connection is closed after it
+			// (and a longer body is cut at the point it would overrun).
 			let allocator = ByteBufferAllocator()
+			var sent = 0
 			while let chunk = try await output.nextChunk(allocator: allocator) {
+				if let declaredLength, sent + chunk.readableBytes > declaredLength {
+					logger.error("Output body is longer than its Content-Length; connection closed", metadata: [
+						"method": "\(request.method)", "path": "\(request.path)", "content-length": "\(declaredLength)",
+					])
+					keepAlive = false
+					break
+				}
 				if chunk.readableBytes > 0 {
 					try await outbound.write(.body(.byteBuffer(chunk)))
+					sent += chunk.readableBytes
 				}
+			}
+			if let declaredLength, keepAlive, sent < declaredLength {
+				logger.error("Output body is shorter than its Content-Length; connection closed", metadata: [
+					"method": "\(request.method)", "path": "\(request.path)", "content-length": "\(declaredLength)",
+					"sent": "\(sent)",
+				])
+				keepAlive = false
 			}
 		}
 		try await outbound.write(.end(nil))

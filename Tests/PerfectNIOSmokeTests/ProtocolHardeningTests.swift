@@ -324,4 +324,54 @@ struct ProtocolHardeningTests {
             #expect(next.status == 200)
         }
     }
+
+    /// An output whose body doesn't match its own Content-Length used to stay keep-alive, so
+    /// the next response on the connection was read as part of (or after) this one; duplicate
+    /// or invalid Content-Length values went out verbatim.
+    @Test func outputContentLengthIsEnforced() async throws {
+        let routes = try root().dir(
+            root().path("short").map { output("10", body: "12345") },
+            root().path("long").map { output("3", body: "0123456789") },
+            root().path("dup").map { output("5", "7", body: "abcde") },
+            root().path("same").map { output("5", "5", body: "abcde") },
+            root().path("bad").map { output("abc", body: "abcde") },
+            tenBytes
+        )
+        try await Server(routes: routes, port: 0).withServer { port in
+            for path in ["/short", "/long"] {
+                let r = await rawHTTP(port: port, [rawHead("GET", path), rawHead("GET", "/ten")], timeout: 20)
+                #expect(r.closed, "\(path)")
+                #expect(!r.text.contains("0123456789HTTP") && r.text.components(separatedBy: "HTTP/1.1 ").count == 2,
+                        "\(path): \(r.text.debugDescription)")
+            }
+            for path in ["/dup", "/bad"] {
+                let r = await rawHTTP(port: port, [rawHead("GET", path, [("Connection", "close")])], timeout: 20)
+                let lengths = r.text.lowercased().components(separatedBy: "\r\n").filter { $0.hasPrefix("content-length:") }
+                #expect(lengths.isEmpty, "\(path): \(r.text.debugDescription)")
+            }
+            let same = await rawHTTP(port: port, [rawHead("GET", "/same"), rawHead("GET", "/ten", [("Connection", "close")])], timeout: 20)
+            let lengths = same.text.lowercased().components(separatedBy: "\r\n").filter { $0.hasPrefix("content-length:") }
+            #expect(lengths == ["content-length: 5", "content-length: 10"], "\(same.text.debugDescription)")
+            #expect(same.text.hasSuffix("0123456789"))
+        }
+    }
+}
+
+@Sendable private func output(_ length: String..., body: String) -> HTTPOutput {
+    BytesOutputRaw(headers: length.map { ("Content-Length", $0) }, body: Array(body.utf8))
+}
+
+/// An output that sets its headers verbatim, Content-Length included.
+private final class BytesOutputRaw: HTTPOutput, @unchecked Sendable {
+    let headers: [(String, String)]
+    var body: [UInt8]?
+    init(headers: [(String, String)], body: [UInt8]) {
+        self.headers = headers
+        self.body = body
+    }
+    override func head(request: HTTPRequestInfo) -> HTTPHead? { HTTPHead(headers: HTTPHeaders(headers)) }
+    override func nextChunk(allocator: ByteBufferAllocator) async throws -> ByteBuffer? {
+        defer { body = nil }
+        return body.map { allocator.buffer(bytes: $0) }
+    }
 }
