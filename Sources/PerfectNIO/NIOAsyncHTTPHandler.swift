@@ -190,6 +190,11 @@ enum NIOAsyncHTTPServer {
 		if head.headers[canonicalForm: "host"].count > 1 {
 			return .badRequest(head)
 		}
+		// A ".." segment (raw or percent-encoded) is refused before routing: wild and trailing
+		// would otherwise hand it to a handler, which might join it onto a file path.
+		if RequestPath.hasDotDotSegment(head.uri) {
+			return .badRequest(head)
+		}
 		if let maxBodySize,
 		   let declared = head.headers.first(name: "content-length").flatMap({ Int($0) }),
 		   declared > maxBodySize {

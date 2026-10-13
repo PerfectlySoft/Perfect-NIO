@@ -891,7 +891,8 @@ private final class WebSocketUpgradeRouter: ChannelDuplexHandler, RemovableChann
 				context.fireChannelRead(data)
 				return
 			}
-			guard Self.hasValidHandshakeFields(head) else {
+			guard Self.hasValidHandshakeFields(head), !RequestPath.hasDotDotSegment(head.uri) else {
+				// (A ".." path is answered 400 by the HTTP side, before any route runs.)
 				// A handshake NIO's upgrader would refuse by closing the connection without a
 				// word (no Sec-WebSocket-Key, a version other than 13). Serve it as plain HTTP
 				// instead: a webSocket route answers 426 with Sec-WebSocket-Version: 13, any

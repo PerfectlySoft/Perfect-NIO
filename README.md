@@ -197,7 +197,7 @@ let routes = try root().dir(
 
 Match a single path segment as a wildcard.
 
-> The segment is raw request text: not percent-decoded, and it can be `..`. Validate it before using it as a file name or path (see [Security notes](#security-notes)).
+> The segment is raw request text, not percent-decoded. It is never `..`: a request with a `..` path segment, raw or encoded, is refused with 400 before routing (see [Security notes](#security-notes)). Still validate it before using it as a file name.
 
 ```swift
 // /*/suffix — captures the first segment
@@ -213,7 +213,7 @@ root().v1.wild(name: "id").info
 
 Match all remaining path segments.
 
-> The remainder is raw request text: not percent-decoded or normalized, so `/files/../secret.txt` gives `"../secret.txt"`. Never join it onto a directory for `FileOutput` without validating it (see [Security notes](#security-notes)).
+> The remainder is raw request text, not percent-decoded. It never contains a `..` segment: `/files/../secret.txt`, `/files/%2e%2e/secret.txt` and the like are refused with 400 before routing (see [Security notes](#security-notes)). It can still name hidden files or contain encoded characters, so validate it before joining it onto a directory for `FileOutput`.
 
 ```swift
 // /files/** — captures everything after /files/
@@ -1149,7 +1149,7 @@ With `MYSQL_REQUIRE_LIVE=1` (as in CI), an unconfigured or unreachable server fa
 
 - **Request bodies** are capped at 10 MiB by default (`maxRequestBodySize`); see [Request body size limit](#request-body-size-limit). The limit is per request, so total memory also scales with the number of connections.
 - **Errors**: only an `ErrorOutput`'s text reaches the client. Any other error, including a `DecodingError`, is logged and answered with a generic message (500, or 400 from `decode`).
-- **Paths are not normalized.** The router matches the request path as sent, without percent-decoding it or removing `.` and `..` segments. The strings `wild` and `trailing` hand you are raw path text and may contain `..` or percent-encoded characters. Never join them onto a filesystem path (for example for `FileOutput(localPath:)`) without validating them first. PerfectNIO has no built-in static file route.
+- **`..` segments are rejected.** A request whose path has a `..` segment, as sent or after percent-decoding (`%2e%2e`, `.%2e`, double encoding), with `/`, `%2f`, `\` or `%5c` as separators, gets 400 before any route runs, WebSocket handshakes included. So the strings `wild` and `trailing` hand you never contain a `..` segment. Other dots (`a..b`, `.hidden`) are allowed. Paths are otherwise used as sent: not percent-decoded and not otherwise normalized, so still validate `wild`/`trailing` values before using them as file names (for example for `FileOutput(localPath:)`). PerfectNIO has no built-in static file route.
 - **Response headers**: a header value containing CR or LF is refused by NIO's header validator; the connection is closed without a response rather than the header being split.
 - **HTTP/1 framing**: requests with ambiguous framing (Content-Length with Transfer-Encoding, conflicting Content-Lengths, unknown transfer codings, obs-fold, bare LF) or two `Host` headers get 400 and the connection is closed. Responses are framed by the server: a body of unknown length is chunked on HTTP/1.1 and ends the connection on HTTP/1.0; HEAD, 1xx, 204 and 304 responses carry no body.
 - **WebSocket handshakes** that aren't upgraded (wrong path, a refusing route, a missing key or a version other than 13) are answered as HTTP, then the connection is closed. A `webSocket` route answers a plain or malformed request with 426 and `Sec-WebSocket-Version: 13`.
