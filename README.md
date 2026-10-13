@@ -16,7 +16,16 @@ A Swift 6 HTTP(S) server library built on SwiftNIO. Routes are a composable, str
 
 **Role:** PerfectNIO is the core HTTP/server layer here — depended on directly by `FMTestApp` and `PerfectTemplate`, and includes multi-tenant TLS, an admin console, and graceful restart support. Logging is done via `import Logging` (apple/swift-log) directly — there is no dependency on Perfect-Logger.
 
-The pre-Swift-6 version of this package is preserved on the [`legacy`](../../tree/legacy) branch.
+The pre-Swift-6 version of this package is preserved on the [`legacy`](../../tree/legacy) branch. It was never tagged; see [Migrating from the legacy branch](#migrating-from-the-legacy-branch).
+
+> **Version 0.x: the API may change between minor versions.** PerfectNIO starts at 0.1.0 and stays on 0.x until its API settles. Under semantic versioning a 0.x minor release (0.1 → 0.2) may contain breaking changes. `from: "0.1.0"` (as below) accepts any 0.x release; use `.upToNextMinor(from: "0.1.0")` to take only 0.1.x fixes. Release notes list every breaking change.
+
+## Requirements
+
+- Swift 6.2 or later (swift-tools-version 6.2). CI builds with Swift 6.2 and 6.4 on Linux and Xcode 26.0.1 and 26.6 on macOS.
+- macOS 12 or later, or Linux (CI: Ubuntu 24.04). No iOS, tvOS or watchOS support.
+- Linux: `zlib1g-dev` (and `pkg-config`) for the `CZlib` system library. macOS needs nothing extra.
+- `PerfectNIOCRUD` depends on Perfect-CRUD 3 (`from: "3.0.1"`). Perfect-MySQL 4 is used only by this package's own MySQL tests; building the library products doesn't need a MySQL client library.
 
 - [Quick start](#quick-start)
 - [Package.swift](#packageswift)
@@ -31,6 +40,8 @@ The pre-Swift-6 version of this package is preserved on the [`legacy`](../../tre
 - [PerfectNIOCRUD](#perfectniocrud)
 - [Reference](#reference)
 - [Linux support](#linux-support)
+- [Security notes](#security-notes)
+- [Migrating from the legacy branch](#migrating-from-the-legacy-branch)
 
 ---
 
@@ -69,7 +80,7 @@ try await Server(routes: routes, port: 8080).withServer { boundPort in
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", branch: "main"),
+    .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", from: "0.1.0"),
 ],
 targets: [
     .target(
@@ -83,7 +94,7 @@ targets: [
 
 Your code will typically `import PerfectNIO`. The library re-exports `NIO`, `NIOHTTP1`, and `NIOSSL`, so you usually do not need to import those separately.
 
-**In-ecosystem consumers** (Perfect-Lasso, `FMTestApp`, `PerfectTemplate`) use the same GitHub URL above — no local sibling checkout is needed. This package's own `Package.swift` likewise resolves `PerfectNIOCRUD` and the `PerfectNIOMySQLTests` test target's `Perfect-CRUD`/`Perfect-MySQL` dependencies via `.package(url:, branch: "main")`, not a local path. Cloning this repo on its own and running `swift build`/`swift test` works standalone; fast local cross-repo iteration during development uses a gitignored SwiftPM mirror (`swift package config set-mirror`) instead of editing `Package.swift`.
+This package depends on its Perfect siblings by released version (Perfect-CRUD `from: "3.0.1"`, Perfect-MySQL `from: "4.0.0"`), so a version-pinned consumer resolves cleanly. Cloning this repo on its own and running `swift build`/`swift test` works standalone; for cross-repo work on unreleased sibling changes, use a SwiftPM mirror (`swift package config set-mirror`) rather than editing `Package.swift`.
 
 There is no `PerfectNIOMustache` target — an earlier version of this package had one, but it was deliberately removed (dead weight pulling in an unresurrected `PerfectLib`). Mustache template output is not currently available.
 
@@ -367,6 +378,8 @@ root().logo {
 }.ext("png")
 ```
 
+A directory path serves its `index.html` (404 if there is none). A `Range: bytes=…` request is answered with 206 and the first satisfiable range; an unsatisfiable or malformed range gets the whole file. The file is read in chunks of up to 256 KiB. `localPath` is used as given: see [Security notes](#security-notes) before building it from request input.
+
 ---
 
 ## Custom HTTPOutput
@@ -440,7 +453,9 @@ let echoRoute = root().echo.webSocket(protocol: "echo") { _ -> WebSocketHandler 
 }
 ```
 
-A WebSocket handshake to a path that does not have a `webSocket()` route is served as ordinary HTTP (returning the route's natural status, typically 404) — per RFC 6455 §4.2.2. Only `webSocket()` routes run during the handshake; any other route runs once, as plain HTTP. A route that returns a hand-built `WebSocketUpgradeHTTPOutput` (its initializer is deprecated) does not upgrade and answers 426 Upgrade Required.
+A WebSocket handshake to a path that does not have a `webSocket()` route is served as ordinary HTTP (returning the route's natural status, typically 404) — per RFC 6455 §4.2.2. Only `webSocket()` routes run during the handshake; any other route runs once, as plain HTTP. A `webSocket()` route whose pipeline refuses the handshake (a `statusCheck` returning 403, a thrown `ErrorOutput`) also runs once: its result is the response. A handshake that isn't upgraded is answered with `Connection: close` and the connection is closed, because the HTTP parser can't continue on a connection that asked to upgrade. A route that returns a hand-built `WebSocketUpgradeHTTPOutput` (its initializer is deprecated) does not upgrade and answers 426 Upgrade Required.
+
+The `protocol` argument is the subprotocol the endpoint speaks. When the client offers it in `Sec-WebSocket-Protocol`, the 101 response selects it (browsers fail a connection whose 101 selects none of the subprotocols they offered). A client that offers none, or only others, is still upgraded, without the header.
 
 ### WebSocketOption
 
@@ -489,7 +504,7 @@ Beyond the single static `TLSConfiguration` shown above, `Sources/PerfectNIO` al
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", branch: "main"),
+    .package(url: "https://github.com/PerfectlySoft/Perfect-NIO.git", from: "0.1.0"),
 ],
 targets: [
     .target(
@@ -841,7 +856,7 @@ await capture.capture("2026-07-14 10:00:00 [INFO] Server started")
 
 ## PerfectNIOCRUD
 
-`PerfectNIOCRUD` is a thin bridge target (`Sources/PerfectNIOCRUD/RouteCRUD.swift`) that adds two route operators, `.db(_:_:)` and `.table(_:_:_:)`, exposing a Perfect-CRUD `Database`/`Table` into the route pipeline so handlers can query/mutate through Perfect-CRUD without hand-wiring a connection per request. It depends on the local `../Perfect-CRUD` package (see [Package.swift](#packageswift)), and is exercised by the `PerfectNIOMySQLTests` test target against Perfect-MySQL.
+`PerfectNIOCRUD` is a thin bridge target (`Sources/PerfectNIOCRUD/RouteCRUD.swift`) that adds two route operators, `.db(_:_:)` and `.table(_:_:_:)`, exposing a Perfect-CRUD `Database`/`Table` into the route pipeline so handlers can query/mutate through Perfect-CRUD without hand-wiring a connection per request. It depends on Perfect-CRUD 3 (see [Requirements](#requirements)), and is exercised by the `PerfectNIOMySQLTests` test target against Perfect-MySQL.
 
 ```swift
 dependencies: [
@@ -927,7 +942,7 @@ public struct Server: Sendable {
 
 Errors thrown from a route: an `ErrorOutput` (or `TerminationType.error`) is sent as-is, with its status and text. Any other error becomes **500 Internal server error.** with a generic body; the error itself is logged (label `perfect.nio.server`), never sent to the client.
 
-`idleTimeout` closes connections that have no inbound reads for the specified duration. It is a defense against idle keep-alive connections and basic slowloris. Note: it measures *reads*, so streaming endpoints that take longer than the timeout to produce their first byte should use a larger value or `nil`.
+`idleTimeout` closes connections that have no inbound reads for the specified duration. It runs from the moment a connection is accepted, so it covers a client that sends nothing, a stalled TLS handshake and a request head that never finishes, as well as idle keep-alive connections; it is removed when a connection upgrades to WebSocket. It is a defense against idle connections and basic slowloris, but it resets on every byte, so a client trickling bytes is not bounded by it. Note: it measures *reads*, so streaming endpoints that take longer than the timeout to produce their first byte should use a larger value or `nil`.
 
 ### root()
 
@@ -1082,17 +1097,16 @@ for desc in routes.describe {
 
 ## Linux support
 
-The PerfectNIO library is expected to compile and run on Linux — SwiftNIO is fully cross-platform, and the `CZlib` system library target includes an `apt` provider (`zlib1g-dev`).
+PerfectNIO builds and runs on Linux. CI builds every target with warnings as errors and runs the whole test suite on Ubuntu 24.04 with Swift 6.2 and 6.4, debug and release, the live MySQL tests included.
 
-The `platforms: [.macOS(.v26)]` entry in `Package.swift` specifies the minimum **macOS** deployment target only — `.v26` is a very new (leading-edge) macOS requirement, not a typo; if you're targeting an older macOS you'll need to fork/pin an earlier commit. Linux support is always implicit in SwiftPM and is not restricted by that entry, and no explicit Linux platform entry is declared.
-
-> **Research needed:** Linux support has not been CI-verified as part of this resurrection. `URLSessionWebSocketTask` availability in `swift-corelibs-foundation` on Linux needs confirmation before the test suite can be declared Linux-clean. The `LinuxMain.swift` file was intentionally removed — Swift 5.4+ auto-discovers tests on Linux via `swift test` without it. Separately, `swift build`/`swift test` for this repo currently requires the sibling `../Perfect-CRUD` and `../Perfect-MySQL` checkouts to be present regardless of platform (see [Package.swift](#packageswift)).
+The `platforms: [.macOS(.v12)]` entry in `Package.swift` sets the minimum **macOS** deployment target only; Linux needs no platform entry.
 
 To build and test on Linux:
 
 ```bash
-# Install system dependencies (Ubuntu/Debian)
-apt-get install libssl-dev zlib1g-dev
+# System dependencies (Ubuntu/Debian). libmysqlclient-dev is needed only for this
+# package's own PerfectNIOMySQLTests target.
+apt-get install pkg-config zlib1g-dev libmysqlclient-dev
 
 swift build
 swift test
@@ -1100,12 +1114,39 @@ swift test
 
 ### macOS
 
-`swift build` / `swift run` / `swift test` work the same way locally on macOS — see [Quick start](#quick-start). No extra system packages are required; `CZlib`/libz ships with the OS.
+`swift build` / `swift run` / `swift test` work the same way locally on macOS — see [Quick start](#quick-start). The library needs no extra system packages (zlib ships with the OS). Building this package's tests needs a MySQL client library for Perfect-MySQL: `brew install mysql-client pkgconf` and `export PKG_CONFIG_PATH="$(brew --prefix mysql-client)/lib/pkgconfig"`.
 
 ### Live MySQL integration tests
 
-`Tests/PerfectNIOMySQLTests/MySQLIntegrationTests.swift` exercises `PerfectNIOCRUD` against a real MySQL instance and is skipped by default. Set `MYSQL_TESTS=1` in the environment to run it:
+`Tests/PerfectNIOMySQLTests` exercises `PerfectNIOCRUD` against a real MySQL server. The live tests are skipped unless `MYSQL_TESTS=1` and `MYSQL_TEST_PORT` name a test server; port 3306 is never assumed, and host `localhost` is refused because libmysql would use the Unix socket and ignore the port (see `MySQLTestEnvironment.swift` for every variable). The tests drop and recreate tables, so point them at a throwaway server:
 
 ```bash
-MYSQL_TESTS=1 swift test
+container run -d --rm --name nio-mysql-test --publish 127.0.0.1:3307:3306 \
+    --env MYSQL_ALLOW_EMPTY_PASSWORD=yes docker.io/library/mysql:8.4
+MYSQL_TESTS=1 MYSQL_TEST_PORT=3307 swift test
 ```
+
+With `MYSQL_REQUIRE_LIVE=1` (as in CI), an unconfigured or unreachable server fails the run instead of skipping.
+
+---
+
+## Security notes
+
+- **Request bodies** are capped at 10 MiB by default (`maxRequestBodySize`); see [Request body size limit](#request-body-size-limit). The limit is per request, so total memory also scales with the number of connections.
+- **Errors**: only an `ErrorOutput`'s text reaches the client. Any other error, including a `DecodingError`, is logged and answered with a generic message (500, or 400 from `decode`).
+- **Paths are not normalized.** The router matches the request path as sent, without percent-decoding it or removing `.` and `..` segments. The strings `wild` and `trailing` hand you are raw path text and may contain `..` or percent-encoded characters. Never join them onto a filesystem path (for example for `FileOutput(localPath:)`) without validating them first. PerfectNIO has no built-in static file route.
+- **Response headers**: a header value containing CR or LF is refused by NIO's header validator; the connection is closed without a response rather than the header being split.
+- **HTTP/1 framing**: requests with ambiguous framing (Content-Length with Transfer-Encoding, conflicting Content-Lengths, unknown transfer codings, obs-fold, bare LF) get 400 and the connection is closed.
+
+---
+
+## Migrating from the legacy branch
+
+The [`legacy`](../../tree/legacy) branch is the Swift 5 "Perfect 4 NIO" package (swift-tools-version 5.1, never tagged). 0.1.0 is a rewrite on Swift 6 concurrency that keeps the route-building style but is not source compatible. The main differences, not an exhaustive list:
+
+- **Serving.** `routes.bind(port:).listen().wait()` is gone. Use `try await Server(routes: routes, port: 8080).run()` for a long-running server, or `withServer { port in … }` for a scoped one (tests). TLS, idle timeout, `SO_REUSEPORT` and the body size limit are `Server` properties.
+- **Handlers are async and `@Sendable`.** Every route closure (`map`, `path`, `readBody`, `decode`, `statusCheck`, …) is `@Sendable` and may be `async`; captured state must be `Sendable`.
+- **Custom outputs** subclass `HTTPOutput` and produce the body with `nextChunk(allocator:) async throws -> ByteBuffer?`, returning nil at the end.
+- **WebSockets** are declared with `webSocket(protocol:options:_:)`, whose callback returns an async `WebSocketHandler` that reads and writes with `readMessage()`/`writeMessage(_:)`.
+- **Dependencies.** PerfectLib, Perfect-Mustache, Perfect-MIME, Perfect-CZlib-src and Perfect-CURL are no longer used; there is no Mustache output. Logging uses apple/swift-log. Database routes moved to the separate `PerfectNIOCRUD` product, on Perfect-CRUD 3.
+- **Platforms.** macOS 12+ (was 10.15) and Linux; Swift 6.2+.
