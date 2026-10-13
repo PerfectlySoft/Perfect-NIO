@@ -41,6 +41,7 @@ The pre-Swift-6 version of this package is preserved on the [`legacy`](../../tre
 - [Reference](#reference)
 - [Linux support](#linux-support)
 - [Security notes](#security-notes)
+- [Upgrading from `main` before 0.1.0](#upgrading-from-main-before-010)
 - [Migrating from the legacy branch](#migrating-from-the-legacy-branch)
 
 ---
@@ -142,14 +143,14 @@ try await Server(routes: routes, port: 8080).run()
 // serves /hello and /bye
 ```
 
-Closure form — the argument `$0` is a stand-in for the parent route:
+Builder form: the closure's argument `$0` stands in for the parent route, and each line is one child route:
 
 ```swift
-let routes = try root().v1.dir {[
-    $0.foo1 { "OK1" },
-    $0.foo2 { "OK2" },
-    $0.foo3 { "OK3" },
-]}.text()
+let routes = try root().v1.dir {
+    $0.foo1 { "OK1" }
+    $0.foo2 { "OK2" }
+    $0.foo3 { "OK3" }
+}.text()
 // serves /v1/foo1, /v1/foo2, /v1/foo3
 ```
 
@@ -166,11 +167,14 @@ All route closures are `async throws`. Return a value to pass it to the next ope
 Transform the current output value into something new.
 
 ```swift
-// Routes<HTTPRequest, [String]>
-let routes = try root().dir {[
-    $0.a { 1 }.map { "\($0)" },            // Int → String
-    $0.b { [1, 2, 3] }.map { "\($0)" },    // each Int → String
-]}.text()
+// The whole value: Int → String
+let label = root().a { 1 }.map { (n: Int) in "Item \(n)" }.text()
+
+// On a collection, map with an element closure maps each element: [Int] → [String]
+let labels = root().b { [1, 2, 3] }.map { (n: Int) in "Item \(n)" }.json()
+
+// …and with a closure over the whole collection, the collection: [Int] → Int
+let total = root().c { [1, 2, 3] }.map { (all: [Int]) in all.reduce(0, +) }.text()
 ```
 
 ### ext
@@ -193,6 +197,8 @@ let routes = try root().dir(
 
 Match a single path segment as a wildcard.
 
+> The segment is raw request text: not percent-decoded, and it can be `..`. Validate it before using it as a file name or path (see [Security notes](#security-notes)).
+
 ```swift
 // /*/suffix — captures the first segment
 root().wild { $1 }.suffix.text()
@@ -206,6 +212,8 @@ root().v1.wild(name: "id").info
 ### trailing
 
 Match all remaining path segments.
+
+> The remainder is raw request text: not percent-decoded or normalized, so `/files/../secret.txt` gives `"../secret.txt"`. Never join it onto a directory for `FileOutput` without validating it (see [Security notes](#security-notes)).
 
 ```swift
 // /files/** — captures everything after /files/
@@ -259,7 +267,7 @@ Uploads are also subject to the process's file-size limit (`RLIMIT_FSIZE`, e.g. 
 Read and decode the request body as a `Decodable` type. If the body (or the query and path values) can't be decoded into the type, the client gets **400 Bad Request**; the decoding error itself is logged, not sent back.
 
 ```swift
-struct CreateUser: Decodable { let name: String; let email: String }
+struct CreateUser: Codable { let name: String; let email: String }
 
 // Decoded value replaces the pipeline value
 root().POST.users.decode(CreateUser.self) { user in
@@ -324,11 +332,12 @@ let routes = protected.request { session, _ in session.userId }.text()
 Without a method constraint, a route answers any HTTP method. Constrain with a property:
 
 ```swift
-let routes = try root().dir {[
-    $0.GET.users   { listUsers()   }.json(),
-    $0.POST.users  { createUser()  }.json(),
-    $0.DELETE.users { deleteUsers() }.text(),
-]}.text()
+// Each child is already an HTTPOutput route (json()/text()), so dir needs no text() after it.
+let routes = try root().dir {
+    $0.GET.users    { listUsers()   }.json()
+    $0.POST.users   { createUser()  }.json()
+    $0.DELETE.users { deleteUsers() }.text()
+}
 ```
 
 Accept multiple methods with `method(_:)`:
@@ -362,7 +371,7 @@ root().user { User(id: 1, name: "Alice") }.json()
 
 ### compressed()
 
-Wraps any `HTTPOutput` with gzip/deflate compression. Content shorter than ~14 KB or with an image/video/audio content type is passed through uncompressed.
+Wraps any `HTTPOutput` with gzip/deflate compression, chosen from the request's `Accept-Encoding` (a coding refused with `q=0` is never used). Content shorter than ~14 KB or with an image/video/audio content type is passed through uncompressed. Every response carries `Vary: Accept-Encoding`, compressed or not.
 
 ```swift
 root { BytesOutput(body: largeBytes) as HTTPOutput }.compressed()
@@ -378,7 +387,7 @@ root().logo {
 }.ext("png")
 ```
 
-A directory path serves its `index.html` (404 if there is none). A `Range: bytes=…` request is answered with 206 and the first satisfiable range; an unsatisfiable or malformed range gets the whole file. The file is read in chunks of up to 256 KiB. `localPath` is used as given: see [Security notes](#security-notes) before building it from request input.
+A directory path serves its `index.html` (404 if there is none). Responses carry a quoted `ETag` and `Last-Modified`; `If-None-Match` (lists, weak tags, `*`) gets 304. A `Range: bytes=…` request is answered with 206 and the first satisfiable range, unless `If-Range` names a validator that no longer matches, in which case the whole file is sent; an unsatisfiable or malformed range gets the whole file. The file is read in chunks of up to 256 KiB. `localPath` is used as given: see [Security notes](#security-notes) before building it from request input.
 
 ---
 
@@ -473,10 +482,10 @@ Pass a `TLSConfiguration` to `Server`. The private key and certificate can be lo
 ```swift
 import NIOSSL
 
-let cert = try NIOSSLCertificate(file: "/etc/ssl/cert.pem", format: .pem)
-let key  = try NIOSSLPrivateKey(file: "/etc/ssl/key.pem",  format: .pem)
-let tls  = TLSConfiguration.makeServerConfiguration(
-    certificateChain: [.certificate(cert)],
+let chain = try NIOSSLCertificate.fromPEMFile("/etc/ssl/cert.pem")   // leaf first, then intermediates
+let key   = try NIOSSLPrivateKey(file: "/etc/ssl/key.pem", format: .pem)
+let tls   = TLSConfiguration.makeServerConfiguration(
+    certificateChain: chain.map { .certificate($0) },
     privateKey: .privateKey(key)
 )
 
@@ -737,11 +746,15 @@ Implement this protocol (all methods have default implementations) to expose hos
 ```swift
 import PerfectAdminConsole
 
+// pool, cache, certManager, certWatchers, lassoPool, loadCert() and AdminError stand for
+// your app's own state and helpers.
 actor MyServer: AdminConsoleDelegate {
-    // Phase 1 — status
-    var serverPort: Int { 9090 }
-    var serverStartTime: Date { startedAt }
-    var registeredRoutes: [RouteInfo] { routes.map { RouteInfo(uri: $0.key) } }
+    private var currentConfig = "production"
+
+    // Phase 1 — status. The synchronous requirements must be nonisolated on an actor.
+    nonisolated var serverPort: Int { 9090 }
+    nonisolated let serverStartTime = Date()
+    nonisolated var registeredRoutes: [RouteInfo] { appRoutes.describe.map { RouteInfo(uri: $0.uri) } }
     func additionalStatusSections() async -> [AdminStatusSection] {
         [AdminStatusSection(title: "Database", items: [("pool", "\(pool.count)")])]
     }
@@ -871,13 +884,13 @@ import PerfectNIOCRUD
 struct User: Codable, Sendable { let id: Int; let name: String }
 
 // .db — hand the raw Database through to your own closure
-let routes = root().users.db(makeDatabase()) { _, db in
-    try db.table(User.self).select()
+let routes = root().users.db(try makeDatabase()) { _, db in
+    try db.table(User.self).select().map { $0 }
 }.json()
 
 // .table — go straight to a Table<User, Database<C>>
-let routes2 = root().users.table(makeDatabase(), User.self) { _, table in
-    try table.select()
+let routes2 = root().users.table(try makeDatabase(), User.self) { _, table in
+    try table.select().map { $0 }
 }.json()
 ```
 
@@ -892,11 +905,11 @@ let pool = try DatabaseConnectionPool(
 )
 
 let routes = root().users.db(pool: pool) { _, db in
-    try db.table(User.self).select()
+    try db.table(User.self).select().map { $0 }
 }.json()
 
 let routes2 = root().users.table(pool: pool, User.self) { _, table in
-    try table.select()
+    try table.select().map { $0 }
 }.json()
 ```
 
@@ -934,6 +947,8 @@ public struct Server: Sendable {
 
     /// Bind, run body, then shut down (structured-concurrency lifecycle).
     @discardableResult
+    /// Runs in the caller's isolation (nonisolated(nonsending)), so it can be called from the main actor.
+    nonisolated(nonsending)
     public func withServer<R>(_ body: (_ boundPort: Int) async throws -> R) async throws -> R
 }
 ```
@@ -965,7 +980,7 @@ public struct Routes<InType, OutType>: Sendable {
 ### HTTPRequest
 
 ```swift
-public protocol HTTPRequest: AnyObject {
+public protocol HTTPRequest: AnyObject, Sendable {
     var method: HTTPMethod { get }
     var uri: String { get }
     var headers: HTTPHeaders { get }
@@ -1136,9 +1151,30 @@ With `MYSQL_REQUIRE_LIVE=1` (as in CI), an unconfigured or unreachable server fa
 - **Errors**: only an `ErrorOutput`'s text reaches the client. Any other error, including a `DecodingError`, is logged and answered with a generic message (500, or 400 from `decode`).
 - **Paths are not normalized.** The router matches the request path as sent, without percent-decoding it or removing `.` and `..` segments. The strings `wild` and `trailing` hand you are raw path text and may contain `..` or percent-encoded characters. Never join them onto a filesystem path (for example for `FileOutput(localPath:)`) without validating them first. PerfectNIO has no built-in static file route.
 - **Response headers**: a header value containing CR or LF is refused by NIO's header validator; the connection is closed without a response rather than the header being split.
-- **HTTP/1 framing**: requests with ambiguous framing (Content-Length with Transfer-Encoding, conflicting Content-Lengths, unknown transfer codings, obs-fold, bare LF) get 400 and the connection is closed.
+- **HTTP/1 framing**: requests with ambiguous framing (Content-Length with Transfer-Encoding, conflicting Content-Lengths, unknown transfer codings, obs-fold, bare LF) or two `Host` headers get 400 and the connection is closed. Responses are framed by the server: a body of unknown length is chunked on HTTP/1.1 and ends the connection on HTTP/1.0; HEAD, 1xx, 204 and 304 responses carry no body.
+- **WebSocket handshakes** that aren't upgraded (wrong path, a refusing route, a missing key or a version other than 13) are answered as HTTP, then the connection is closed. A `webSocket` route answers a plain or malformed request with 426 and `Sec-WebSocket-Version: 13`.
 
 ---
+
+## Upgrading from `main` before 0.1.0
+
+Two changes made for Swift 6.4 can stop code that built against `main` from compiling:
+
+- **`SendableMetatype` on generic helpers.** `decode(_:)`, `json()`, `text()` and the element-wise `map` capture their type in `@Sendable` closures, so it must be `SendableMetatype`. Every concrete, non-isolated type already is, so ordinary call sites are unaffected, but a generic helper must add the constraint, and a type isolated to a global actor (a `@MainActor` class) can't be used:
+
+  ```swift
+  func decodeEndpoint<T: Decodable & SendableMetatype>(_: T.Type) -> Routes<HTTPRequest, T> {
+      root().decode(T.self)
+  }
+  func jsonEndpoint<T: Encodable & SendableMetatype>(
+      _ load: @Sendable @escaping () async throws -> T
+  ) -> Routes<HTTPRequest, HTTPOutput> {
+      root(load).json()
+  }
+  ```
+
+  The same goes for `CustomStringConvertible & SendableMetatype` with `text()`, and `Collection & SendableMetatype` for `map` over elements.
+- **`HTTPMethod` is no longer `Hashable`** through this package (it declared a public retroactive conformance of NIO's type). `Set<HTTPMethod>`, dictionaries keyed by `HTTPMethod`, and generics that require `Hashable` of it no longer compile. Key by `method.name`, or declare the conformance in your own module: `extension HTTPMethod: @retroactive Hashable { public func hash(into hasher: inout Hasher) { hasher.combine(name) } }`.
 
 ## Migrating from the legacy branch
 

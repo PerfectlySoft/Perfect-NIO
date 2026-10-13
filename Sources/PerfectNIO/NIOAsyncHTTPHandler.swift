@@ -146,7 +146,7 @@ enum NIOAsyncHTTPServer {
 					//   2. Client disconnect mid-keep-alive: iterator.next() returns nil (or throws),
 					//      causing assembleRequest to return nil and exit the loop cleanly — equivalent
 					//      to the legacy handler's explicit inputClosed ChannelEvent path.
-					//   3. Idle timeout: handled by IdleStateHandler in Server.serve() (Phase 5).
+					//   3. Idle timeout: handled by IdleTimeoutHandler (see Server.idleTimeout).
 					//      Future hardening: per-request receive deadline for slow-trickle slowloris
 					//      (read-idle timer resets on each byte; a whole-request deadline does not).
 					if !keepAlive { break }

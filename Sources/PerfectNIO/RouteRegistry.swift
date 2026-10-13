@@ -205,6 +205,10 @@ public extension Routes {
 // MARK: - wild / trailing
 
 public extension Routes {
+	/// Matches any single path segment and passes it to `call` with the current value.
+	///
+	/// The segment is the request's raw path text: not percent-decoded, and it may be `.` or
+	/// `..`. Validate it before using it as a file name or path.
 	func wild<NewOut>(_ call: @Sendable @escaping (OutType, String) async throws -> NewOut) -> Routes<InType, NewOut> {
 		apply(paths: { $0.appending(component: "*") }) { ctx, output in
 			let component = ctx.currentComponent ?? "-error-"
@@ -212,6 +216,10 @@ public extension Routes {
 			return (newCtx, try await call(output, component))
 		}
 	}
+	/// Matches any single path segment and stores it in `uriVariables[name]`.
+	///
+	/// The value is the request's raw path text: not percent-decoded, and it may be `.` or `..`.
+	/// Validate it before using it as a file name or path.
 	func wild(name: String) -> Routes {
 		apply(paths: { $0.appending(component: "*") }) { ctx, output in
 			var newCtx = ctx
@@ -222,6 +230,12 @@ public extension Routes {
 			return (newCtx, output)
 		}
 	}
+	/// Matches the rest of the path (any number of segments) and passes it, without a leading
+	/// slash, to `call` with the current value.
+	///
+	/// The text is the request's raw path: not percent-decoded or normalized, so it can contain
+	/// `..` segments (`/files/../secret.txt` gives `"../secret.txt"`). Never join it onto a
+	/// directory for `FileOutput(localPath:)` without validating it.
 	func trailing<NewOut>(_ call: @Sendable @escaping (OutType, String) async throws -> NewOut) -> Routes<InType, NewOut> {
 		apply(paths: { $0.appending(component: "**") }) { ctx, output in
 			let trailing = ctx.trailingComponents
