@@ -377,18 +377,33 @@ private let requestDecodingLogger = Logger(label: "perfect.nio.decode")
 /// the client's fault (400); any other `DecodingError`, such as one from the handler decoding
 /// its own data, is the server's (500). The mark travels with the error itself, so a handler
 /// that catches a request-decode failure and then fails on its own data still gets a 500.
-struct RequestDecodingFailure: Error, CustomStringConvertible {
-	let underlying: (any Error)?
-	var description: String {
+///
+/// Use `DecodingError.isRequestDecodingFailure` to test for the mark and
+/// `DecodingError.originalUnderlyingError` for the error the decoder itself reported.
+public struct RequestDecodingFailure: Error, CustomStringConvertible {
+	/// The decoder's own `underlyingError`, if it had one.
+	public let underlying: (any Error)?
+	public var description: String {
 		underlying.map { "\(String(reflecting: $0)) (decoding the request)" } ?? "decoding the request"
 	}
 }
 
-extension DecodingError {
+public extension DecodingError {
+	/// True if `HTTPRequest.decode(_:content:)` threw this error: the client's data didn't fit
+	/// the type, and the server answers 400 if it escapes a route.
 	var isRequestDecodingFailure: Bool {
 		context?.underlyingError is RequestDecodingFailure
 	}
 
+	/// The context's `underlyingError` as the decoder reported it, looking through the
+	/// `RequestDecodingFailure` mark.
+	var originalUnderlyingError: (any Error)? {
+		guard let underlying = context?.underlyingError else { return nil }
+		return (underlying as? RequestDecodingFailure)?.underlying ?? underlying
+	}
+}
+
+extension DecodingError {
 	var markedAsRequestDecodingFailure: DecodingError {
 		guard !isRequestDecodingFailure, let context else { return self }
 		let marked = Context(codingPath: context.codingPath, debugDescription: context.debugDescription,

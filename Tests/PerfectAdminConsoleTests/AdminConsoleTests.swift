@@ -2086,3 +2086,43 @@ final class AdminJSONBodyTests: XCTestCase {
         }
     }
 }
+
+
+// MARK: - PerfectNIO public API (imported without @testable)
+
+/// The smallest outside-the-module HTTPRequest.
+private final class StubRequest: HTTPRequest, @unchecked Sendable {
+    var channel: Channel? { nil }
+    var method: HTTPMethod { .POST }
+    var uri: String { "/" }
+    var headers: HTTPHeaders { [:] }
+    var uriVariables: [String: String] = [:]
+    var path: String { "/" }
+    var searchArgs: QueryDecoder? { nil }
+    var contentType: String? { "application/json" }
+    var contentLength: Int { 0 }
+    var contentRead: Int { 0 }
+    var contentConsumed: Int { 0 }
+    var localAddress: SocketAddress? { nil }
+    var remoteAddress: SocketAddress? { nil }
+    func readSomeContent() async throws -> [ByteBuffer] { [] }
+    func readContent() async throws -> HTTPRequestContentType { .none }
+}
+
+final class RequestDecodingFailureAPITests: XCTestCase {
+    private struct Payload: Decodable { let a: Int }
+
+    /// A handler can tell a request-decoding failure apart and still reach the decoder's own
+    /// underlying error through public API.
+    func testRequestDecodingFailureIsPublic() throws {
+        let request = StubRequest()
+        do {
+            _ = try request.decode(Payload.self, content: .other(Array("{not json".utf8)))
+            XCTFail("expected a DecodingError")
+        } catch let error as DecodingError {
+            XCTAssertTrue(error.isRequestDecodingFailure)
+            XCTAssertNotNil(error.originalUnderlyingError)
+            XCTAssertFalse(error.originalUnderlyingError is RequestDecodingFailure)
+        }
+    }
+}
