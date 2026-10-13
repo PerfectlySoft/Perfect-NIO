@@ -100,15 +100,20 @@ public struct Server: Sendable {
 	/// each with its own cert, hot-swappable without restarting the server. When both `tls`
 	/// and `tlsManager` are set, `tlsManager` takes precedence.
 	public var tlsManager: TLSContextManager?
-	/// Closes a connection after this much time with no inbound read. `nil` disables the timeout.
+	/// Closes an idle connection after this long. `nil` disables the timeout.
 	///
-	/// It runs from the moment a connection is accepted (TLS handshake and first request head
-	/// included) and is removed when a connection upgrades to WebSocket. This bounds idle and
-	/// keep-alive connections (resource-exhaustion / basic slowloris defense).
-	/// Note: it measures *reads*, so a route handler that takes longer than this to produce its
-	/// first byte on an otherwise-quiet connection will have the connection closed — give streaming
-	/// / long-poll endpoints a larger value or `nil`. Full slow-trickle slowloris mitigation
-	/// (a whole-request deadline) is a separate, later hardening step.
+	/// It runs from the moment a connection is accepted. While no response is pending (before
+	/// the first request, while a request head or body is arriving, between keep-alive
+	/// requests) the connection is idle when nothing has been read for this long; that covers a
+	/// client that sends nothing, a stalled TLS handshake and a request that never finishes.
+	/// While a response is pending (the route is working, or the body is being sent) the
+	/// connection is idle only when the client has stopped reading: writes are backed up and
+	/// none has completed for this long. A slow download, a long poll or a stream of events is
+	/// not cut off. The timeout is removed when a connection upgrades to WebSocket.
+	///
+	/// It resets on every byte, so a client that trickles a request slowly isn't bounded by it;
+	/// there is no whole-request deadline. Checks run every quarter of the timeout, so a
+	/// connection closes between 1 and 1.25 times the timeout after it went idle.
 	public var idleTimeout: TimeAmount?
 	/// Number of server sockets to open on the same port via `SO_REUSEPORT` (kernel load-balances
 	/// accepts across them). 1 = a single socket with no `SO_REUSEPORT`.
@@ -354,6 +359,7 @@ public struct Server: Sendable {
 		var extraHTTPHandlers: [RemovableChannelHandler] = [requestDecoder]
 		try sync.addHandler(responseEncoder)
 		try sync.addHandler(requestDecoder)
+		try IdleTimeout.addTracker(idleHandlers, after: requestDecoder, to: sync, extraHTTPHandlers: &extraHTTPHandlers)
 		let pipeliningHandler = HTTPServerPipelineHandler()
 		try sync.addHandler(pipeliningHandler)
 		extraHTTPHandlers.append(pipeliningHandler)
@@ -401,6 +407,7 @@ public struct Server: Sendable {
 		var extraHTTPHandlers: [RemovableChannelHandler] = [requestDecoder]
 		try sync.addHandler(responseEncoder)
 		try sync.addHandler(requestDecoder)
+		try IdleTimeout.addTracker(idleHandlers, after: requestDecoder, to: sync, extraHTTPHandlers: &extraHTTPHandlers)
 		let pipeliningHandler = HTTPServerPipelineHandler()
 		try sync.addHandler(pipeliningHandler)
 		extraHTTPHandlers.append(pipeliningHandler)
@@ -618,40 +625,155 @@ extension HTTPResponseEncoder.Configuration {
 	}
 }
 
-/// The read-idle timeout installed on every accepted connection.
+/// The idle timeout installed on every accepted connection. See `Server.idleTimeout`.
 enum IdleTimeout {
 	/// `@unchecked Sendable`: created, and only used, on the channel's event loop.
 	final class Handlers: @unchecked Sendable {
-		let state: IdleStateHandler
-		let closer = IdleTimeoutHandler()
-		init(timeout: TimeAmount) { state = IdleStateHandler(readTimeout: timeout) }
+		let timer: IdleTimeoutHandler
+		let tracker: HTTPExchangeTracker
+		init(timeout: TimeAmount) {
+			timer = IdleTimeoutHandler(timeout: timeout)
+			tracker = HTTPExchangeTracker(timer: timer)
+		}
 	}
 
+	/// Adds the timer at the front of the pipeline, ahead of TLS and HTTP, so it measures raw
+	/// reads and writes. The tracker goes into the HTTP pipeline later (see `addTracker`).
 	static func add(to channel: Channel, timeout: TimeAmount) throws -> Handlers {
 		let handlers = Handlers(timeout: timeout)
-		try channel.pipeline.syncOperations.addHandler(handlers.state, position: .first)
-		try channel.pipeline.syncOperations.addHandler(handlers.closer, position: .after(handlers.state))
+		try channel.pipeline.syncOperations.addHandler(handlers.timer, position: .first)
 		return handlers
+	}
+
+	/// Adds the tracker right after the HTTP request decoder, so it sees request and response
+	/// parts. It is one of the upgrader's extra HTTP handlers, removed on a WebSocket upgrade.
+	static func addTracker(_ handlers: Handlers?, after decoder: ChannelHandler,
+	                       to sync: ChannelPipeline.SynchronousOperations,
+	                       extraHTTPHandlers: inout [RemovableChannelHandler]) throws {
+		guard let handlers else { return }
+		try sync.addHandler(handlers.tracker, position: .after(decoder))
+		extraHTTPHandlers.append(handlers.tracker)
 	}
 
 	/// Called on the event loop when a connection is upgraded to WebSocket.
 	static func remove(_ handlers: Handlers, from channel: Channel) {
-		channel.pipeline.syncOperations.removeHandler(handlers.closer, promise: nil)
-		channel.pipeline.syncOperations.removeHandler(handlers.state, promise: nil)
+		channel.pipeline.syncOperations.removeHandler(handlers.timer, promise: nil)
 	}
 }
 
-/// Closes a connection when `IdleStateHandler` reports it idle. Sits directly after the
-/// `IdleStateHandler` in the pipeline; constructed on the event loop, never shared.
-/// `@unchecked Sendable`: only touched on its channel's event loop.
-final class IdleTimeoutHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
+/// Closes an idle connection. While no response is pending (before the first request, while
+/// a request is being received, between keep-alive requests) the connection is idle when
+/// nothing has been read for `timeout`. While a response is pending the route is working or
+/// the response is being sent, which can take as long as it takes (a slow download, a long
+/// poll, server-sent events), so the connection is idle only when its writes are backed up
+/// (the client isn't reading) and none has completed for `timeout`.
+///
+/// Sits first in the pipeline. `@unchecked Sendable`: only touched on its channel's event loop.
+final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @unchecked Sendable {
 	typealias InboundIn = NIOAny
-	func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
-		if event is IdleStateHandler.IdleStateEvent {
-			context.close(promise: nil)
-		} else {
-			context.fireUserInboundEventTriggered(event)
+	typealias InboundOut = NIOAny
+	typealias OutboundIn = NIOAny
+	typealias OutboundOut = NIOAny
+
+	private let timeout: TimeAmount
+	private var lastRead = NIODeadline.now()
+	private var lastWrite = NIODeadline.now()
+	private var responsesPending = 0
+	private var check: RepeatedTask?
+
+	init(timeout: TimeAmount) {
+		self.timeout = timeout
+	}
+
+	/// A request has been fully received; its response is now pending.
+	func requestEnded() {
+		responsesPending += 1
+	}
+
+	/// A response has been fully written. With none pending, the read-idle clock restarts.
+	func responseEnded() {
+		responsesPending = max(0, responsesPending - 1)
+		if responsesPending == 0 {
+			lastRead = .now()
 		}
+	}
+
+	func handlerAdded(context: ChannelHandlerContext) {
+		lastRead = .now()
+		lastWrite = .now()
+		let interval = TimeAmount.nanoseconds(max(timeout.nanoseconds / 4, 1_000_000))
+		let bound = NIOLoopBound(context, eventLoop: context.eventLoop)
+		check = context.eventLoop.scheduleRepeatedTask(initialDelay: interval, delay: interval) { [weak self] _ in
+			self?.closeIfIdle(context: bound.value)
+		}
+	}
+
+	func handlerRemoved(context: ChannelHandlerContext) {
+		check?.cancel()
+		check = nil
+	}
+
+	func channelInactive(context: ChannelHandlerContext) {
+		check?.cancel()
+		check = nil
+		context.fireChannelInactive()
+	}
+
+	func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+		lastRead = .now()
+		context.fireChannelRead(data)
+	}
+
+	func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+		let written = promise ?? context.eventLoop.makePromise()
+		written.futureResult.assumeIsolated().whenSuccess { [weak self] in
+			self?.lastWrite = .now()
+		}
+		context.write(data, promise: written)
+	}
+
+	private func closeIfIdle(context: ChannelHandlerContext) {
+		let now = NIODeadline.now()
+		let idle: Bool
+		if responsesPending > 0 {
+			idle = !context.channel.isWritable && now - lastWrite >= timeout
+		} else {
+			idle = now - lastRead >= timeout
+		}
+		if idle {
+			check?.cancel()
+			check = nil
+			context.close(promise: nil)
+		}
+	}
+}
+
+/// Tells the `IdleTimeoutHandler` when a request has been received and when its response has
+/// been written. `@unchecked Sendable`: only touched on its channel's event loop.
+final class HTTPExchangeTracker: ChannelDuplexHandler, RemovableChannelHandler, @unchecked Sendable {
+	typealias InboundIn = HTTPServerRequestPart
+	typealias InboundOut = HTTPServerRequestPart
+	typealias OutboundIn = HTTPServerResponsePart
+	typealias OutboundOut = HTTPServerResponsePart
+
+	private let timer: IdleTimeoutHandler
+
+	init(timer: IdleTimeoutHandler) {
+		self.timer = timer
+	}
+
+	func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+		if case .end = Self.unwrapInboundIn(data) {
+			timer.requestEnded()
+		}
+		context.fireChannelRead(data)
+	}
+
+	func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+		if case .end = Self.unwrapOutboundIn(data) {
+			timer.responseEnded()
+		}
+		context.write(data, promise: promise)
 	}
 }
 

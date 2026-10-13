@@ -942,7 +942,7 @@ public struct Server: Sendable {
 
 Errors thrown from a route: an `ErrorOutput` (or `TerminationType.error`) is sent as-is, with its status and text. Any other error becomes **500 Internal server error.** with a generic body; the error itself is logged (label `perfect.nio.server`), never sent to the client.
 
-`idleTimeout` closes connections that have no inbound reads for the specified duration. It runs from the moment a connection is accepted, so it covers a client that sends nothing, a stalled TLS handshake and a request head that never finishes, as well as idle keep-alive connections; it is removed when a connection upgrades to WebSocket. It is a defense against idle connections and basic slowloris, but it resets on every byte, so a client trickling bytes is not bounded by it. Note: it measures *reads*, so streaming endpoints that take longer than the timeout to produce their first byte should use a larger value or `nil`.
+`idleTimeout` closes idle connections. It runs from the moment a connection is accepted. While no response is pending (before the first request, while a request arrives, between keep-alive requests), a connection is idle when nothing has been read for the timeout, which covers a client that sends nothing, a stalled TLS handshake and a request head that never finishes. While a response is pending, a connection is idle only when the client has stopped reading (writes backed up, none completed for the timeout), so slow downloads, long polls and event streams are not cut off. It is removed when a connection upgrades to WebSocket. It resets on every byte, so a client trickling a request slowly is not bounded by it.
 
 ### root()
 

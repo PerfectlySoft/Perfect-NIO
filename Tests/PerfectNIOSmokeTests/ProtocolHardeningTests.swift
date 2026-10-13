@@ -25,6 +25,22 @@ private final class StreamOutput: HTTPOutput, @unchecked Sendable {
     }
 }
 
+/// `count` chunks of `size` bytes, `delay` seconds apart; no Content-Length.
+private final class SlowOutput: HTTPOutput, @unchecked Sendable {
+    private var remaining: Int
+    private let size: Int
+    private let delay: Double
+    init(count: Int, size: Int = 10, delay: Double) {
+        remaining = count; self.size = size; self.delay = delay
+    }
+    override func nextChunk(allocator: ByteBufferAllocator) async throws -> ByteBuffer? {
+        guard remaining > 0 else { return nil }
+        remaining -= 1
+        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        return allocator.buffer(repeating: 0x61, count: size)
+    }
+}
+
 @Suite("HTTP protocol hardening")
 struct ProtocolHardeningTests {
 
@@ -40,6 +56,51 @@ struct ProtocolHardeningTests {
             let r = await rawHTTP(port: port, bytes.isEmpty ? [] : [raw(bytes)], timeout: 5)
             #expect(r.closed, "\(name): the server never closed the connection")
             #expect(r.elapsed < 4, "\(name)")
+        }
+    }
+
+    /// The idle timeout used to measure reads only, so a response that took longer than the
+    /// timeout to deliver (a slow stream, a long poll, a slow download) was cut off mid-body.
+    @Test func slowResponseOutlivesTheIdleTimeout() async throws {
+        let routes = try root().dir(
+            root().path("slow").map { SlowOutput(count: 6, delay: 0.25) as HTTPOutput },
+            root().path("poll").map { () async throws -> HTTPOutput in
+                try await Task.sleep(nanoseconds: 1_200_000_000)
+                return TextOutput("late")
+            }
+        )
+        try await Server(routes: routes, port: 0, idleTimeout: .milliseconds(400)).withServer { port in
+            let slow = await rawHTTP(port: port, [rawHead("GET", "/slow", [("Connection", "close")])])
+            #expect(slow.text.hasSuffix("0\r\n\r\n"), "\(slow.text.debugDescription)")
+            #expect(slow.text.components(separatedBy: "aaaaaaaaaa").count == 7)
+            let poll = await rawHTTP(port: port, [rawHead("GET", "/poll", [("Connection", "close")])])
+            #expect(poll.body == "late", "\(poll.text.debugDescription)")
+        }
+    }
+
+    @Test func slowUploadIsNotCutOff() async throws {
+        let routes = root().POST.path("up").readBody { (_, c) -> String in
+            if case .other(let b) = c { return "\(b.count)" }
+            return "none"
+        }.text()
+        try await Server(routes: routes, port: 0, idleTimeout: .milliseconds(500)).withServer { port in
+            let parts = [rawHead("POST", "/up", [("Content-Length", "6"), ("Connection", "close")])]
+                + (0..<6).map { _ in Array("x".utf8) }
+            let r = await rawHTTP(port: port, parts, partDelay: 0.3)
+            #expect(r.status == 200)
+            #expect(r.body == "6")
+        }
+    }
+
+    /// A client that stops reading a large response is still timed out: its writes back up and
+    /// none completes.
+    @Test func clientThatStopsReadingIsClosed() async throws {
+        let size = 64 * 1024 * 1024
+        let routes = root().path("big").map { BytesOutput(body: Array(repeating: 0x61, count: size)) as HTTPOutput }
+        try await Server(routes: routes, port: 0, idleTimeout: .milliseconds(300)).withServer { port in
+            let r = await rawHTTP(port: port, [rawHead("GET", "/big", [("Connection", "close")])], timeout: 5, readDelay: 3)
+            #expect(r.text.utf8.count < size)
+            #expect(r.closed)
         }
     }
 

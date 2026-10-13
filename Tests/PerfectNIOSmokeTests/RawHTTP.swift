@@ -48,7 +48,10 @@ struct RawHTTPResponse {
 
 /// Connects to 127.0.0.1:`port`, sends each of `parts` in order (stopping quietly if the server
 /// closes first), then reads until the server closes or `timeout` seconds pass without data.
-func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5) -> RawHTTPResponse {
+/// `partDelay` waits between parts (a slow upload); `readDelay` waits before reading anything
+/// (a client that isn't reading).
+func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5, partDelay: Double = 0,
+             readDelay: Double = 0) -> RawHTTPResponse {
     let start = Date()
     #if canImport(Darwin)
     let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -77,7 +80,8 @@ func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5) -> RawHTTPRespo
     precondition(connected == 0, "connect() failed: \(errno)")
 
     var sent = 0
-    sending: for part in parts {
+    sending: for (index, part) in parts.enumerated() {
+        if index > 0 && partDelay > 0 { Thread.sleep(forTimeInterval: partDelay) }
         var offset = 0
         while offset < part.count {
             let n = part.withUnsafeBytes { send(fd, $0.baseAddress! + offset, part.count - offset, sendFlags) }
@@ -88,6 +92,7 @@ func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5) -> RawHTTPRespo
         }
     }
 
+    if readDelay > 0 { Thread.sleep(forTimeInterval: readDelay) }
     var received: [UInt8] = []
     var closed = false
     var buf = [UInt8](repeating: 0, count: 64 * 1024)
@@ -124,10 +129,12 @@ let rawLastChunk: [UInt8] = Array("0\r\n\r\n".utf8)
 /// `rawHTTP` on a thread of its own, so its blocking reads don't hold a thread the server's
 /// connection tasks need. (Not a Dispatch queue: on Linux the global concurrent queues and
 /// Swift's global executor share one thread pool.)
-func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5) async -> RawHTTPResponse {
+func rawHTTP(port: Int, _ parts: [[UInt8]], timeout: Double = 5, partDelay: Double = 0,
+             readDelay: Double = 0) async -> RawHTTPResponse {
     await withCheckedContinuation { continuation in
         Thread {
-            continuation.resume(returning: rawHTTP(port: port, parts, timeout: timeout) as RawHTTPResponse)
+            continuation.resume(returning: rawHTTP(port: port, parts, timeout: timeout, partDelay: partDelay,
+                                                   readDelay: readDelay) as RawHTTPResponse)
         }.start()
     }
 }
