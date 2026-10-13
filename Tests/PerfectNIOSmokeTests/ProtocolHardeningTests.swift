@@ -94,6 +94,22 @@ struct ProtocolHardeningTests {
         }
     }
 
+    /// A client that sends a request to a slow route and then closes its side (a disconnect)
+    /// used to keep the server's socket open until the route finished: the response was
+    /// pending and the channel writable, so it never counted as idle (the review saw 50
+    /// sockets in CLOSE_WAIT). After the client's FIN, nothing written for the timeout closes it.
+    @Test func disconnectedClientIsReleasedWhileTheRouteRuns() async throws {
+        let routes = root().path("hang").map { () async throws -> String in
+            try await Task.sleep(nanoseconds: 30_000_000_000)
+            return "late"
+        }.text()
+        try await Server(routes: routes, port: 0, idleTimeout: .seconds(1)).withServer { port in
+            let r = await rawHTTP(port: port, [rawHead("GET", "/hang")], timeout: 20, halfClose: true)
+            #expect(r.closed)
+            #expect(r.elapsed < 10, "the connection stayed open for \(r.elapsed) s")
+        }
+    }
+
     /// A client that stops reading a large response is still timed out: its writes back up and
     /// none completes.
     @Test func clientThatStopsReadingIsClosed() async throws {

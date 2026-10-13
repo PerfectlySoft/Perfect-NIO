@@ -678,6 +678,11 @@ enum IdleTimeout {
 /// response and wake the server only in big batches. A client that has stopped reading makes
 /// neither, and is closed.
 ///
+/// Once the client has closed its side (`inputClosed`), the connection is also closed when
+/// nothing has been written for `timeout`, writable or not: otherwise a client that sent a
+/// request to a slow route and went away would pin the socket until the route finished. (A
+/// client that only half-closes and waits longer than the timeout for its response is cut too.)
+///
 /// Sits first in the pipeline. `@unchecked Sendable`: only touched on its channel's event loop.
 final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @unchecked Sendable {
 	typealias InboundIn = NIOAny
@@ -695,6 +700,7 @@ final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @
 	private var lastRead = NIODeadline.now()
 	private var lastProgress = NIODeadline.now()
 	private var responsesPending = 0
+	private var inputClosed = false
 	private var kernelSent: UInt64?
 	private var check: RepeatedTask?
 
@@ -741,6 +747,15 @@ final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @
 		context.fireChannelRead(data)
 	}
 
+	func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+		if let event = event as? ChannelEvent, event == .inputClosed, !inputClosed {
+			inputClosed = true
+			// Restart the clock: from here only written progress keeps the connection.
+			lastProgress = .now()
+		}
+		context.fireUserInboundEventTriggered(event)
+	}
+
 	func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
 		guard case .byteBuffer(var buffer) = Self.unwrapOutboundIn(data), buffer.readableBytes > Self.sliceSize else {
 			context.write(data, promise: tracking(promise, context: context))
@@ -768,7 +783,7 @@ final class IdleTimeoutHandler: ChannelDuplexHandler, RemovableChannelHandler, @
 			if !context.channel.isWritable {
 				sampleKernelProgress(context: context)
 			}
-			idle = !context.channel.isWritable && now - lastProgress >= timeout
+			idle = (inputClosed || !context.channel.isWritable) && now - lastProgress >= timeout
 		} else {
 			idle = now - lastRead >= timeout
 		}
