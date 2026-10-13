@@ -126,8 +126,11 @@ class RequestReader<K : CodingKey>: KeyedDecodingContainerProtocol {
 		switch str {
 		case .string(let string):
 			finalStr = string
-		case .file(let file):
-			finalStr = "\(file.tmpFileName);\(file.contentType);\(file.fileName);\(file.fileSize)"
+		case .file:
+			// A file part decodes only as FileUpload. Read as text it used to give
+			// "<server temp path>;<type>;<name>;<size>", which an app could echo to the client.
+			throw DecodingError.typeMismatch(T.self, .init(codingPath: codingPath + [key],
+				debugDescription: "A file upload can only be decoded as FileUpload."))
 		}
 		guard let ret = T.init(finalStr) else {
 			throw DecodingError.dataCorruptedError(forKey: key, in: self, debugDescription: "Could not convert to \(T.self).")

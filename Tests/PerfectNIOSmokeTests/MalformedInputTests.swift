@@ -346,6 +346,22 @@ struct MalformedInputTests {
 
 	// MARK: Request decoding
 
+	private struct NameForm: Decodable { let name: String }
+	private struct UploadForm: Decodable { let name: FileUpload }
+
+	/// A file part decoded into a String field used to yield the server's temp file path.
+	@Test func filePartDecodesOnlyAsFileUpload() throws {
+		let body = Array(("--abc\r\nContent-Disposition: form-data; name=\"name\"; filename=\"a.txt\"\r\n" +
+			"Content-Type: text/plain\r\n\r\nhello\r\n--abc--\r\n").utf8)
+		let reader = try MimeReader.parse(contentType: "multipart/form-data; boundary=abc", body: body)
+		let request = NIOAsyncHTTPRequest(head: HTTPRequestHead(version: .http1_1, method: .POST, uri: "/"),
+		                                  body: [], channel: nil, isTLS: false)
+		#expect(throws: DecodingError.self) { _ = try request.decode(NameForm.self, content: .multiPartForm(reader)) }
+		let upload = try request.decode(UploadForm.self, content: .multiPartForm(reader))
+		#expect(upload.name.fileName == "a.txt")
+		#expect(upload.name.fileSize == 5)
+	}
+
 	@Test("Container APIs the form decoder lacks throw instead of trapping", arguments: 0..<4)
 	func unsupportedDecoderContainers(_ index: Int) {
 		let type = ([Nested.self, NestedUnkeyed.self, Super.self, UnkeyedNested.self] as [any Decodable.Type])[index]
