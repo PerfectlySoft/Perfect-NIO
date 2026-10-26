@@ -86,9 +86,9 @@ final class RawWebSocket {
 
     deinit { close(fd) }
 
-    /// Sends one final, masked frame (clients must mask, RFC 6455 §5.3).
-    func sendFrame(opcode: UInt8, payload: [UInt8]) throws {
-        var frame: [UInt8] = [0x80 | opcode]
+    /// Sends one masked frame (clients must mask, RFC 6455 §5.3), final unless `fin` is false.
+    func sendFrame(opcode: UInt8, payload: [UInt8], fin: Bool = true) throws {
+        var frame: [UInt8] = [(fin ? 0x80 : 0) | opcode]
         switch payload.count {
         case ..<126:
             frame.append(0x80 | UInt8(payload.count))

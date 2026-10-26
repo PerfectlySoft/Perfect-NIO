@@ -472,6 +472,13 @@ The `protocol` argument is the subprotocol the endpoint speaks. When the client 
 |---|---|
 | `.manualClose` | Handler must reply to `.close` frames itself; otherwise auto-close-echo is sent |
 | `.manualPing` | Handler must reply to `.ping` frames; otherwise auto-pong is sent |
+| `.maxMessageSize(n)` | Largest message this endpoint accepts, in bytes. It can lower `Server.maxWebSocketMessageSize` (1 MiB by default), not raise it |
+| `.pingInterval(s)` | Seconds without a frame from the client before the server pings it (default 30); 0 or less turns the keepalive off |
+| `.responseTimeout(s)` | Seconds the client has to send any frame after that ping before the connection is closed (default 30, at least 1) |
+
+**Message size.** A message larger than the limit, whether it arrives in one frame or in fragments, ends the connection with close code 1009 (message too big), and `readMessage()` returns `.close`. Messages are gathered in memory before `readMessage()` returns them, so each open WebSocket connection can hold up to the limit at once. Raise `Server(maxWebSocketMessageSize:)` for endpoints that take large messages.
+
+**Keepalive.** The server's idle timeout stops applying once a connection upgrades. Instead, after `pingInterval` seconds with no frame from the client, the server sends a ping, and if nothing arrives within `responseTimeout` seconds it closes the connection, so a client that vanished without closing doesn't hold its socket forever. Any frame resets the clock, and browsers answer pings automatically. The pong that answers the keepalive's ping is consumed by the server; your handler doesn't see it. Frames are only read while your handler keeps calling `readMessage()`, so a handler that stops reading for longer than `pingInterval + responseTimeout` can have its connection closed too.
 
 ---
 
@@ -939,8 +946,11 @@ public struct Server: Sendable {
                                           // one — with zero window where the port refuses connections.
     public var maxRequestBodySize: Int?  // default 10 MiB (Server.defaultMaxRequestBodySize); nil = no limit.
                                           // Larger bodies, uploads included, get 413 — see "Request body size limit"
+    public var maxWebSocketMessageSize: Int  // default 1 MiB (Server.defaultMaxWebSocketMessageSize); larger
+                                              // messages end the connection with close code 1009 — see "WebSocketOption"
 
-    public init(routes:, host:, port:, tls:, idleTimeout:, reusePortCount:, alwaysReusePort:, maxRequestBodySize:)
+    public init(routes:, host:, port:, tls:, idleTimeout:, reusePortCount:, alwaysReusePort:, maxRequestBodySize:,
+                maxWebSocketMessageSize:)
 
     /// Serve until the surrounding Task is cancelled.
     public func run() async throws
@@ -957,7 +967,7 @@ public struct Server: Sendable {
 
 Errors thrown from a route: an `ErrorOutput` (or `TerminationType.error`) is sent as-is, with its status and text. A failure to decode the request becomes **400 Bad Request** with a generic body. Any other error becomes **500 Internal server error.** with a generic body; the error itself is logged (label `perfect.nio.server`), never sent to the client.
 
-`idleTimeout` closes idle connections. It runs from the moment a connection is accepted. While no response is pending (before the first request, while a request arrives, between keep-alive requests), a connection is idle when nothing has been read for the timeout, which covers a client that sends nothing, a stalled TLS handshake and a request head that never finishes. While a response is pending, a connection is idle only when the client has stopped reading: the response is backed up and nothing more of it has been written or has left the kernel's send buffer for the timeout. Slow but steady downloads, long polls and event streams are not cut off, as long as the client's own receive buffer drains within the timeout: TCP reopens a slow reader's window only after it has read a good part of its buffer, so a client with a 1 MB buffer reading 25 KB/s is silent for some 40 s, which the server can't tell from a stalled client (nginx's `send_timeout` works the same way). Keep the timeout generous if you serve slow clients; the default is 60 s. If the client closes its side while a response is pending, the connection is closed once nothing has been written for the timeout, so a client that disconnects from a slow route doesn't pin the socket; a route that never returns keeps a still-connected client's connection open. The timeout is removed when a connection upgrades to WebSocket. It resets on every byte, so a client trickling a request slowly is not bounded by it.
+`idleTimeout` closes idle connections. It runs from the moment a connection is accepted. While no response is pending (before the first request, while a request arrives, between keep-alive requests), a connection is idle when nothing has been read for the timeout, which covers a client that sends nothing, a stalled TLS handshake and a request head that never finishes. While a response is pending, a connection is idle only when the client has stopped reading: the response is backed up and nothing more of it has been written or has left the kernel's send buffer for the timeout. Slow but steady downloads, long polls and event streams are not cut off, as long as the client's own receive buffer drains within the timeout: TCP reopens a slow reader's window only after it has read a good part of its buffer, so a client with a 1 MB buffer reading 25 KB/s is silent for some 40 s, which the server can't tell from a stalled client (nginx's `send_timeout` works the same way). Keep the timeout generous if you serve slow clients; the default is 60 s. If the client closes its side while a response is pending, the connection is closed once nothing has been written for the timeout, so a client that disconnects from a slow route doesn't pin the socket; a route that never returns keeps a still-connected client's connection open. The timeout is removed when a connection upgrades to WebSocket, where the WebSocket keepalive takes over (see [WebSocketOption](#websocketoption)). It resets on every byte, so a client trickling a request slowly is not bounded by it.
 
 ### root()
 
@@ -1080,6 +1090,9 @@ public enum WebSocketMessage: Sendable {
 public enum WebSocketOption: Sendable {
     case manualClose
     case manualPing
+    case pingInterval(Int)      // seconds; default WebSocketOption.defaultPingInterval (30); 0 = off
+    case responseTimeout(Int)   // seconds; default WebSocketOption.defaultResponseTimeout (30)
+    case maxMessageSize(Int)    // bytes; at most Server.maxWebSocketMessageSize
 }
 
 public protocol WebSocket: Sendable {
@@ -1148,6 +1161,7 @@ With `MYSQL_REQUIRE_LIVE=1` (as in CI), an unconfigured or unreachable server fa
 ## Security notes
 
 - **Request bodies** are capped at 10 MiB by default (`maxRequestBodySize`); see [Request body size limit](#request-body-size-limit). The limit is per request, so total memory also scales with the number of connections.
+- **WebSocket messages** are capped at 1 MiB by default (`maxWebSocketMessageSize`, or lower per route with `.maxMessageSize`), whether sent in one frame or in fragments; a larger one ends the connection with close code 1009. Upgraded connections whose client stops sending are pinged and closed after `pingInterval + responseTimeout` (60 s by default). See [WebSocketOption](#websocketoption).
 - **Errors**: only an `ErrorOutput`'s text reaches the client. A `DecodingError` from decoding the request (the `decode` modifier, or an `HTTPRequest.decode(_:content:)` call whose error the handler lets escape; test for these with `error.isRequestDecodingFailure`; `error.originalUnderlyingError` gives the decoder's own underlying error) is answered 400 with a generic message. Any other error, including a `DecodingError` from the handler decoding its own data, is logged at error level and answered with a generic 500.
 - **`..` segments are rejected.** A request whose path (everything before the first `?`) has a `..` segment, as sent or after percent-decoding (`%2e%2e`, `.%2e`, nested `%25` encodings up to 7 layers; deeper nesting is refused too), with `/`, `%2f`, `\\` or `%5c` as separators, or a `..` segment followed by `;` or a NUL (`..;`, `..%00`), gets 400 before any route runs, WebSocket handshakes included. So does any request target containing `#` (clients never send a fragment). A request target longer than 8 KiB gets 414. The strings `wild` and `trailing` hand you therefore never contain a `..` segment. Other dots (`a..b`, `.hidden`) are allowed. Paths are otherwise used as sent: not percent-decoded and not otherwise normalized, so still validate `wild`/`trailing` values before using them as file names (for example for `FileOutput(localPath:)`). PerfectNIO has no built-in static file route.
 - **Response headers**: a header value containing CR or LF is refused by NIO's header validator; the connection is closed without a response rather than the header being split.

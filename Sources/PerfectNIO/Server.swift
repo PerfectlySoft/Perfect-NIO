@@ -39,7 +39,7 @@ enum HTTPOrWebSocket: Sendable {
 	/// Plain HTTP. The box holds what resolving the first request's route produced, if that
 	/// request was a WebSocket handshake to a `webSocket(...)` route that didn't upgrade.
 	case http(HTTPConnectionChannel, HandshakeBox?)
-	case websocket(WebSocketConnectionChannel, WebSocketHandler, [WebSocketOption])
+	case websocket(WebSocketConnectionChannel, WebSocketHandler, [WebSocketOption], maxMessageSize: Int)
 }
 
 /// What running a `webSocket(...)` route for a handshake produced. Written by the pre-upgrade
@@ -152,6 +152,19 @@ public struct Server: Sendable {
 	/// The default for `maxRequestBodySize`: 10 MiB.
 	public static let defaultMaxRequestBodySize = 10 * 1024 * 1024
 
+	/// The largest WebSocket message, in bytes, the server will accept, whether it arrives in one
+	/// frame or in fragments. A larger one ends the connection with close code 1009 (message too
+	/// big). A route's `WebSocketOption.maxMessageSize` can lower it for that endpoint, not raise
+	/// it. Defaults to `Server.defaultMaxWebSocketMessageSize` (1 MiB). Values below 125 bytes (the
+	/// largest control frame) are treated as 125, and values above `UInt32.max` as `UInt32.max`.
+	///
+	/// Messages are gathered in memory before `readMessage()` returns them, so every open
+	/// WebSocket connection can hold up to this much at once.
+	public var maxWebSocketMessageSize: Int
+
+	/// The default for `maxWebSocketMessageSize`: 1 MiB.
+	public static let defaultMaxWebSocketMessageSize = 1024 * 1024
+
 	public init(routes: Routes<HTTPRequest, HTTPOutput>,
 	            host: String = "0.0.0.0",
 	            port: Int,
@@ -159,7 +172,8 @@ public struct Server: Sendable {
 	            idleTimeout: TimeAmount? = .seconds(60),
 	            reusePortCount: Int = 1,
 	            alwaysReusePort: Bool = false,
-	            maxRequestBodySize: Int? = Server.defaultMaxRequestBodySize) {
+	            maxRequestBodySize: Int? = Server.defaultMaxRequestBodySize,
+	            maxWebSocketMessageSize: Int = Server.defaultMaxWebSocketMessageSize) {
 		self.routes = routes
 		self.host = host
 		self.port = port
@@ -168,6 +182,7 @@ public struct Server: Sendable {
 		self.reusePortCount = reusePortCount
 		self.alwaysReusePort = alwaysReusePort
 		self.maxRequestBodySize = maxRequestBodySize
+		self.maxWebSocketMessageSize = maxWebSocketMessageSize
 	}
 
 	/// Bind and serve until the surrounding task is cancelled, then gracefully drain in-flight
@@ -261,6 +276,8 @@ public struct Server: Sendable {
 		let count = max(1, reusePortCount)
 		let reusePort = count > 1 || alwaysReusePort
 		let idle = idleTimeout
+		// NIO caps a frame at UInt32.max and needs room for a 125-byte control frame.
+		let webSocketLimit = min(Int(UInt32.max), max(125, maxWebSocketMessageSize))
 		let host = self.host
 		let port = self.port
 
@@ -288,9 +305,11 @@ public struct Server: Sendable {
 					}
 					let outcome: EventLoopFuture<HTTPOrWebSocket>
 					if #available(macOS 13, *) {
-						outcome = try Server.configureUpgrade(channel: childChannel, finder: finder, isTLS: isTLS, idleHandlers: idleHandlers)
+						outcome = try Server.configureUpgrade(channel: childChannel, finder: finder, isTLS: isTLS, idleHandlers: idleHandlers,
+						                                      webSocketLimit: webSocketLimit)
 					} else {
-						outcome = try Server.configureUpgradeFallback(channel: childChannel, finder: finder, isTLS: isTLS, idleHandlers: idleHandlers)
+						outcome = try Server.configureUpgradeFallback(channel: childChannel, finder: finder, isTLS: isTLS, idleHandlers: idleHandlers,
+						                                              webSocketLimit: webSocketLimit)
 					}
 					// Until the first request is routed nothing owns the channel, so an error there
 					// (a request the HTTP parser rejected, after NIO's 400; a TLS failure) closes
@@ -323,12 +342,14 @@ public struct Server: Sendable {
 	private static func configureUpgrade(channel: Channel,
 	                                     finder: any RouteFinder,
 	                                     isTLS: Bool,
-	                                     idleHandlers: IdleTimeout.Handlers?) throws -> EventLoopFuture<HTTPOrWebSocket> {
+	                                     idleHandlers: IdleTimeout.Handlers?,
+	                                     webSocketLimit: Int) throws -> EventLoopFuture<HTTPOrWebSocket> {
 		// Populated by the pre-upgrade router (below) before the typed upgrader runs, so the
 		// upgrader and its pipeline handler can read the resolved handler synchronously.
 		let resolved = HandshakeBox(nil)
 
 		let upgrader = NIOTypedWebSocketServerUpgrader<HTTPOrWebSocket>(
+			maxFrameSize: webSocketLimit,
 			shouldUpgrade: { channel, head in
 				// The router only forwards a handshake here (Upgrade header intact) once it has
 				// confirmed the path is a WebSocket route and stored the handler — so accept iff
@@ -340,10 +361,12 @@ public struct Server: Sendable {
 				channel.eventLoop.makeCompletedFuture {
 					// WebSocket connections are long-lived and manage their own liveness.
 					if let idleHandlers { IdleTimeout.remove(idleHandlers, from: channel) }
-					let wsChannel = try WebSocketConnectionChannel(wrappingChannelSynchronously: channel)
 					let noop: WebSocketHandler = { _ in }
 					let (handler, options) = resolved.withLockedValue { $0?.webSocket } ?? (noop, [])
-					return HTTPOrWebSocket.websocket(wsChannel, handler, options)
+					try WebSocketKeepAlive.add(to: channel, options: options)
+					let wsChannel = try WebSocketConnectionChannel(wrappingChannelSynchronously: channel)
+					return HTTPOrWebSocket.websocket(wsChannel, handler, options,
+					                                 maxMessageSize: options.maxMessageSize(serverLimit: webSocketLimit))
 				}
 			}
 		)
@@ -407,7 +430,8 @@ public struct Server: Sendable {
 	private static func configureUpgradeFallback(channel: Channel,
 	                                             finder: any RouteFinder,
 	                                             isTLS: Bool,
-	                                             idleHandlers: IdleTimeout.Handlers?) throws -> EventLoopFuture<HTTPOrWebSocket> {
+	                                             idleHandlers: IdleTimeout.Handlers?,
+	                                             webSocketLimit: Int) throws -> EventLoopFuture<HTTPOrWebSocket> {
 		let resolved = HandshakeBox(nil)
 		let promise = channel.eventLoop.makePromise(of: HTTPOrWebSocket.self)
 
@@ -439,6 +463,7 @@ public struct Server: Sendable {
 		let fallbackHandler = PlainHTTPFallbackHandler(promise: promise, handshake: resolved)
 
 		let wsUpgrader = NIOWebSocketServerUpgrader(
+			maxFrameSize: webSocketLimit,
 			shouldUpgrade: { channel, head in
 				let headers = resolved.withLockedValue { $0?.upgradeHeaders(for: head) }
 				return channel.eventLoop.makeSucceededFuture(headers)
@@ -454,10 +479,12 @@ public struct Server: Sendable {
 				return channel.pipeline.syncOperations.removeHandler(fallbackHandler)
 					.flatMap {
 						channel.eventLoop.makeCompletedFuture {
-							let wsChannel = try WebSocketConnectionChannel(wrappingChannelSynchronously: channel)
 							let noop: WebSocketHandler = { _ in }
 							let (handler, options) = resolved.withLockedValue { $0?.webSocket } ?? (noop, [])
-							promise.succeed(.websocket(wsChannel, handler, options))
+							try WebSocketKeepAlive.add(to: channel, options: options)
+							let wsChannel = try WebSocketConnectionChannel(wrappingChannelSynchronously: channel)
+							promise.succeed(.websocket(wsChannel, handler, options,
+							                           maxMessageSize: options.maxMessageSize(serverLimit: webSocketLimit)))
 						}
 					}
 			}
@@ -571,8 +598,8 @@ public struct Server: Sendable {
 			case .http(let channel, let handshake):
 				await NIOAsyncHTTPServer.handleConnection(channel, finder: finder, isTLS: isTLS, maxBodySize: maxBodySize,
 				                                          handshake: handshake?.withLockedValue { $0 })
-			case .websocket(let channel, let handler, let options):
-				await WebSocketRunner.run(channel, handler: handler, options: options)
+			case .websocket(let channel, let handler, let options, let maxMessageSize):
+				await WebSocketRunner.run(channel, handler: handler, options: options, maxMessageSize: maxMessageSize)
 			}
 		} catch {
 			// Upgrade negotiation failed or the connection errored before producing a result.
