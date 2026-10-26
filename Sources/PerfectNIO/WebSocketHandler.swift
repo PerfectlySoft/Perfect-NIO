@@ -42,10 +42,49 @@ public enum WebSocketOption: Sendable {
 	case manualClose
 	/// Do not auto-reply to a received `.ping` with a `.pong`; the handler must reply itself.
 	case manualPing
-	/// Reserved: desired server→client ping frequency in seconds. Not yet active.
+	/// Seconds without a frame from the client before the server sends it a ping. Default
+	/// `defaultPingInterval` (30). 0 or less turns the keepalive off, so a client that goes
+	/// silent keeps its connection open until it closes it.
 	case pingInterval(Int)
-	/// Reserved: pong response timeout in seconds. Not yet active.
+	/// Seconds the client has, after a keepalive ping, to send any frame (its pong counts)
+	/// before the connection is closed. Default `defaultResponseTimeout` (30); at least 1.
 	case responseTimeout(Int)
+	/// The largest message, in bytes, this endpoint accepts. A message is limited to the smaller of
+	/// this and `Server.maxWebSocketMessageSize`. A larger one, whether sent in one frame or in
+	/// fragments, ends the connection with close code 1009 (message too big), and `readMessage()`
+	/// returns `.close`.
+	case maxMessageSize(Int)
+
+	/// The default for `pingInterval`: 30 seconds.
+	public static let defaultPingInterval = 30
+	/// The default for `responseTimeout`: 30 seconds.
+	public static let defaultResponseTimeout = 30
+}
+
+extension Array where Element == WebSocketOption {
+	/// The keepalive interval and timeout these options set, or nil when the keepalive is off.
+	var keepAlive: (interval: TimeAmount, timeout: TimeAmount)? {
+		var interval = WebSocketOption.defaultPingInterval
+		var timeout = WebSocketOption.defaultResponseTimeout
+		for option in self {
+			switch option {
+			case .pingInterval(let seconds): interval = seconds
+			case .responseTimeout(let seconds): timeout = seconds
+			default: break
+			}
+		}
+		guard interval > 0 else { return nil }
+		return (.seconds(Int64(interval)), .seconds(Int64(Swift.max(1, timeout))))
+	}
+
+	/// The message size limit for an endpoint with these options on a server whose limit is
+	/// `serverLimit`.
+	func maxMessageSize(serverLimit: Int) -> Int {
+		reduce(serverLimit) { limit, option in
+			if case .maxMessageSize(let size) = option { return Swift.min(limit, Swift.max(0, size)) }
+			return limit
+		}
+	}
 }
 
 /// An upgraded WebSocket connection. Reads and writes are async; calls must be serialized
@@ -108,12 +147,14 @@ public final class WebSocketUpgradeHTTPOutput: HTTPOutput, @unchecked Sendable {
 enum WebSocketRunner {
 	static func run(_ channel: NIOAsyncChannel<WebSocketFrame, WebSocketFrame>,
 	                handler: WebSocketHandler,
-	                options: [WebSocketOption]) async {
+	                options: [WebSocketOption],
+	                maxMessageSize: Int) async {
 		do {
 			try await channel.executeThenClose { inbound, outbound in
 				let ws = AsyncWebSocket(iterator: inbound.makeAsyncIterator(),
 				                        outbound: outbound,
-				                        options: options)
+				                        options: options,
+				                        maxMessageSize: maxMessageSize)
 				await handler(ws)
 			}
 		} catch {
@@ -128,6 +169,9 @@ private final class AsyncWebSocket: WebSocket, @unchecked Sendable {
 	let options: [WebSocketOption]
 	private let manualClose: Bool
 	private let manualPing: Bool
+	private let maxMessageSize: Int
+	/// Set once a message over `maxMessageSize` has closed the connection.
+	private var closedTooBig = false
 	private var iterator: NIOAsyncChannelInboundStream<WebSocketFrame>.AsyncIterator
 	private let outbound: NIOAsyncChannelOutboundWriter<WebSocketFrame>
 	private let allocator = ByteBufferAllocator()
@@ -137,15 +181,18 @@ private final class AsyncWebSocket: WebSocket, @unchecked Sendable {
 
 	init(iterator: NIOAsyncChannelInboundStream<WebSocketFrame>.AsyncIterator,
 	     outbound: NIOAsyncChannelOutboundWriter<WebSocketFrame>,
-	     options: [WebSocketOption]) {
+	     options: [WebSocketOption],
+	     maxMessageSize: Int) {
 		self.iterator = iterator
 		self.outbound = outbound
 		self.options = options
+		self.maxMessageSize = maxMessageSize
 		self.manualClose = options.contains { if case .manualClose = $0 { return true }; return false }
 		self.manualPing = options.contains { if case .manualPing = $0 { return true }; return false }
 	}
 
 	func readMessage() async throws -> WebSocketMessage {
+		if closedTooBig { return .close }
 		while let frame = try await iterator.next() {
 			switch frame.opcode {
 			case .connectionClose:
@@ -157,6 +204,7 @@ private final class AsyncWebSocket: WebSocket, @unchecked Sendable {
 			case .pong:
 				return .pong
 			case .text, .binary:
+				guard frame.length <= maxMessageSize else { return await closeTooBig() }
 				let bytes = unmasked(frame)
 				if frame.fin {
 					return frame.opcode == .text ? .text(string(bytes)) : .binary(bytes)
@@ -164,6 +212,7 @@ private final class AsyncWebSocket: WebSocket, @unchecked Sendable {
 				fragmentOpcode = frame.opcode
 				fragmentBytes = bytes
 			case .continuation:
+				guard fragmentBytes.count + frame.length <= maxMessageSize else { return await closeTooBig() }
 				fragmentBytes.append(contentsOf: unmasked(frame))
 				if frame.fin {
 					let opcode = fragmentOpcode ?? .binary
@@ -216,7 +265,105 @@ private final class AsyncWebSocket: WebSocket, @unchecked Sendable {
 		try await outbound.write(WebSocketFrame(fin: true, opcode: .pong, data: buf))
 	}
 
+	/// Ends a message over `maxMessageSize`: drops what was gathered, sends close code 1009,
+	/// and makes every later read return `.close`.
+	private func closeTooBig() async -> WebSocketMessage {
+		closedTooBig = true
+		fragmentOpcode = nil
+		fragmentBytes = []
+		var code = allocator.buffer(capacity: 2)
+		code.write(webSocketErrorCode: .messageTooLarge)
+		try? await outbound.write(WebSocketFrame(fin: true, opcode: .connectionClose, data: code))
+		return .close
+	}
+
 	private func writeRawClose() async throws {
 		try await outbound.write(WebSocketFrame(fin: true, opcode: .connectionClose, data: allocator.buffer(capacity: 0)))
+	}
+}
+
+/// Installs the keepalive on an upgraded connection, unless its options turn it off.
+enum WebSocketKeepAlive {
+	static func add(to channel: Channel, options: [WebSocketOption]) throws {
+		guard let keepAlive = options.keepAlive else { return }
+		try channel.pipeline.syncOperations.addHandler(
+			WebSocketKeepAliveHandler(interval: keepAlive.interval, timeout: keepAlive.timeout))
+	}
+}
+
+/// Closes an upgraded connection whose client has gone silent. After `interval` with no frame
+/// from the client it sends a ping; if no frame at all arrives within `timeout` of that ping,
+/// it closes the connection. Any frame counts, so a client busy sending messages is never
+/// pinged. The pong answering the keepalive's own ping is consumed here, so handlers don't
+/// see it.
+///
+/// Sits between the frame codec and the async channel. `@unchecked Sendable`: only touched on
+/// its channel's event loop.
+final class WebSocketKeepAliveHandler: ChannelDuplexHandler, RemovableChannelHandler, @unchecked Sendable {
+	typealias InboundIn = WebSocketFrame
+	typealias InboundOut = WebSocketFrame
+	typealias OutboundIn = WebSocketFrame
+	typealias OutboundOut = WebSocketFrame
+
+	/// The keepalive ping's payload, which identifies the pong that answers it.
+	static let pingPayload = Array("perfect-nio-keepalive".utf8)
+
+	private let interval: TimeAmount
+	private let timeout: TimeAmount
+	private var lastRead = NIODeadline.now()
+	private var pingSentAt: NIODeadline?
+	private var check: RepeatedTask?
+
+	init(interval: TimeAmount, timeout: TimeAmount) {
+		self.interval = interval
+		self.timeout = timeout
+	}
+
+	func handlerAdded(context: ChannelHandlerContext) {
+		lastRead = .now()
+		let step = TimeAmount.nanoseconds(max(min(interval, timeout).nanoseconds / 4, 1_000_000))
+		let bound = NIOLoopBound(context, eventLoop: context.eventLoop)
+		check = context.eventLoop.scheduleRepeatedTask(initialDelay: step, delay: step) { [weak self] _ in
+			self?.tick(context: bound.value)
+		}
+	}
+
+	func handlerRemoved(context: ChannelHandlerContext) {
+		check?.cancel()
+		check = nil
+	}
+
+	func channelInactive(context: ChannelHandlerContext) {
+		check?.cancel()
+		check = nil
+		context.fireChannelInactive()
+	}
+
+	func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+		lastRead = .now()
+		let frame = unwrapInboundIn(data)
+		if frame.opcode == .pong,
+		   frame.unmaskedData.readableBytesView.elementsEqual(Self.pingPayload) {
+			pingSentAt = nil
+			return
+		}
+		pingSentAt = nil
+		context.fireChannelRead(data)
+	}
+
+	private func tick(context: ChannelHandlerContext) {
+		let now = NIODeadline.now()
+		if let sent = pingSentAt {
+			if now - sent >= timeout {
+				check?.cancel()
+				check = nil
+				context.close(promise: nil)
+			}
+		} else if now - lastRead >= interval {
+			pingSentAt = now
+			var payload = context.channel.allocator.buffer(capacity: Self.pingPayload.count)
+			payload.writeBytes(Self.pingPayload)
+			context.writeAndFlush(wrapOutboundOut(WebSocketFrame(fin: true, opcode: .ping, data: payload)), promise: nil)
+		}
 	}
 }
